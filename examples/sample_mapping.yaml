@@ -1,0 +1,60 @@
+# R2G sample mapping: PostgreSQL schema → ArangoDB collections and edges.
+# Loaded with ConfigManager.load_config(); edit paths to match your database.
+
+# Default PostgreSQL schema name for introspection / dump resolution.
+source_schema: public
+
+# How composite document _key values are joined (used by ETL when building keys).
+key_separator: _
+
+# Per-column JSON type overrides (column name → json_type).
+# Use when automatic PostgreSQL→JSON inference is wrong for a specific column.
+type_overrides:
+  legacy_count_text: integer
+
+# Table → collection rules. Keys are source table names for quick lookup.
+collections:
+  users:
+    source_table: users
+    target_collection: user_vertices
+    collection_type: document
+    is_join_table: false
+    # Rename source columns when writing documents (source → target field name).
+    field_mappings:
+      email_addr: email
+    # Drop noisy or redundant columns from the export.
+    exclude_fields:
+      - internal_batch_id
+    # If set, only these columns are exported (exclusive with a broad include).
+    include_fields: null
+
+  orders:
+    source_table: orders
+    target_collection: orders
+    collection_type: document
+    is_join_table: false
+    field_mappings: {}
+    exclude_fields: []
+
+  order_items:
+    source_table: order_items
+    target_collection: order_items
+    collection_type: document
+    # Mark pure join / line-item tables when you rely mostly on edges.
+    is_join_table: true
+    field_mappings: {}
+    exclude_fields: []
+
+# Foreign-key relationships → edge collections (from_table → to_table).
+edges:
+  - edge_collection: orders_to_users
+    from_collection: orders
+    to_collection: user_vertices
+    from_field: user_id
+    to_field: id
+
+  - edge_collection: order_items_to_orders
+    from_collection: order_items
+    to_collection: orders
+    from_field: order_id
+    to_field: id
