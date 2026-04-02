@@ -13,4 +13,5 @@ output/
 schema.json
 mapping.yaml
 import.sh
+test_run/
 

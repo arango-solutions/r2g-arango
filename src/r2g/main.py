@@ -150,7 +150,7 @@ def transform_all(
             if fpath.is_file():
                 dump_by_table[fpath.stem] = fpath
 
-        doc_jobs: list[tuple[str, str, Path, Any]] = []
+        doc_jobs: list[tuple[str, str, Path, Any, Any]] = []
         for _key, cm in mapping.collections.items():
             if cm.collection_type != "document":
                 continue
@@ -161,7 +161,7 @@ def transform_all(
             if st not in dump_by_table:
                 log.warning("transform_all_skip_no_dump", source_table=st)
                 continue
-            doc_jobs.append((st, cm.target_collection, dump_by_table[st], schema.tables[st]))
+            doc_jobs.append((st, cm.target_collection, dump_by_table[st], schema.tables[st], cm))
 
         edge_jobs: list[tuple[EdgeDefinition, Path, Any]] = []
         for edge in mapping.edges:
@@ -192,10 +192,15 @@ def transform_all(
         with Progress(*progress_cols, console=console) as progress:
             task_id = progress.add_task("Transforming dataset", total=total_steps)
 
-            for table_name, target_coll, dump_path, table_def in doc_jobs:
+            for table_name, target_coll, dump_path, table_def, col_mapping in doc_jobs:
                 progress.update(task_id, description=f"Nodes: {target_coll}")
                 out_file = out_root / f"{target_coll}.jsonl"
-                transformer = NodeTransformer(table_def)
+                transformer = NodeTransformer(
+                    table_def,
+                    collection_mapping=col_mapping,
+                    key_separator=mapping.key_separator,
+                    type_overrides=mapping.type_overrides,
+                )
                 reader = DumpReader(str(dump_path))
                 n = 0
                 with out_file.open("w", encoding="utf-8") as f_out:
@@ -281,6 +286,7 @@ def transform_nodes(
     table_name: str = typer.Option(..., "--table", "-t", help="Table name in the schema"),
     dump_file: str = typer.Option(..., "--input", "-i", help="Input dump file"),
     output_file: str = typer.Option(..., "--output", "-o", help="Output JSONL file"),
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Mapping config YAML (enables type coercion)"),
     limit: Optional[int] = typer.Option(None, help="Max rows to process"),
 ) -> None:
     """Transform a table dump into ArangoDB node documents (JSONL)."""
@@ -291,7 +297,21 @@ def transform_nodes(
 
         table_def = schema.tables[table_name]
 
-        transformer = NodeTransformer(table_def)
+        col_mapping = None
+        key_sep = "_"
+        type_ovr: dict[str, str] = {}
+        if config_path:
+            mapping = ConfigManager.load_config(config_path)
+            col_mapping = mapping.collections.get(table_name)
+            key_sep = mapping.key_separator
+            type_ovr = mapping.type_overrides
+
+        transformer = NodeTransformer(
+            table_def,
+            collection_mapping=col_mapping,
+            key_separator=key_sep,
+            type_overrides=type_ovr,
+        )
         reader = DumpReader(dump_file)
 
         console.print(f"[green]Transforming nodes for table '{table_name}'...[/green]")

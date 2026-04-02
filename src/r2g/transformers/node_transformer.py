@@ -68,8 +68,14 @@ class NodeTransformer:
                 try:
                     return json.loads(value)
                 except json.JSONDecodeError:
-                    logger.warning("json_decode_failed", column=column.name)
-                    return value
+                    pass
+                pg = value.strip()
+                if pg.startswith("{") and pg.endswith("}"):
+                    inner = pg[1:-1]
+                    if inner == "":
+                        return []
+                    return [elem.strip('"') for elem in inner.split(",")]
+                return value
             return value
 
         return str(value)

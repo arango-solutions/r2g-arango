@@ -1,6 +1,6 @@
-# Antigravity: R2G-ETL Pipeline
+# Experimental R2G-ETL Pipeline
 
-Automated pipeline for transforming PostgreSQL relational schemas and data into ArangoDB graph structures. Foreign keys become edges, tables become vertex collections, and `arangoimport` scripts are generated for high-performance bulk loading.
+Experirmental automated pipeline for transforming PostgreSQL relational schemas and data into ArangoDB graph structures. Foreign keys become edges, tables become vertex collections, and `arangoimport` scripts are generated for high-performance bulk loading.
 
 See [PRD.md](PRD.md) for the full product requirements document.
 
