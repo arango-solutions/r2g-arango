@@ -1,0 +1,19 @@
+services:
+  arangodb:
+    image: ${ARANGO_IMAGE:-arangodb:3.12}
+    container_name: ${ARANGO_CONTAINER:-r2g-test-arangodb}
+    environment:
+      ARANGO_ROOT_PASSWORD: ${ARANGO_ROOT_PASSWORD:-r2g_test_2026}
+    ports:
+      - "${ARANGO_PORT:-8540}:8529"
+    volumes:
+      - r2g-arango-data:/var/lib/arangodb3
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version", "-u", "root:${ARANGO_ROOT_PASSWORD:-r2g_test_2026}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  r2g-arango-data:
