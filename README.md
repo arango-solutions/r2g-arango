@@ -17,28 +17,17 @@ The R2G pipeline applies a mechanical mapping:
 - **Join tables** (many-to-many) become **edges** rather than vertices -- the two FK columns point to the two vertex collections the edge connects.
 - **Data types** are coerced from PostgreSQL representations to proper JSON types: integers, floats, booleans, nested JSON for `jsonb` columns, and arrays.
 
-```
-                          R2G Pipeline Flow
-
-  PostgreSQL          Extract           Configure
-  ┌─────────┐      ┌───────────┐     ┌──────────────┐
-  │ Tables   │─────>│schema.json│────>│ mapping.yaml │
-  │ PKs, FKs │      └───────────┘     │ (auto or     │
-  │ Columns  │                        │  hand-tuned) │
-  └────┬─────┘                        └──────┬───────┘
-       │                                     │
-       │  Dump (CSV)                         │
-       v                                     v
-  ┌─────────┐      Transform          ┌───────────┐
-  │ .csv per │─────────────────────────│ .jsonl per│
-  │ table    │     (type coercion,     │ collection│
-  └──────────┘      edge generation)   └─────┬─────┘
-                                             │
-                    Generate                 v
-                                       ┌───────────┐     Load
-                                       │ import.sh │───────────> ArangoDB
-                                       │ graph.js  │
-                                       └───────────┘
+```mermaid
+flowchart LR
+    PG[(PostgreSQL<br/>Tables, PKs, FKs)] -->|ingest-schema| SJ[schema.json]
+    SJ -->|generate-config| MY[mapping.yaml<br/>auto or hand-tuned]
+    PG -->|psql COPY| CSV[".csv per table"]
+    CSV --> T[Transform<br/>type coercion<br/>edge generation]
+    MY --> T
+    SJ --> T
+    T --> JSONL[".jsonl per collection"]
+    JSONL -->|generate-import| SH["import.sh + graph.js"]
+    SH -->|arangoimport| ADB[(ArangoDB)]
 ```
 
 ## Prerequisites
