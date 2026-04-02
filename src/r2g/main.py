@@ -17,7 +17,7 @@ from r2g.transformers.edge_transformer import EdgeTransformer
 from r2g.transformers.node_transformer import NodeTransformer
 from r2g.types import EdgeDefinition, Schema
 
-app = typer.Typer(help="Antigravity R2G-ETL: Relational to Graph Pipeline")
+app = typer.Typer(help="R2G-ETL: Relational to Graph Pipeline")
 console = Console()
 log = get_logger(__name__)
 

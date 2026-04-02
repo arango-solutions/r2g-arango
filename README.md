@@ -1,8 +1,52 @@
-# Experimental R2G-ETL Pipeline
+# Experimental Relational-to-Graph ETL Pipeline
 
-Experirmental automated pipeline for transforming PostgreSQL relational schemas and data into ArangoDB graph structures. Foreign keys become edges, tables become vertex collections, and `arangoimport` scripts are generated for high-performance bulk loading.
+An experimental reference implementation showing how to transform PostgreSQL relational schemas and data into ArangoDB graph structures. Foreign keys become edges, tables become vertex collections, and `arangoimport` scripts are generated for high-performance bulk loading.
+
+This project is intended to guide ArangoDB users through the mechanics of relational-to-graph migration. It is not production software.
 
 See [PRD.md](PRD.md) for the full product requirements document.
+
+## Concepts
+
+Relational databases model relationships implicitly through foreign keys and resolve them at query time via joins. Graph databases model relationships explicitly as first-class edges, enabling direct traversal without joins.
+
+The R2G pipeline applies a mechanical mapping:
+
+- Each **table** becomes an ArangoDB **document collection** (vertices). The table's primary key becomes the document `_key`.
+- Each **foreign key** becomes an **edge collection**. For every row in the source table, an edge is created from the source vertex to the target vertex, using the FK value to resolve the `_to` endpoint.
+- **Join tables** (many-to-many) become **edges** rather than vertices -- the two FK columns point to the two vertex collections the edge connects.
+- **Data types** are coerced from PostgreSQL representations to proper JSON types: integers, floats, booleans, nested JSON for `jsonb` columns, and arrays.
+
+```
+                          R2G Pipeline Flow
+
+  PostgreSQL          Extract           Configure
+  ┌─────────┐      ┌───────────┐     ┌──────────────┐
+  │ Tables   │─────>│schema.json│────>│ mapping.yaml │
+  │ PKs, FKs │      └───────────┘     │ (auto or     │
+  │ Columns  │                        │  hand-tuned) │
+  └────┬─────┘                        └──────┬───────┘
+       │                                     │
+       │  Dump (CSV)                         │
+       v                                     v
+  ┌─────────┐      Transform          ┌───────────┐
+  │ .csv per │─────────────────────────│ .jsonl per│
+  │ table    │     (type coercion,     │ collection│
+  └──────────┘      edge generation)   └─────┬─────┘
+                                             │
+                    Generate                 v
+                                       ┌───────────┐     Load
+                                       │ import.sh │───────────> ArangoDB
+                                       │ graph.js  │
+                                       └───────────┘
+```
+
+## Prerequisites
+
+- **Python 3.10+**
+- **PostgreSQL** with data you want to migrate (any version with `information_schema` support)
+- **ArangoDB** instance (tested with 3.11+) with `arangoimport` on your PATH
+- **psql** or another tool to export CSV dumps from PostgreSQL
 
 ## Features
 
@@ -37,8 +81,6 @@ src/r2g/
 
 ## Installation
 
-Requires Python 3.10+.
-
 ```bash
 pip install -e .
 ```
@@ -65,9 +107,19 @@ r2g generate-config --schema schema.json --output mapping.yaml
 
 This creates a YAML file with one document collection per table and one edge collection per foreign key. Edit it to rename collections, exclude fields, or mark join tables.
 
-### 3. Transform dump files
+### 3. Dump tables to CSV
 
-Transform an entire directory of CSV dumps (one file per table, filename = table name):
+Use `psql` to export each table as a CSV file (one file per table, filename must match the table name):
+
+```bash
+for table in users orders products; do
+  psql -d mydb -c "COPY ${table} TO STDOUT WITH CSV HEADER" > dumps/${table}.csv
+done
+```
+
+### 4. Transform dump files
+
+Transform an entire directory of CSV dumps in one pass:
 
 ```bash
 r2g transform-all \
@@ -81,11 +133,11 @@ r2g transform-all \
 Or transform a single table's nodes or edges:
 
 ```bash
-r2g transform-nodes --schema schema.json --table users --input dumps/users.csv --output output/users.jsonl
+r2g transform-nodes --schema schema.json --config mapping.yaml --table users --input dumps/users.csv --output output/users.jsonl
 r2g transform-edges --schema schema.json --config mapping.yaml --table orders --input dumps/orders.csv --output output/orders_edges.jsonl
 ```
 
-### 4. Generate arangoimport script
+### 5. Generate arangoimport script
 
 ```bash
 r2g generate-import \
@@ -99,7 +151,7 @@ r2g generate-import \
 
 This produces an executable `import.sh` (documents first, then edges) and an arangosh graph creation script.
 
-### 5. Load into ArangoDB
+### 6. Load into ArangoDB
 
 ```bash
 ./import.sh
@@ -136,6 +188,19 @@ Key sections:
 - **`edges`** -- foreign key relationships: edge collection name, from/to vertex collections, from/to fields
 - **`type_overrides`** -- force a specific JSON type for a column when auto-detection is wrong
 - **`key_separator`** -- character used to join composite primary key values (default: `_`)
+
+## Known limitations
+
+This is an experimental reference implementation. The following constraints apply:
+
+- **PostgreSQL only** -- the schema reader uses `information_schema` queries specific to PostgreSQL. No MySQL, SQLite, or other source support.
+- **`public` schema only** -- only tables in the `public` schema are read. Multi-schema databases require manual schema file editing.
+- **No data validation** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. The tool does not verify referential integrity.
+- **No incremental/delta support** -- every run is a full re-export. There is no change tracking, CDC, or diff-based processing yet (see Phases 2-4 in the PRD).
+- **Composite foreign keys untested** -- composite PKs work for `_key` generation, but composite FKs (multi-column foreign keys) have not been tested.
+- **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
+- **No ArangoDB write path** -- the tool generates files and scripts but never connects to ArangoDB directly. You need `arangoimport` installed separately.
+- **Credential handling** -- connection strings and passwords appear in CLI arguments and generated scripts. The import script uses environment variable overrides, but the tool has no secrets management.
 
 ## Testing
 
