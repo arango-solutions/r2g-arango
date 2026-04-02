@@ -10,7 +10,7 @@ from rich.table import Table as RichTable
 
 from r2g.config import ConfigManager
 from r2g.connectors.postgres import PostgresConnector
-from r2g.generators.arangoimport import ArangoImportGenerator
+from r2g.generators.arangoimport import ArangoImportGenerator, CsvImportGenerator
 from r2g.input.dump_reader import DumpReader
 from r2g.log import get_logger, setup_logging
 from r2g.transformers.edge_transformer import EdgeTransformer
@@ -277,6 +277,56 @@ def generate_import(
     except Exception as e:
         log.exception("generate_import_failed", output=output)
         console.print(f"[red]Failed to generate import script:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("generate-csv-import")
+def generate_csv_import(
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+    data_dir: str = typer.Option(..., "--data-dir", help="Directory containing PG CSV dump files"),
+    output: str = typer.Option("import_csv.sh", "--output", "-o", help="Output shell script path"),
+    endpoint: str = typer.Option("http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL"),
+    database: str = typer.Option("_system", "--database", "-d", help="Database name"),
+    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username"),
+    password: str = typer.Option("", "--password", "-p", help="ArangoDB password"),
+    on_duplicate: str = typer.Option("replace", "--on-duplicate", help="arangoimport --on-duplicate value"),
+    graph_name: Optional[str] = typer.Option(None, "--graph-name", help="Create a named graph after import via Gharial API"),
+) -> None:
+    """Generate an arangoimport script that imports PG CSV dumps directly.
+
+    Uses arangoimport --type csv with --translate for key remapping,
+    --datatype for type coercion, --from-collection-prefix / --to-collection-prefix
+    for edge generation, and --remove-attribute for column projection.
+    No intermediate JSONL transformation required.
+    """
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+        gen = CsvImportGenerator(
+            mapping,
+            schema,
+            endpoint,
+            database,
+            username,
+            password,
+            data_dir,
+            on_duplicate,
+        )
+        gen.generate_csv_script(output, overwrite_on_initial=True, graph_name=graph_name)
+        console.print(f"[green]Wrote CSV import script:[/green] [bold]{output}[/bold]")
+        console.print(
+            f"  [dim]{len(mapping.collections)} document collections, "
+            f"{len(mapping.edges)} edge collections[/dim]"
+        )
+        if graph_name:
+            console.print(f"  [dim]Named graph '{graph_name}' will be created after import[/dim]")
+        console.print(
+            "  [dim]Imports PG CSV dumps directly — no JSONL transformation needed[/dim]"
+        )
+    except Exception as e:
+        log.exception("generate_csv_import_failed", output=output)
+        console.print(f"[red]Failed to generate CSV import script:[/red] {e}")
         raise typer.Exit(code=1)
 
 
