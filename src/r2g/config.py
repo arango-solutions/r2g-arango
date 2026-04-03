@@ -5,7 +5,7 @@ from typing import Any, Dict, Set
 
 import yaml
 
-from r2g.types import EdgeDefinition, CollectionMapping, MappingConfig, Schema
+from r2g.types import EdgeDefinition, CollectionMapping, MappingConfig, Schema, Table
 
 
 DEFAULT_TYPE_MAP: Dict[str, str] = {
@@ -45,6 +45,22 @@ def pg_type_to_json_type(pg_type: str) -> str:
     return "string"
 
 
+def _is_likely_join_table(table: Table) -> bool:
+    """Heuristic: a join table has exactly 2 FKs and no non-FK, non-PK data columns
+    (or only typical junction metadata like quantity, created_at, etc.)."""
+    if len(table.foreign_keys) != 2:
+        return False
+    fk_cols = {fk.column for fk in table.foreign_keys}
+    pk_cols = set(table.primary_key)
+    structural = fk_cols | pk_cols
+    data_cols = [c for c in table.columns if c.name not in structural]
+    if not data_cols:
+        return True
+    _JUNCTION_META = {"quantity", "qty", "count", "sort_order", "position", "rank",
+                      "created_at", "updated_at", "created", "updated"}
+    return all(c.name.lower() in _JUNCTION_META for c in data_cols)
+
+
 class ConfigManager:
     """Load, save, and synthesize table-to-graph mapping configuration."""
 
@@ -55,11 +71,12 @@ class ConfigManager:
         edge_collection_names: Set[str] = set()
 
         for table_name, table in schema.tables.items():
+            is_join = _is_likely_join_table(table)
             collections[table_name] = CollectionMapping(
                 source_table=table_name,
                 target_collection=table_name,
                 collection_type="document",
-                is_join_table=False,
+                is_join_table=is_join,
             )
 
         for table_name, table in schema.tables.items():

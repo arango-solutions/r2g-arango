@@ -125,15 +125,50 @@ class MappingVisualizer:
             for e in self.config.edges
         ]
 
+    def _build_config_data(self) -> dict:
+        collections = {}
+        for key, cm in self.config.collections.items():
+            table = self.schema.tables.get(cm.source_table)
+            all_fields = [c.name for c in table.columns] if table else []
+            collections[key] = {
+                "sourceTable": cm.source_table,
+                "targetCollection": cm.target_collection,
+                "collectionType": cm.collection_type,
+                "isJoinTable": cm.is_join_table,
+                "fieldMappings": cm.field_mappings,
+                "excludeFields": cm.exclude_fields,
+                "includeFields": cm.include_fields,
+                "allFields": all_fields,
+            }
+        edges = [
+            {
+                "edgeCollection": e.edge_collection,
+                "fromCollection": e.from_collection,
+                "toCollection": e.to_collection,
+                "fromField": e.from_field,
+                "toField": e.to_field,
+            }
+            for e in self.config.edges
+        ]
+        return {
+            "sourceSchema": self.config.source_schema,
+            "collections": collections,
+            "edges": edges,
+            "typeOverrides": self.config.type_overrides,
+            "keySeparator": self.config.key_separator,
+        }
+
     def generate(self, output_path: str) -> str:
         graph_data = self._build_graph_data()
         tables_data = self._build_tables_data()
         edges_data = self._build_edges_data()
+        config_data = self._build_config_data()
         generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
         html = _HTML_TEMPLATE.replace("/* __GRAPH_DATA__ */", json.dumps(graph_data))
         html = html.replace("/* __TABLES_DATA__ */", json.dumps(tables_data))
         html = html.replace("/* __EDGES_DATA__ */", json.dumps(edges_data))
+        html = html.replace("/* __CONFIG_DATA__ */", json.dumps(config_data))
         html = html.replace("/* __GENERATED_AT__ */", generated_at)
         html = html.replace(
             "/* __STATS__ */",
@@ -293,6 +328,96 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .edge-field { color: var(--yellow); }
   .edge-arrow { color: var(--text-muted); }
 
+  /* Editor tab */
+  .editor-wrap { padding: 24px; max-width: 960px; }
+  .editor-toolbar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .editor-toolbar h2 { font-size: 16px; color: var(--accent); }
+  .editor-actions { display: flex; gap: 8px; }
+  .btn {
+    padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 12px; font-weight: 600; font-family: inherit;
+  }
+  .btn-primary { background: var(--accent); color: #000; }
+  .btn-primary:hover { background: #60ccf8; }
+  .btn-secondary { background: var(--surface2); color: var(--text); }
+  .btn-secondary:hover { background: var(--border); }
+  .editor-hint {
+    font-size: 12px; color: var(--text-muted); margin-bottom: 20px;
+  }
+  .editor-section-title {
+    font-size: 14px; color: var(--accent2); margin: 24px 0 12px;
+    border-bottom: 1px solid var(--border); padding-bottom: 6px;
+  }
+  .editor-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 12px; overflow: hidden;
+  }
+  .editor-card-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; background: var(--surface2);
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .editor-card-header label {
+    font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .editor-input {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    padding: 4px 8px; border-radius: 4px; font-size: 13px; font-family: inherit;
+  }
+  .editor-input:focus { outline: none; border-color: var(--accent); }
+  .editor-toggle {
+    display: flex; align-items: center; gap: 6px; cursor: pointer;
+    font-size: 12px; color: var(--text-muted);
+  }
+  .editor-toggle input[type="checkbox"] {
+    accent-color: var(--yellow); width: 16px; height: 16px; cursor: pointer;
+  }
+  .editor-fields {
+    padding: 8px 14px; display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .field-chip {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 10px; border-radius: 4px; font-size: 11px;
+    background: var(--surface2); border: 1px solid var(--border); cursor: pointer;
+    transition: all 0.15s;
+  }
+  .field-chip.excluded {
+    opacity: 0.4; text-decoration: line-through; border-color: var(--red);
+  }
+  .field-chip:hover { border-color: var(--accent); }
+  .field-chip .chip-x {
+    font-size: 10px; color: var(--text-muted); margin-left: 2px;
+  }
+  .editor-edge-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; border-bottom: 1px solid rgba(71,85,105,0.3);
+    font-size: 13px; flex-wrap: wrap;
+  }
+  .editor-edge-row:last-child { border-bottom: none; }
+  .yaml-modal {
+    display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.7); z-index: 200; justify-content: center; align-items: center;
+  }
+  .yaml-modal.visible { display: flex; }
+  .yaml-modal-content {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 24px; width: 90%; max-width: 700px;
+    max-height: 80vh; display: flex; flex-direction: column;
+  }
+  .yaml-modal-content h3 { color: var(--accent); margin-bottom: 12px; }
+  .yaml-modal-content textarea {
+    flex: 1; background: var(--bg); color: var(--green); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px; font-family: inherit; font-size: 12px;
+    resize: none; min-height: 300px;
+  }
+  .yaml-modal-actions {
+    display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;
+  }
+
   /* Legend */
   .legend {
     position: absolute; bottom: 16px; left: 16px; background: var(--surface);
@@ -318,6 +443,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="tab active" data-tab="graph">Graph Schema</div>
   <div class="tab" data-tab="tables">Relational Schema</div>
   <div class="tab" data-tab="edges">Edge Mapping</div>
+  <div class="tab" data-tab="editor">Mapping Editor</div>
 </div>
 
 <div id="graph" class="tab-content active">
@@ -363,10 +489,42 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div id="editor" class="tab-content">
+  <div class="editor-wrap">
+    <div class="editor-toolbar">
+      <h2>Mapping Editor</h2>
+      <div class="editor-actions">
+        <button class="btn btn-secondary" id="btn-reset">Reset Changes</button>
+        <button class="btn btn-primary" id="btn-export">Export YAML</button>
+      </div>
+    </div>
+    <div class="editor-hint">Edit collection names, toggle join table flags, and exclude fields. Then export the updated mapping as YAML.</div>
+
+    <h3 class="editor-section-title">Collections</h3>
+    <div id="editor-collections"></div>
+
+    <h3 class="editor-section-title">Edge Definitions</h3>
+    <div id="editor-edges"></div>
+  </div>
+</div>
+
+<div class="yaml-modal" id="yaml-modal">
+  <div class="yaml-modal-content">
+    <h3>Exported Mapping YAML</h3>
+    <textarea id="yaml-output" readonly></textarea>
+    <div class="yaml-modal-actions">
+      <button class="btn btn-secondary" id="btn-close-yaml">Close</button>
+      <button class="btn btn-primary" id="btn-copy-yaml">Copy to Clipboard</button>
+      <button class="btn btn-primary" id="btn-download-yaml">Download</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const graphData = /* __GRAPH_DATA__ */;
 const tablesData = /* __TABLES_DATA__ */;
 const edgesData = /* __EDGES_DATA__ */;
+const configData = /* __CONFIG_DATA__ */;
 const stats = /* __STATS__ */;
 const generatedAt = "/* __GENERATED_AT__ */";
 
@@ -538,6 +696,215 @@ edgesData.forEach(e => {
     <td>${e.toField}</td>
   </tr>`;
 });
+
+// --- Mapping Editor ---
+const editState = JSON.parse(JSON.stringify(configData));
+const originalState = JSON.parse(JSON.stringify(configData));
+
+function renderEditor() {
+  const collContainer = document.getElementById("editor-collections");
+  collContainer.innerHTML = "";
+  for (const [key, coll] of Object.entries(editState.collections)) {
+    const excluded = new Set(coll.excludeFields || []);
+    let html = `<div class="editor-card" data-key="${key}">
+      <div class="editor-card-header">
+        <label>Source</label>
+        <span style="color:var(--text-muted);font-size:13px">${coll.sourceTable}</span>
+        <label style="margin-left:12px">Target</label>
+        <input class="editor-input coll-name-input" data-key="${key}"
+               value="${coll.targetCollection}" style="width:160px">
+        <label class="editor-toggle" style="margin-left:auto">
+          <input type="checkbox" class="join-toggle" data-key="${key}"
+                 ${coll.isJoinTable ? "checked" : ""}>
+          Join table
+        </label>
+      </div>
+      <div class="editor-fields">`;
+    (coll.allFields || []).forEach(f => {
+      const isExcl = excluded.has(f);
+      html += `<span class="field-chip ${isExcl ? 'excluded' : ''}"
+                     data-key="${key}" data-field="${f}">
+        ${f} <span class="chip-x">${isExcl ? '✕' : '✓'}</span>
+      </span>`;
+    });
+    html += `</div></div>`;
+    collContainer.innerHTML += html;
+  }
+
+  collContainer.querySelectorAll(".coll-name-input").forEach(input => {
+    input.addEventListener("change", e => {
+      editState.collections[e.target.dataset.key].targetCollection = e.target.value;
+    });
+  });
+  collContainer.querySelectorAll(".join-toggle").forEach(cb => {
+    cb.addEventListener("change", e => {
+      editState.collections[e.target.dataset.key].isJoinTable = e.target.checked;
+    });
+  });
+  collContainer.querySelectorAll(".field-chip").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const k = chip.dataset.key, f = chip.dataset.field;
+      const excl = editState.collections[k].excludeFields || [];
+      const idx = excl.indexOf(f);
+      if (idx >= 0) { excl.splice(idx, 1); }
+      else { excl.push(f); }
+      editState.collections[k].excludeFields = excl;
+      renderEditor();
+    });
+  });
+
+  const edgeContainer = document.getElementById("editor-edges");
+  edgeContainer.innerHTML = "";
+  let edgeHtml = '<div class="editor-card">';
+  editState.edges.forEach((e, i) => {
+    edgeHtml += `<div class="editor-edge-row">
+      <label>Name</label>
+      <input class="editor-input edge-name-input" data-idx="${i}"
+             value="${e.edgeCollection}" style="width:220px">
+      <span style="color:var(--text-muted)">
+        <span style="color:var(--accent)">${e.fromCollection}</span>
+        → <span style="color:var(--green)">${e.toCollection}</span>
+      </span>
+      <span style="color:var(--text-muted);font-size:11px;margin-left:auto">
+        ${e.fromField} → ${e.toField}
+      </span>
+    </div>`;
+  });
+  edgeHtml += '</div>';
+  edgeContainer.innerHTML = edgeHtml;
+
+  edgeContainer.querySelectorAll(".edge-name-input").forEach(input => {
+    input.addEventListener("change", e => {
+      editState.edges[parseInt(e.target.dataset.idx)].edgeCollection = e.target.value;
+    });
+  });
+}
+
+function toYaml(obj, indent) {
+  indent = indent || 0;
+  const pad = "  ".repeat(indent);
+  if (obj === null || obj === undefined) return pad + "null\n";
+  if (typeof obj === "boolean") return obj ? "true" : "false";
+  if (typeof obj === "number") return String(obj);
+  if (typeof obj === "string") {
+    if (/[:\[\]{},#&*!|>'"%@`\n]/.test(obj) || obj === "" || obj.trim() !== obj)
+      return JSON.stringify(obj);
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return "[]\n";
+    let s = "\n";
+    obj.forEach(item => {
+      if (typeof item === "object" && item !== null && !Array.isArray(item)) {
+        const keys = Object.keys(item);
+        s += pad + "- " + keys[0] + ": " + toYaml(item[keys[0]], indent + 2) + "\n";
+        keys.slice(1).forEach(k => {
+          s += pad + "  " + k + ": " + toYaml(item[k], indent + 2) + "\n";
+        });
+      } else {
+        s += pad + "- " + toYaml(item, indent + 1) + "\n";
+      }
+    });
+    return s;
+  }
+  if (typeof obj === "object") {
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return "{}\n";
+    let s = "\n";
+    keys.forEach(k => {
+      const v = obj[k];
+      if (v === null || v === undefined) return;
+      if (typeof v === "object" && !Array.isArray(v) && Object.keys(v).length > 0) {
+        s += pad + k + ":" + toYaml(v, indent + 1);
+      } else if (Array.isArray(v) && v.length > 0) {
+        s += pad + k + ":" + toYaml(v, indent + 1);
+      } else if (Array.isArray(v) && v.length === 0) {
+        s += pad + k + ": []\n";
+      } else if (typeof v === "object" && Object.keys(v).length === 0) {
+        s += pad + k + ": {}\n";
+      } else {
+        s += pad + k + ": " + toYaml(v, indent + 1) + "\n";
+      }
+    });
+    return s;
+  }
+  return String(obj);
+}
+
+function exportYaml() {
+  const out = {
+    source_schema: editState.sourceSchema,
+    key_separator: editState.keySeparator,
+    collections: {},
+    edges: [],
+  };
+  if (Object.keys(editState.typeOverrides || {}).length > 0) {
+    out.type_overrides = editState.typeOverrides;
+  }
+  for (const [key, c] of Object.entries(editState.collections)) {
+    const entry = {
+      source_table: c.sourceTable,
+      target_collection: c.targetCollection,
+      collection_type: c.collectionType,
+      is_join_table: c.isJoinTable,
+    };
+    if (Object.keys(c.fieldMappings || {}).length > 0) entry.field_mappings = c.fieldMappings;
+    if ((c.excludeFields || []).length > 0) entry.exclude_fields = c.excludeFields;
+    if (c.includeFields) entry.include_fields = c.includeFields;
+    out.collections[key] = entry;
+  }
+  editState.edges.forEach(e => {
+    out.edges.push({
+      edge_collection: e.edgeCollection,
+      from_collection: e.fromCollection,
+      to_collection: e.toCollection,
+      from_field: e.fromField,
+      to_field: e.toField,
+    });
+  });
+  return toYaml(out, 0).trim() + "\n";
+}
+
+document.getElementById("btn-export").addEventListener("click", () => {
+  const yaml = exportYaml();
+  document.getElementById("yaml-output").value = yaml;
+  document.getElementById("yaml-modal").classList.add("visible");
+});
+
+document.getElementById("btn-close-yaml").addEventListener("click", () => {
+  document.getElementById("yaml-modal").classList.remove("visible");
+});
+
+document.getElementById("btn-copy-yaml").addEventListener("click", () => {
+  const ta = document.getElementById("yaml-output");
+  ta.select();
+  navigator.clipboard.writeText(ta.value).then(() => {
+    const btn = document.getElementById("btn-copy-yaml");
+    btn.textContent = "Copied!";
+    setTimeout(() => btn.textContent = "Copy to Clipboard", 1500);
+  });
+});
+
+document.getElementById("btn-download-yaml").addEventListener("click", () => {
+  const yaml = document.getElementById("yaml-output").value;
+  const blob = new Blob([yaml], { type: "text/yaml" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "mapping.yaml"; a.click();
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById("btn-reset").addEventListener("click", () => {
+  Object.assign(editState, JSON.parse(JSON.stringify(originalState)));
+  renderEditor();
+});
+
+document.getElementById("yaml-modal").addEventListener("click", e => {
+  if (e.target === document.getElementById("yaml-modal"))
+    document.getElementById("yaml-modal").classList.remove("visible");
+});
+
+renderEditor();
 </script>
 </body>
 </html>

@@ -483,5 +483,134 @@ def validate_schema(
         raise typer.Exit(code=1)
 
 
+@app.command("stream")
+def stream(
+    pg_conn: str = typer.Option(..., "--pg-conn", help="PostgreSQL connection string"),
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+    endpoint: str = typer.Option("http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL"),
+    database: str = typer.Option("_system", "--database", "-d", help="ArangoDB database name"),
+    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username"),
+    password: str = typer.Option("", "--password", "-p", help="ArangoDB password"),
+    batch_size: int = typer.Option(10000, "--batch-size", "-b", help="Rows per batch"),
+    on_duplicate: str = typer.Option("replace", "--on-duplicate", help="ArangoDB on-duplicate strategy"),
+    graph_name: Optional[str] = typer.Option(None, "--graph-name", help="Create a named graph after import"),
+) -> None:
+    """Stream data directly from PostgreSQL to ArangoDB (no intermediate files).
+
+    Opens a PostgreSQL connection with REPEATABLE READ isolation for consistent
+    snapshots, reads tables via server-side cursors in configurable batches,
+    transforms rows on the fly, and bulk-imports into ArangoDB via the HTTP API.
+    """
+    from r2g.connectors.arango_writer import ArangoWriter
+    from r2g.streaming.pipeline import StreamingPipeline
+
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+
+        writer = ArangoWriter(
+            endpoint=endpoint,
+            database=database,
+            username=username,
+            password=password,
+        )
+
+        pipeline = StreamingPipeline(
+            pg_conn_string=pg_conn,
+            arango_writer=writer,
+            schema=schema,
+            config=mapping,
+            batch_size=batch_size,
+            on_duplicate=on_duplicate,
+        )
+
+        console.print(
+            f"[green]Streaming from PostgreSQL → ArangoDB[/green]\n"
+            f"  PG: {pg_conn.split('@')[-1] if '@' in pg_conn else pg_conn}\n"
+            f"  ArangoDB: {endpoint}/{database}\n"
+            f"  Batch size: {batch_size:,}"
+        )
+
+        results = pipeline.run(graph_name=graph_name)
+
+        table = RichTable(title="Streaming Import Summary")
+        table.add_column("Collection", style="cyan")
+        table.add_column("Type", style="magenta")
+        table.add_column("Rows", justify="right")
+        for name, count in results["documents"]:
+            table.add_row(name, "document", f"{count:,}")
+        for name, count in results["edges"]:
+            table.add_row(name, "edge", f"{count:,}")
+        console.print(table)
+
+        total_docs = sum(c for _, c in results["documents"])
+        total_edges = sum(c for _, c in results["edges"])
+        console.print(
+            f"[green]Stream complete:[/green] {total_docs:,} documents, "
+            f"{total_edges:,} edges imported."
+        )
+        if graph_name:
+            console.print(f"[green]Named graph '{graph_name}' created.[/green]")
+
+    except Exception as e:
+        log.exception("stream_failed")
+        console.print(f"[red]Streaming pipeline failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("dump-tables")
+def dump_tables(
+    connection_string: str = typer.Option(..., "--conn", "-c", help="PostgreSQL connection string"),
+    output_dir: str = typer.Option("./dumps", "--output-dir", "-o", help="Directory to write CSV files"),
+    schema_filter: Optional[str] = typer.Option("public", "--schema", help="PostgreSQL schema to dump"),
+    tables: Optional[str] = typer.Option(None, "--tables", "-t", help="Comma-separated list of tables (default: all)"),
+) -> None:
+    """Connect to PostgreSQL and dump each table to a CSV file.
+
+    Runs COPY <table> TO STDOUT WITH CSV HEADER for every table in the schema
+    (or a subset if --tables is specified). Output files are named <table>.csv.
+    """
+    import psycopg
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    try:
+        connector = PostgresConnector(connection_string)
+        schema = connector.get_schema()
+        table_names = sorted(schema.tables.keys())
+
+        if tables:
+            requested = {t.strip() for t in tables.split(",")}
+            missing = requested - set(table_names)
+            if missing:
+                console.print(f"[yellow]Warning: tables not found in schema: {', '.join(sorted(missing))}[/yellow]")
+            table_names = [t for t in table_names if t in requested]
+
+        if not table_names:
+            console.print("[yellow]No tables to dump.[/yellow]")
+            return
+
+        console.print(f"[green]Dumping {len(table_names)} tables from PostgreSQL to {output_dir}/[/green]")
+
+        with psycopg.connect(connection_string) as conn:
+            for tbl in table_names:
+                csv_path = out / f"{tbl}.csv"
+                copy_sql = f"COPY {schema_filter}.{tbl} TO STDOUT WITH CSV HEADER"
+                with csv_path.open("wb") as f:
+                    with conn.cursor().copy(copy_sql) as copy:
+                        for chunk in copy:
+                            f.write(chunk)
+                row_count = sum(1 for _ in csv_path.open("r")) - 1
+                console.print(f"  [cyan]{tbl}[/cyan] → {csv_path} ({row_count} rows)")
+
+        console.print(f"[green]Done. {len(table_names)} CSV files written to {output_dir}/[/green]")
+    except Exception as e:
+        log.exception("dump_tables_failed")
+        console.print(f"[red]Failed to dump tables:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
