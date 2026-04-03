@@ -11,6 +11,7 @@ from rich.table import Table as RichTable
 from r2g.config import ConfigManager
 from r2g.connectors.postgres import PostgresConnector
 from r2g.generators.arangoimport import ArangoImportGenerator, CsvImportGenerator
+from r2g.generators.visualizer import MappingVisualizer
 from r2g.input.dump_reader import DumpReader
 from r2g.log import get_logger, setup_logging
 from r2g.transformers.edge_transformer import EdgeTransformer
@@ -49,6 +50,34 @@ def generate_config(
     except Exception as e:
         log.exception("generate_config_failed", output=output)
         console.print(f"[red]Failed to generate config:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("visualize-mapping")
+def visualize_mapping(
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+    output: str = typer.Option("mapping_viz.html", "--output", "-o", help="Output HTML file"),
+    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open in default browser"),
+) -> None:
+    """Generate an interactive HTML visualization of the PG-to-graph mapping."""
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+        viz = MappingVisualizer(schema, mapping)
+        viz.generate(output)
+        console.print(f"[green]Wrote mapping visualization:[/green] [bold]{output}[/bold]")
+        console.print(
+            f"  [dim]{len(schema.tables)} tables → "
+            f"{len(mapping.collections)} collections, "
+            f"{len(mapping.edges)} edges[/dim]"
+        )
+        if open_browser:
+            import webbrowser
+            webbrowser.open(f"file://{Path(output).resolve()}")
+    except Exception as e:
+        log.exception("visualize_mapping_failed", output=output)
+        console.print(f"[red]Failed to generate visualization:[/red] {e}")
         raise typer.Exit(code=1)
 
 
