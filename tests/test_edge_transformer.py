@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from r2g.transformers.edge_transformer import EdgeTransformer
 from r2g.types import (
     CollectionMapping,
     Column,
@@ -10,7 +11,6 @@ from r2g.types import (
     Schema,
     Table,
 )
-from r2g.transformers.edge_transformer import EdgeTransformer
 
 
 def _orders_table():
@@ -160,3 +160,61 @@ class TestForJoinTable:
 
         with pytest.raises(ValueError, match="exactly 2 foreign keys"):
             EdgeTransformer.for_join_table(bad_table, mapping, schema)
+
+
+class TestCompositeFKEdge:
+    def _shipments_table(self):
+        return Table(
+            name="shipments",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="order_id", data_type="integer"),
+                Column(name="product_id", data_type="integer"),
+                Column(name="warehouse", data_type="text"),
+            ],
+            primary_key=["id"],
+            foreign_keys=[
+                ForeignKey(
+                    columns=["order_id", "product_id"],
+                    foreign_table="order_items",
+                    foreign_columns=["order_id", "product_id"],
+                    constraint_name="fk_ship_items",
+                ),
+            ],
+        )
+
+    def _composite_edge_def(self):
+        return EdgeDefinition(
+            edge_collection="shipments_to_order_items",
+            from_collection="shipments",
+            to_collection="order_items",
+            from_fields=["order_id", "product_id"],
+            to_fields=["order_id", "product_id"],
+        )
+
+    def test_composite_fk_edge_to_key(self):
+        transformer = EdgeTransformer(self._composite_edge_def(), self._shipments_table())
+        row = {"id": 1, "order_id": 3, "product_id": 5, "warehouse": "West"}
+        result = transformer.transform_row(row)
+        assert result is not None
+        assert result["_to"] == "order_items/3_5"
+        assert result["_from"] == "shipments/1"
+        assert result["_key"] == "1_3_5"
+
+    def test_composite_null_first_fk_returns_none(self):
+        transformer = EdgeTransformer(self._composite_edge_def(), self._shipments_table())
+        row = {"id": 1, "order_id": None, "product_id": 5, "warehouse": "West"}
+        result = transformer.transform_row(row)
+        assert result is None
+
+    def test_composite_null_second_fk_returns_none(self):
+        transformer = EdgeTransformer(self._composite_edge_def(), self._shipments_table())
+        row = {"id": 1, "order_id": 3, "product_id": None, "warehouse": "West"}
+        result = transformer.transform_row(row)
+        assert result is None
+
+    def test_composite_missing_fk_field_returns_none(self):
+        transformer = EdgeTransformer(self._composite_edge_def(), self._shipments_table())
+        row = {"id": 1, "order_id": 3, "warehouse": "West"}
+        result = transformer.transform_row(row)
+        assert result is None

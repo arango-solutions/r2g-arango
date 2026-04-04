@@ -36,7 +36,7 @@ flowchart LR
 ## Prerequisites
 
 - **Python 3.10+**
-- **PostgreSQL** with data you want to migrate (any version with `information_schema` support)
+- **PostgreSQL** with data you want to migrate (any version with `pg_catalog` support)
 - **ArangoDB** instance (tested with 3.11+) with `arangoimport` on your PATH
 - **psql** or another tool to export CSV dumps from PostgreSQL
 
@@ -52,7 +52,13 @@ flowchart LR
 - **Structured logging** -- human-readable dev output or JSON for production via structlog
 - **CSV-direct import** -- generate `arangoimport --type csv` scripts that import PG CSV dumps directly with `--translate` for key remapping, `--datatype` for type coercion, and collection prefixes for edge `_from`/`_to` construction; no intermediate JSONL needed
 - **Mapping visualizer** -- interactive HTML visualization (D3.js force-directed graph) of the relational-to-graph mapping with four views: graph schema, relational schema cards, edge mapping detail, and a mapping editor with YAML export
-- **Direct PG streaming** -- stream data directly from PostgreSQL to ArangoDB via the HTTP API with server-side cursors, configurable batch sizes, and REPEATABLE READ snapshot isolation -- no intermediate files
+- **Direct PG streaming** -- stream data directly from PostgreSQL to ArangoDB via the HTTP API with server-side cursors, configurable batch sizes, and REPEATABLE READ snapshot isolation -- no intermediate files; supports parallel streaming with `--workers`
+- **Dry-run mode** -- `stream --dry-run` validates connectivity to both PostgreSQL and ArangoDB, reads and transforms all data, but skips writes and graph creation -- reports row counts and sample documents per collection for pre-flight validation
+- **Progress bars and throughput** -- Rich progress bars during streaming with real-time row counts; elapsed time and rows/second throughput displayed on completion
+- **Retry with backoff** -- transient ArangoDB write failures (connection errors, server overload) are retried with exponential backoff
+- **Collection management** -- `--drop-collections` flag drops and recreates target collections before import for idempotent re-runs
+- **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
+- **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
 - **Automated table dumping** -- `dump-tables` command connects to PostgreSQL and exports each table as a CSV file in one pass
 - **Join table auto-detection** -- `generate-config` heuristically identifies junction tables (exactly 2 FKs, no non-structural data columns) and flags them as join tables
 
@@ -60,7 +66,7 @@ flowchart LR
 
 ```
 src/r2g/
-├── main.py                     # Typer CLI (12 commands)
+├── main.py                     # Typer CLI (13 commands)
 ├── types.py                    # Pydantic models (Schema, Table, MappingConfig, EdgeDefinition, ...)
 ├── config.py                   # ConfigManager, YAML load/save, PG→JSON type map, join detection
 ├── log.py                      # structlog setup
@@ -90,6 +96,12 @@ With test dependencies:
 
 ```bash
 pip install -e ".[test]"
+```
+
+With test and dev (lint) dependencies:
+
+```bash
+pip install -e ".[test,dev]"
 ```
 
 ## Quick start
@@ -214,7 +226,18 @@ r2g stream \
   --graph-name my_graph
 ```
 
-This uses server-side cursors with REPEATABLE READ isolation for consistent snapshots and bulk-imports via the ArangoDB HTTP API.
+This uses server-side cursors with REPEATABLE READ isolation for consistent snapshots and bulk-imports via the ArangoDB HTTP API. Add `--workers 4` for parallel streaming with per-worker connections.
+
+Add `--dry-run` to preview row counts and sample documents without writing to ArangoDB:
+
+```bash
+r2g stream --dry-run \
+  --pg-conn "postgresql://user:pass@localhost/mydb" \
+  --schema schema.json \
+  --config mapping.yaml \
+  --endpoint http://localhost:8529 \
+  --database mydb
+```
 
 ## CLI reference
 
@@ -231,7 +254,8 @@ This uses server-side cursors with REPEATABLE READ isolation for consistent snap
 | `generate-csv-import` | Generate arangoimport script for direct CSV import (no JSONL intermediate) |
 | `visualize-mapping` | Generate interactive HTML visualization of the PG-to-graph mapping |
 | `dump-tables` | Connect to PostgreSQL and dump each table to a CSV file |
-| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files) |
+| `validate-config` | Validate mapping config against schema (checks table references, column names, edge definitions) |
+| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, and `--workers` for parallel streaming |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
 
@@ -250,11 +274,9 @@ Key sections:
 
 This is an experimental reference implementation. The following constraints apply:
 
-- **PostgreSQL only** -- the schema reader uses `information_schema` queries specific to PostgreSQL. No MySQL, SQLite, or other source support.
-- **`public` schema only** -- only tables in the `public` schema are read. Multi-schema databases require manual schema file editing.
+- **PostgreSQL only** -- the schema reader uses `pg_catalog` queries specific to PostgreSQL. No MySQL, SQLite, or other source support.
 - **No data validation** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. The tool does not verify referential integrity.
 - **No incremental/delta support** -- every run is a full re-export. There is no change tracking, CDC, or diff-based processing yet (see Phases 2-4 in the PRD).
-- **Composite foreign keys untested** -- composite PKs work for `_key` generation, but composite FKs (multi-column foreign keys) have not been tested.
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
 - **ArangoDB write path** -- the `stream` command connects directly to ArangoDB via python-arango, but the file-based paths (`generate-csv-import`, `generate-import`) still require `arangoimport` installed separately.
 - **Credential handling** -- connection strings and passwords appear in CLI arguments and generated scripts. The import script uses environment variable overrides, but the tool has no secrets management.
@@ -265,7 +287,19 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-209 tests covering types, config, dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer, and streaming pipeline.
+251 tests covering types (including composite FK serialization), config validation, dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic), streaming pipeline (sequential and parallel), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+
+To run unit tests only (no Docker required):
+
+```bash
+pytest tests/ -m "not integration"
+```
+
+To run all tests including integration (requires Docker PG + ArangoDB):
+
+```bash
+pytest tests/ -v
+```
 
 ## Roadmap
 

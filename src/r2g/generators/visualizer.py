@@ -9,7 +9,6 @@ Renders:
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,8 +78,8 @@ class MappingVisualizer:
                 "source": edge.from_collection,
                 "target": edge.to_collection,
                 "edgeCollection": edge.edge_collection,
-                "fromField": edge.from_field,
-                "toField": edge.to_field,
+                "fromField": ", ".join(edge.from_fields),
+                "toField": ", ".join(edge.to_fields),
             })
 
         return {"nodes": nodes, "links": links}
@@ -88,9 +87,10 @@ class MappingVisualizer:
     def _build_tables_data(self) -> list[dict]:
         tables = []
         for table_name, table in self.schema.tables.items():
-            fk_targets = {}
+            fk_targets: dict[str, str] = {}
             for fk in table.foreign_keys:
-                fk_targets[fk.column] = fk.foreign_table
+                for col in fk.columns:
+                    fk_targets[col] = fk.foreign_table
 
             cols = []
             for col in table.columns:
@@ -119,8 +119,8 @@ class MappingVisualizer:
                 "edgeCollection": e.edge_collection,
                 "fromCollection": e.from_collection,
                 "toCollection": e.to_collection,
-                "fromField": e.from_field,
-                "toField": e.to_field,
+                "fromField": ", ".join(e.from_fields),
+                "toField": ", ".join(e.to_fields),
             }
             for e in self.config.edges
         ]
@@ -145,8 +145,8 @@ class MappingVisualizer:
                 "edgeCollection": e.edge_collection,
                 "fromCollection": e.from_collection,
                 "toCollection": e.to_collection,
-                "fromField": e.from_field,
-                "toField": e.to_field,
+                "fromField": ", ".join(e.from_fields),
+                "toField": ", ".join(e.to_fields),
             }
             for e in self.config.edges
         ]

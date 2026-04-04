@@ -121,6 +121,102 @@ class TestCreateNamedGraph:
         mock_db.create_graph.assert_called_once()
 
 
+class TestDropCollection:
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_drops_existing(self, mock_client_cls, writer):
+        mock_db = MagicMock()
+        mock_db.has_collection.return_value = True
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        writer.connect()
+        assert writer.drop_collection("users") is True
+        mock_db.delete_collection.assert_called_once_with("users")
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_noop_when_missing(self, mock_client_cls, writer):
+        mock_db = MagicMock()
+        mock_db.has_collection.return_value = False
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        writer.connect()
+        assert writer.drop_collection("users") is False
+        mock_db.delete_collection.assert_not_called()
+
+
+class TestRetryLogic:
+    @patch("r2g.connectors.arango_writer.time.sleep")
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_retries_on_connection_error(self, mock_client_cls, mock_sleep):
+        mock_db = MagicMock()
+        mock_coll = MagicMock()
+        mock_coll.import_bulk.side_effect = [
+            ConnectionError("timeout"),
+            {"created": 2, "errors": 0, "empty": 0, "updated": 0, "ignored": 0},
+        ]
+        mock_db.collection.return_value = mock_coll
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        w = ArangoWriter(max_retries=3)
+        w.connect()
+        result = w.import_batch("test", [{"_key": "1"}])
+
+        assert result["created"] == 2
+        assert mock_coll.import_bulk.call_count == 2
+        mock_sleep.assert_called_once_with(1)
+
+    @patch("r2g.connectors.arango_writer.time.sleep")
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_raises_after_max_retries(self, mock_client_cls, mock_sleep):
+        mock_db = MagicMock()
+        mock_coll = MagicMock()
+        mock_coll.import_bulk.side_effect = ConnectionError("down")
+        mock_db.collection.return_value = mock_coll
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        w = ArangoWriter(max_retries=2)
+        w.connect()
+        with pytest.raises(ConnectionError):
+            w.import_batch("test", [{"_key": "1"}])
+
+        assert mock_coll.import_bulk.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("r2g.connectors.arango_writer.time.sleep")
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_exponential_backoff(self, mock_client_cls, mock_sleep):
+        mock_db = MagicMock()
+        mock_coll = MagicMock()
+        mock_coll.import_bulk.side_effect = [
+            ConnectionError("1"),
+            ConnectionError("2"),
+            {"created": 1, "errors": 0, "empty": 0, "updated": 0, "ignored": 0},
+        ]
+        mock_db.collection.return_value = mock_coll
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        w = ArangoWriter(max_retries=3)
+        w.connect()
+        w.import_batch("test", [{"_key": "1"}])
+
+        assert mock_sleep.call_args_list[0][0][0] == 1  # 2^0
+        assert mock_sleep.call_args_list[1][0][0] == 2  # 2^1
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_no_retry_on_non_retryable_error(self, mock_client_cls):
+        mock_db = MagicMock()
+        mock_coll = MagicMock()
+        mock_coll.import_bulk.side_effect = ValueError("bad data")
+        mock_db.collection.return_value = mock_coll
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        w = ArangoWriter(max_retries=3)
+        w.connect()
+        with pytest.raises(ValueError, match="bad data"):
+            w.import_batch("test", [{"_key": "1"}])
+
+        assert mock_coll.import_bulk.call_count == 1
+
+
 class TestClose:
     @patch("r2g.connectors.arango_writer.ArangoClient")
     def test_closes_client(self, mock_client_cls, writer):

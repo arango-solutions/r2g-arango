@@ -374,13 +374,16 @@ class CsvImportGenerator:
         edge_collection: str,
         from_collection: str,
         to_collection: str,
-        from_field: str,
+        from_fields: list[str],
     ) -> str:
         """Build arangoimport command for an edge collection from a CSV dump.
 
-        Uses the source table's PK as _from and the FK column as _to,
+        Uses the source table's PK as _from and the FK column(s) as _to,
         with collection prefixes. All non-structural columns are removed
         so the edge is a clean relationship.
+
+        For composite FK edges, ``--merge-attributes`` is used to construct
+        ``_to`` from multiple columns.
         """
         table = self.schema.tables.get(table_name)
         pk_cols = table.primary_key if table else []
@@ -397,7 +400,7 @@ class CsvImportGenerator:
             "--on-duplicate", shlex.quote(self.on_duplicate),
         ]
 
-        # PK → _from, FK → _to: force string so _id references resolve correctly
+        # PK → _from: force string so _id references resolve correctly
         if len(pk_cols) == 1:
             parts.extend(["--translate", shlex.quote(f"{pk_cols[0]}=_from")])
             parts.extend(["--datatype", shlex.quote(f"{pk_cols[0]}=string")])
@@ -409,14 +412,25 @@ class CsvImportGenerator:
             for pk in pk_cols:
                 parts.extend(["--datatype", shlex.quote(f"{pk}=string")])
 
-        parts.extend(["--translate", shlex.quote(f"{from_field}=_to")])
-        parts.extend(["--datatype", shlex.quote(f"{from_field}=string")])
+        # FK → _to: single column uses --translate, composite uses --merge-attributes
+        if len(from_fields) == 1:
+            parts.extend(["--translate", shlex.quote(f"{from_fields[0]}=_to")])
+            parts.extend(["--datatype", shlex.quote(f"{from_fields[0]}=string")])
+        else:
+            merge_expr = "[" + "]_[".join(from_fields) + "]"
+            parts.extend([
+                "--merge-attributes", shlex.quote(f"_to={merge_expr}"),
+            ])
+            for ff in from_fields:
+                parts.extend(["--datatype", shlex.quote(f"{ff}=string")])
+
         parts.extend([
             "--from-collection-prefix", shlex.quote(f"{from_collection}/"),
             "--to-collection-prefix", shlex.quote(f"{to_collection}/"),
         ])
 
-        keep = {"_from", "_to", from_field}
+        keep: set[str] = {"_from", "_to"}
+        keep.update(from_fields)
         if len(pk_cols) == 1:
             keep.add(pk_cols[0])
         for col_name in all_cols:
@@ -493,9 +507,8 @@ class CsvImportGenerator:
         for cm in self.config.collections.values():
             if cm.collection_type != "document":
                 continue
-            lines.append(
-                "echo " + shlex.quote(f"Importing document collection {cm.target_collection} from {cm.source_table}.csv...")
-            )
+            msg = f"Importing document collection {cm.target_collection} from {cm.source_table}.csv..."
+            lines.append("echo " + shlex.quote(msg))
             lines.append(self._build_doc_command(cm.source_table, cm.target_collection))
             lines.append("")
 
@@ -515,7 +528,7 @@ class CsvImportGenerator:
                 edge_collection=edge.edge_collection,
                 from_collection=edge.from_collection,
                 to_collection=edge.to_collection,
-                from_field=edge.from_field,
+                from_fields=edge.from_fields,
             ))
             lines.append("")
 

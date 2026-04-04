@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from r2g.config import ConfigManager, DEFAULT_TYPE_MAP, _is_likely_join_table, pg_type_to_json_type
-from r2g.types import Column, ForeignKey, MappingConfig, Schema, Table
+from r2g.config import ConfigManager, _is_likely_join_table, pg_type_to_json_type, validate_config
+from r2g.types import CollectionMapping, Column, EdgeDefinition, ForeignKey, MappingConfig, Schema, Table
 
 
 class TestPgTypeToJsonType:
@@ -211,3 +211,147 @@ class TestJoinTableAutoDetection:
         assert config.collections["post_tags"].is_join_table is True
         assert config.collections["posts"].is_join_table is False
         assert config.collections["tags"].is_join_table is False
+
+
+class TestValidateConfig:
+    @pytest.fixture
+    def schema(self):
+        return Schema(tables={
+            "users": Table(
+                name="users",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(name="name", data_type="text"),
+                ],
+                primary_key=["id"],
+                foreign_keys=[],
+            ),
+            "orders": Table(
+                name="orders",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(name="user_id", data_type="integer"),
+                ],
+                primary_key=["id"],
+                foreign_keys=[
+                    ForeignKey(column="user_id", foreign_table="users", foreign_column="id"),
+                ],
+            ),
+        })
+
+    def test_valid_config_has_no_issues(self, schema):
+        config = ConfigManager.generate_default_config(schema)
+        assert validate_config(schema, config) == []
+
+    def test_missing_source_table(self, schema):
+        config = MappingConfig(
+            collections={
+                "ghosts": CollectionMapping(source_table="ghosts", target_collection="ghosts"),
+            },
+        )
+        issues = validate_config(schema, config)
+        assert len(issues) == 1
+        assert "ghosts" in issues[0]
+        assert "not found" in issues[0]
+
+    def test_bad_exclude_field(self, schema):
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    exclude_fields=["nonexistent"],
+                ),
+            },
+        )
+        issues = validate_config(schema, config)
+        assert any("nonexistent" in i for i in issues)
+
+    def test_bad_include_field(self, schema):
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    include_fields=["bogus"],
+                ),
+            },
+        )
+        issues = validate_config(schema, config)
+        assert any("bogus" in i for i in issues)
+
+    def test_bad_field_mapping_source(self, schema):
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    field_mappings={"nope": "yep"},
+                ),
+            },
+        )
+        issues = validate_config(schema, config)
+        assert any("nope" in i for i in issues)
+
+    def test_edge_bad_from_collection(self, schema):
+        config = MappingConfig(
+            edges=[
+                EdgeDefinition(
+                    edge_collection="bad_edge",
+                    from_collection="phantoms",
+                    to_collection="users",
+                    from_field="x",
+                    to_field="id",
+                ),
+            ],
+        )
+        issues = validate_config(schema, config)
+        assert any("phantoms" in i for i in issues)
+
+    def test_edge_bad_from_field(self, schema):
+        config = MappingConfig(
+            edges=[
+                EdgeDefinition(
+                    edge_collection="bad_edge",
+                    from_collection="orders",
+                    to_collection="users",
+                    from_field="nonexistent_col",
+                    to_field="id",
+                ),
+            ],
+        )
+        issues = validate_config(schema, config)
+        assert any("nonexistent_col" in i for i in issues)
+
+    def test_edge_bad_to_field(self, schema):
+        config = MappingConfig(
+            edges=[
+                EdgeDefinition(
+                    edge_collection="bad_edge",
+                    from_collection="orders",
+                    to_collection="users",
+                    from_field="user_id",
+                    to_field="phantom_col",
+                ),
+            ],
+        )
+        issues = validate_config(schema, config)
+        assert any("phantom_col" in i for i in issues)
+
+    def test_multiple_issues_reported(self, schema):
+        config = MappingConfig(
+            collections={
+                "missing": CollectionMapping(source_table="missing", target_collection="m"),
+            },
+            edges=[
+                EdgeDefinition(
+                    edge_collection="e",
+                    from_collection="also_missing",
+                    to_collection="users",
+                    from_field="x",
+                    to_field="id",
+                ),
+            ],
+        )
+        issues = validate_config(schema, config)
+        assert len(issues) >= 2

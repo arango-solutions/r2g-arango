@@ -5,8 +5,7 @@ from typing import Any, Dict, Set
 
 import yaml
 
-from r2g.types import EdgeDefinition, CollectionMapping, MappingConfig, Schema, Table
-
+from r2g.types import CollectionMapping, EdgeDefinition, MappingConfig, Schema, Table
 
 DEFAULT_TYPE_MAP: Dict[str, str] = {
     "integer": "integer",
@@ -50,7 +49,9 @@ def _is_likely_join_table(table: Table) -> bool:
     (or only typical junction metadata like quantity, created_at, etc.)."""
     if len(table.foreign_keys) != 2:
         return False
-    fk_cols = {fk.column for fk in table.foreign_keys}
+    fk_cols: set[str] = set()
+    for fk in table.foreign_keys:
+        fk_cols.update(fk.columns)
     pk_cols = set(table.primary_key)
     structural = fk_cols | pk_cols
     data_cols = [c for c in table.columns if c.name not in structural]
@@ -59,6 +60,78 @@ def _is_likely_join_table(table: Table) -> bool:
     _JUNCTION_META = {"quantity", "qty", "count", "sort_order", "position", "rank",
                       "created_at", "updated_at", "created", "updated"}
     return all(c.name.lower() in _JUNCTION_META for c in data_cols)
+
+
+def validate_config(schema: Schema, config: MappingConfig) -> list[str]:
+    """Validate a mapping config against a schema, returning a list of issues.
+
+    Checks that every collection references a known table, every edge
+    references valid collections and columns, and field lists only name
+    columns that exist in the source table.
+    """
+    issues: list[str] = []
+    col_names_by_table: dict[str, set[str]] = {
+        name: {c.name for c in table.columns} for name, table in schema.tables.items()
+    }
+    collection_tables = set()
+
+    for key, cm in config.collections.items():
+        src = cm.source_table
+        if src not in schema.tables:
+            issues.append(f"Collection '{key}': source_table '{src}' not found in schema")
+            continue
+        collection_tables.add(src)
+        cols = col_names_by_table[src]
+        for fm_src in cm.field_mappings:
+            if fm_src not in cols:
+                issues.append(
+                    f"Collection '{key}': field_mapping source '{fm_src}' "
+                    f"is not a column in table '{src}'"
+                )
+        for ef in cm.exclude_fields:
+            if ef not in cols:
+                issues.append(
+                    f"Collection '{key}': exclude_field '{ef}' "
+                    f"is not a column in table '{src}'"
+                )
+        if cm.include_fields is not None:
+            for incl in cm.include_fields:
+                if incl not in cols:
+                    issues.append(
+                        f"Collection '{key}': include_field '{incl}' "
+                        f"is not a column in table '{src}'"
+                    )
+
+    for idx, edge in enumerate(config.edges):
+        label = edge.edge_collection or f"edges[{idx}]"
+        if edge.from_collection not in schema.tables:
+            issues.append(
+                f"Edge '{label}': from_collection '{edge.from_collection}' "
+                f"not found in schema"
+            )
+        else:
+            src_cols = col_names_by_table[edge.from_collection]
+            for ff in edge.from_fields:
+                if ff not in src_cols:
+                    issues.append(
+                        f"Edge '{label}': from_field '{ff}' "
+                        f"is not a column in table '{edge.from_collection}'"
+                    )
+        if edge.to_collection not in schema.tables:
+            issues.append(
+                f"Edge '{label}': to_collection '{edge.to_collection}' "
+                f"not found in schema"
+            )
+        else:
+            tgt_cols = col_names_by_table[edge.to_collection]
+            for tf in edge.to_fields:
+                if tf not in tgt_cols:
+                    issues.append(
+                        f"Edge '{label}': to_field '{tf}' "
+                        f"is not a column in table '{edge.to_collection}'"
+                    )
+
+    return issues
 
 
 class ConfigManager:
@@ -84,15 +157,16 @@ class ConfigManager:
                 base = f"{table_name}_to_{fk.foreign_table}"
                 edge_name = base
                 if edge_name in edge_collection_names:
-                    edge_name = f"{base}_{fk.column}"
+                    suffix = "_".join(fk.columns)
+                    edge_name = f"{base}_{suffix}"
                 edge_collection_names.add(edge_name)
                 edges.append(
                     EdgeDefinition(
                         edge_collection=edge_name,
                         from_collection=table_name,
                         to_collection=fk.foreign_table,
-                        from_field=fk.column,
-                        to_field=fk.foreign_column,
+                        from_fields=fk.columns,
+                        to_fields=fk.foreign_columns,
                     )
                 )
 

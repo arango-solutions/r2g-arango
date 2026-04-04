@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import stat
 
 import pytest
@@ -207,40 +206,49 @@ class TestBuildEdgeCommand:
     def _normalize(self, cmd: str) -> str:
         return cmd.replace(" \\\n    ", " ")
 
+    def _edge_cmd(self, generator) -> str:
+        return self._normalize(
+            generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", ["customer_id"])
+        )
+
     def test_uses_csv_type(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
-        assert "--type csv" in cmd
+        assert "--type csv" in self._edge_cmd(generator)
 
     def test_translates_pk_to_from(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
-        assert "id=_from" in cmd
+        assert "id=_from" in self._edge_cmd(generator)
 
     def test_translates_fk_to_to(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
-        assert "customer_id=_to" in cmd
+        assert "customer_id=_to" in self._edge_cmd(generator)
 
     def test_from_collection_prefix(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
+        cmd = self._edge_cmd(generator)
         assert "--from-collection-prefix" in cmd
         assert "orders/" in cmd
 
     def test_to_collection_prefix(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
+        cmd = self._edge_cmd(generator)
         assert "--to-collection-prefix" in cmd
         assert "customers/" in cmd
 
     def test_removes_non_structural_columns(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
+        cmd = self._edge_cmd(generator)
         assert "--remove-attribute" in cmd
         assert "notes" in cmd
 
     def test_creates_edge_collection_type(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
-        assert "--create-collection-type edge" in cmd
+        assert "--create-collection-type edge" in self._edge_cmd(generator)
 
     def test_forces_fk_to_string(self, generator):
-        cmd = self._normalize(generator._build_edge_command("orders", "orders_to_customers", "orders", "customers", "customer_id"))
+        assert "customer_id=string" in self._edge_cmd(generator)
+
+    def test_composite_fk_uses_merge_attributes(self, generator):
+        cmd = self._normalize(
+            generator._build_edge_command("orders", "test_edge", "orders", "targets", ["customer_id", "referrer_id"])
+        )
+        assert "--merge-attributes" in cmd
+        assert "[customer_id]_[referrer_id]" in cmd
         assert "customer_id=string" in cmd
+        assert "referrer_id=string" in cmd
 
 
 class TestBuildGraphCreationArangosh:
@@ -338,7 +346,8 @@ class TestGenerateCsvScript:
         path = str(tmp_path / "import.sh")
         content = generator.generate_csv_script(path)
         assert "--type csv" in content
-        assert "jsonl" not in content.lower().replace("# no intermediate jsonl", "").replace("no jsonl transformation", "")
+        cleaned = content.lower().replace("# no intermediate jsonl", "").replace("no jsonl transformation", "")
+        assert "jsonl" not in cleaned
 
 
 class TestFromSampleSchema:

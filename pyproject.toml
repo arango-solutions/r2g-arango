@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-cov>=5.0"]
+dev = ["ruff>=0.4"]
 
 [project.scripts]
 r2g = "r2g.main:app"
@@ -23,3 +24,19 @@ r2g = "r2g.main:app"
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires live PostgreSQL and ArangoDB (deselect with -m 'not integration')",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/r2g/generators/visualizer.py" = ["E501"]

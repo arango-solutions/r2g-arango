@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from r2g.types import CollectionMapping, Column, Table
 from r2g.transformers.node_transformer import NodeTransformer
+from r2g.types import CollectionMapping, Column, Table
 
 
 def _simple_table(columns=None, primary_key=None):

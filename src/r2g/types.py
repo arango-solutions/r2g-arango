@@ -1,12 +1,55 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, model_serializer, model_validator
 
 
 class ForeignKey(BaseModel):
-    column: str
+    """A foreign key constraint, supporting both single- and multi-column FKs.
+
+    Accepts legacy ``column``/``foreign_column`` (str) or composite
+    ``columns``/``foreign_columns`` (list[str]).
+    """
+    columns: List[str]
     foreign_table: str
-    foreign_column: str
+    foreign_columns: List[str]
     constraint_name: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_singular(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "column" in data and "columns" not in data:
+                data["columns"] = [data.pop("column")]
+            if "foreign_column" in data and "foreign_columns" not in data:
+                data["foreign_columns"] = [data.pop("foreign_column")]
+        return data
+
+    @property
+    def column(self) -> str:
+        return self.columns[0]
+
+    @property
+    def foreign_column(self) -> str:
+        return self.foreign_columns[0]
+
+    @property
+    def is_composite(self) -> bool:
+        return len(self.columns) > 1
+
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"foreign_table": self.foreign_table}
+        if len(self.columns) == 1:
+            d["column"] = self.columns[0]
+            d["foreign_column"] = self.foreign_columns[0]
+        else:
+            d["columns"] = self.columns
+            d["foreign_columns"] = self.foreign_columns
+        if self.constraint_name is not None:
+            d["constraint_name"] = self.constraint_name
+        return d
 
 
 class Column(BaseModel):
@@ -26,23 +69,64 @@ class Table(BaseModel):
 class Schema(BaseModel):
     tables: Dict[str, Table] = {}
 
-    def save_to_file(self, path: str):
-        with open(path, 'w') as f:
+    def save_to_file(self, path: str) -> None:
+        with open(path, "w") as f:
             f.write(self.model_dump_json(indent=2))
 
     @classmethod
-    def load_from_file(cls, path: str) -> "Schema":
-        with open(path, 'r') as f:
+    def load_from_file(cls, path: str) -> Schema:
+        with open(path, "r") as f:
             return cls.model_validate_json(f.read())
 
 
 class EdgeDefinition(BaseModel):
-    """Defines how a foreign key becomes an edge collection."""
-    edge_collection: str  # name of the ArangoDB edge collection
-    from_collection: str  # source vertex collection
-    to_collection: str    # target vertex collection
-    from_field: str       # FK column in the source table
-    to_field: str         # PK column in the target table
+    """Defines how a foreign key becomes an edge collection.
+
+    Supports single-column (``from_field``/``to_field``) and composite
+    (``from_fields``/``to_fields``) FK relationships.
+    """
+    edge_collection: str
+    from_collection: str
+    to_collection: str
+    from_fields: List[str]
+    to_fields: List[str]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_singular(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "from_field" in data and "from_fields" not in data:
+                data["from_fields"] = [data.pop("from_field")]
+            if "to_field" in data and "to_fields" not in data:
+                data["to_fields"] = [data.pop("to_field")]
+        return data
+
+    @property
+    def from_field(self) -> str:
+        return self.from_fields[0]
+
+    @property
+    def to_field(self) -> str:
+        return self.to_fields[0]
+
+    @property
+    def is_composite(self) -> bool:
+        return len(self.from_fields) > 1
+
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "edge_collection": self.edge_collection,
+            "from_collection": self.from_collection,
+            "to_collection": self.to_collection,
+        }
+        if len(self.from_fields) == 1:
+            d["from_field"] = self.from_fields[0]
+            d["to_field"] = self.to_fields[0]
+        else:
+            d["from_fields"] = self.from_fields
+            d["to_fields"] = self.to_fields
+        return d
 
 
 class CollectionMapping(BaseModel):

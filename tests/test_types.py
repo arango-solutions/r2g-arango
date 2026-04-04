@@ -4,8 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from r2g.types import (
-    Column,
     CollectionMapping,
+    Column,
     EdgeDefinition,
     ForeignKey,
     MappingConfig,
@@ -140,3 +140,128 @@ class TestDefaultValues:
         assert cm.field_mappings == {}
         assert cm.exclude_fields == []
         assert cm.include_fields is None
+
+
+class TestForeignKeyComposite:
+    def test_singular_form_accepted(self):
+        fk = ForeignKey(column="user_id", foreign_table="users", foreign_column="id")
+        assert fk.columns == ["user_id"]
+        assert fk.foreign_columns == ["id"]
+
+    def test_plural_form_accepted(self):
+        fk = ForeignKey(columns=["a", "b"], foreign_table="t", foreign_columns=["x", "y"])
+        assert fk.columns == ["a", "b"]
+        assert fk.foreign_columns == ["x", "y"]
+
+    def test_backward_compat_properties(self):
+        fk = ForeignKey(column="c", foreign_table="t", foreign_column="id")
+        assert fk.column == "c"
+        assert fk.foreign_column == "id"
+
+    def test_is_composite_false_for_single(self):
+        fk = ForeignKey(column="c", foreign_table="t", foreign_column="id")
+        assert fk.is_composite is False
+
+    def test_is_composite_true_for_multi(self):
+        fk = ForeignKey(columns=["a", "b"], foreign_table="t", foreign_columns=["x", "y"])
+        assert fk.is_composite is True
+
+    def test_serialization_singular(self):
+        fk = ForeignKey(column="c", foreign_table="t", foreign_column="id")
+        d = fk.model_dump()
+        assert "column" in d
+        assert "columns" not in d
+        assert d["column"] == "c"
+        assert d["foreign_column"] == "id"
+
+    def test_serialization_composite(self):
+        fk = ForeignKey(columns=["a", "b"], foreign_table="t", foreign_columns=["x", "y"])
+        d = fk.model_dump()
+        assert "columns" in d
+        assert "column" not in d
+        assert d["columns"] == ["a", "b"]
+        assert d["foreign_columns"] == ["x", "y"]
+
+    def test_round_trip_via_schema_file(self, tmp_path):
+        schema = Schema(tables={
+            "shipments": Table(
+                name="shipments",
+                columns=[Column(name="id", data_type="integer", is_primary_key=True)],
+                primary_key=["id"],
+                foreign_keys=[
+                    ForeignKey(
+                        columns=["order_id", "product_id"],
+                        foreign_table="order_items",
+                        foreign_columns=["order_id", "product_id"],
+                        constraint_name="fk_ship",
+                    ),
+                ],
+            ),
+        })
+        path = str(tmp_path / "schema.json")
+        schema.save_to_file(path)
+        loaded = Schema.load_from_file(path)
+        fk = loaded.tables["shipments"].foreign_keys[0]
+        assert fk.columns == ["order_id", "product_id"]
+        assert fk.foreign_columns == ["order_id", "product_id"]
+        assert fk.is_composite is True
+
+
+class TestEdgeDefinitionComposite:
+    def test_singular_form_accepted(self):
+        ed = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_field="x", to_field="y",
+        )
+        assert ed.from_fields == ["x"]
+        assert ed.to_fields == ["y"]
+
+    def test_plural_form_accepted(self):
+        ed = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_fields=["x1", "x2"], to_fields=["y1", "y2"],
+        )
+        assert ed.from_fields == ["x1", "x2"]
+        assert ed.to_fields == ["y1", "y2"]
+
+    def test_backward_compat_properties(self):
+        ed = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_field="x", to_field="y",
+        )
+        assert ed.from_field == "x"
+        assert ed.to_field == "y"
+
+    def test_is_composite(self):
+        single = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_field="x", to_field="y",
+        )
+        composite = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_fields=["x1", "x2"], to_fields=["y1", "y2"],
+        )
+        assert single.is_composite is False
+        assert composite.is_composite is True
+
+    def test_serialization_singular(self):
+        ed = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_field="x", to_field="y",
+        )
+        d = ed.model_dump()
+        assert d["from_field"] == "x"
+        assert d["to_field"] == "y"
+        assert "from_fields" not in d
+        assert "to_fields" not in d
+
+    def test_serialization_composite(self):
+        ed = EdgeDefinition(
+            edge_collection="e", from_collection="a", to_collection="b",
+            from_fields=["x1", "x2"], to_fields=["y1", "y2"],
+        )
+        d = ed.model_dump()
+        assert d["from_fields"] == ["x1", "x2"]
+        assert d["to_fields"] == ["y1", "y2"]
+        assert "from_field" not in d
+        assert "to_field" not in d

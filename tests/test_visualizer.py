@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from r2g.config import ConfigManager
@@ -137,7 +135,7 @@ class TestBuildGraphData:
 
     def test_link_has_expected_fields(self, visualizer):
         data = visualizer._build_graph_data()
-        link = next(l for l in data["links"] if l["edgeCollection"] == "posts_to_users")
+        link = next(lk for lk in data["links"] if lk["edgeCollection"] == "posts_to_users")
         assert link["source"] == "posts"
         assert link["target"] == "users"
         assert link["fromField"] == "author_id"

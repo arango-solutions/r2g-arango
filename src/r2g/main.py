@@ -31,6 +31,42 @@ def main(
     setup_logging(level="DEBUG" if verbose else "INFO", json_output=json_log)
 
 
+@app.command("validate-config")
+def validate_config_cmd(
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+) -> None:
+    """Validate a mapping config against a schema file.
+
+    Checks that every collection references a known table, every edge
+    references valid collections and columns, and field lists only name
+    columns that exist in the source table.
+    """
+    from r2g.config import validate_config
+
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+        issues = validate_config(schema, mapping)
+        if issues:
+            console.print(f"[red]Found {len(issues)} issue(s):[/red]")
+            for issue in issues:
+                console.print(f"  [yellow]•[/yellow] {issue}")
+            raise typer.Exit(code=1)
+        n_coll = len(mapping.collections)
+        n_edge = len(mapping.edges)
+        console.print(
+            f"[green]Config valid![/green] "
+            f"{n_coll} collections, {n_edge} edges — all references resolve."
+        )
+    except typer.Exit:
+        raise
+    except Exception as e:
+        log.exception("validate_config_failed")
+        console.print(f"[red]Validation failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 @app.command("generate-config")
 def generate_config(
     schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
@@ -320,7 +356,9 @@ def generate_csv_import(
     username: str = typer.Option("root", "--username", "-u", help="ArangoDB username"),
     password: str = typer.Option("", "--password", "-p", help="ArangoDB password"),
     on_duplicate: str = typer.Option("replace", "--on-duplicate", help="arangoimport --on-duplicate value"),
-    graph_name: Optional[str] = typer.Option(None, "--graph-name", help="Create a named graph after import via Gharial API"),
+    graph_name: Optional[str] = typer.Option(
+        None, "--graph-name", help="Create a named graph after import via Gharial API"
+    ),
 ) -> None:
     """Generate an arangoimport script that imports PG CSV dumps directly.
 
@@ -365,7 +403,9 @@ def transform_nodes(
     table_name: str = typer.Option(..., "--table", "-t", help="Table name in the schema"),
     dump_file: str = typer.Option(..., "--input", "-i", help="Input dump file"),
     output_file: str = typer.Option(..., "--output", "-o", help="Output JSONL file"),
-    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Mapping config YAML (enables type coercion)"),
+    config_path: Optional[str] = typer.Option(
+        None, "--config", "-c", help="Mapping config YAML (enables type coercion)"
+    ),
     limit: Optional[int] = typer.Option(None, help="Max rows to process"),
 ) -> None:
     """Transform a table dump into ArangoDB node documents (JSONL)."""
@@ -444,12 +484,13 @@ def inspect_dump(
 def ingest_schema(
     connection_string: str = typer.Option(..., "--conn", "-c", help="PostgreSQL connection string"),
     output: str = typer.Option("./schema.json", "--output", "-o", help="Path to save the schema metadata"),
+    pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name to introspect"),
 ) -> None:
     """Connect to PostgreSQL and extract schema metadata."""
     console.print("[green]Connecting to PostgreSQL...[/green]")
 
     try:
-        connector = PostgresConnector(connection_string)
+        connector = PostgresConnector(connection_string, schema_name=pg_schema)
         schema = connector.get_schema()
 
         console.print(f"[green]Successfully extracted schema with {len(schema.tables)} tables.[/green]")
@@ -495,12 +536,24 @@ def stream(
     batch_size: int = typer.Option(10000, "--batch-size", "-b", help="Rows per batch"),
     on_duplicate: str = typer.Option("replace", "--on-duplicate", help="ArangoDB on-duplicate strategy"),
     graph_name: Optional[str] = typer.Option(None, "--graph-name", help="Create a named graph after import"),
+    pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name to stream from"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Validate connections and preview data without writing to ArangoDB"
+    ),
+    drop_collections: bool = typer.Option(
+        False, "--drop-collections", help="Drop and recreate target collections before import"
+    ),
+    workers: int = typer.Option(
+        1, "--workers", "-w", help="Parallel workers (each gets its own PG + ArangoDB connection)"
+    ),
 ) -> None:
     """Stream data directly from PostgreSQL to ArangoDB (no intermediate files).
 
     Opens a PostgreSQL connection with REPEATABLE READ isolation for consistent
     snapshots, reads tables via server-side cursors in configurable batches,
     transforms rows on the fly, and bulk-imports into ArangoDB via the HTTP API.
+
+    Use --dry-run to preview row counts and sample documents without writing.
     """
     from r2g.connectors.arango_writer import ArangoWriter
     from r2g.streaming.pipeline import StreamingPipeline
@@ -523,18 +576,61 @@ def stream(
             config=mapping,
             batch_size=batch_size,
             on_duplicate=on_duplicate,
+            pg_schema=pg_schema,
+            dry_run=dry_run,
+            drop_collections=drop_collections,
+            workers=workers,
         )
 
+        mode_label = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
         console.print(
-            f"[green]Streaming from PostgreSQL → ArangoDB[/green]\n"
+            f"{mode_label}[green]Streaming from PostgreSQL → ArangoDB[/green]\n"
             f"  PG: {pg_conn.split('@')[-1] if '@' in pg_conn else pg_conn}\n"
             f"  ArangoDB: {endpoint}/{database}\n"
             f"  Batch size: {batch_size:,}"
         )
 
-        results = pipeline.run(graph_name=graph_name)
+        from rich.progress import (
+            BarColumn as PBarColumn,
+        )
+        from rich.progress import (
+            MofNCompleteColumn as PMofN,
+        )
+        from rich.progress import (
+            SpinnerColumn as PSpinner,
+        )
+        from rich.progress import (
+            TextColumn as PText,
+        )
+        from rich.progress import (
+            TimeElapsedColumn as PTime,
+        )
 
-        table = RichTable(title="Streaming Import Summary")
+        progress_tasks: dict[str, Any] = {}
+        progress_ctx = Progress(
+            PSpinner(),
+            PText("[progress.description]{task.description}"),
+            PBarColumn(bar_width=30),
+            PMofN(),
+            PText("rows"),
+            PTime(),
+            console=console,
+            transient=True,
+        )
+
+        def on_progress(event: str, name: str, current: int, total: int | None) -> None:
+            if event == "start":
+                progress_tasks[name] = progress_ctx.add_task(name, total=total or 0)
+            elif event == "progress":
+                progress_ctx.update(progress_tasks[name], completed=current)
+            elif event == "done":
+                progress_ctx.update(progress_tasks[name], completed=total or current)
+
+        with progress_ctx:
+            results = pipeline.run(graph_name=graph_name, on_progress=on_progress)
+
+        title = "Dry Run Preview" if dry_run else "Streaming Import Summary"
+        table = RichTable(title=title)
         table.add_column("Collection", style="cyan")
         table.add_column("Type", style="magenta")
         table.add_column("Rows", justify="right")
@@ -546,12 +642,34 @@ def stream(
 
         total_docs = sum(c for _, c in results["documents"])
         total_edges = sum(c for _, c in results["edges"])
-        console.print(
-            f"[green]Stream complete:[/green] {total_docs:,} documents, "
-            f"{total_edges:,} edges imported."
-        )
-        if graph_name:
-            console.print(f"[green]Named graph '{graph_name}' created.[/green]")
+        total_rows = total_docs + total_edges
+        elapsed = results.get("elapsed_seconds", 0)
+        throughput = total_rows / elapsed if elapsed > 0 else 0
+
+        if dry_run:
+            console.print(
+                f"[yellow]Dry run complete:[/yellow] {total_docs:,} documents, "
+                f"{total_edges:,} edges [bold]would be[/bold] imported "
+                f"[dim]({elapsed:.1f}s, {throughput:,.0f} rows/s)[/dim]"
+            )
+            if pipeline.previews:
+                console.print("\n[bold]Sample documents:[/bold]")
+                for coll_name, samples in pipeline.previews.items():
+                    if not samples:
+                        continue
+                    console.print(f"\n  [cyan]{coll_name}[/cyan] (first {len(samples)}):")
+                    for doc in samples:
+                        console.print(f"    {json.dumps(doc, default=str)}")
+            if graph_name:
+                console.print(f"\n[yellow]Named graph '{graph_name}' would be created.[/yellow]")
+        else:
+            console.print(
+                f"[green]Stream complete:[/green] {total_docs:,} documents, "
+                f"{total_edges:,} edges imported "
+                f"[dim]({elapsed:.1f}s, {throughput:,.0f} rows/s)[/dim]"
+            )
+            if graph_name:
+                console.print(f"[green]Named graph '{graph_name}' created.[/green]")
 
     except Exception as e:
         log.exception("stream_failed")
@@ -577,7 +695,8 @@ def dump_tables(
     out.mkdir(parents=True, exist_ok=True)
 
     try:
-        connector = PostgresConnector(connection_string)
+        pg_schema_name = schema_filter or "public"
+        connector = PostgresConnector(connection_string, schema_name=pg_schema_name)
         schema = connector.get_schema()
         table_names = sorted(schema.tables.keys())
 

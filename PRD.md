@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--2 implemented; Phases 3--5 are planned or exploratory |
+| **Status** | Phases 1--2 implemented and hardened; Phases 3--5 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -36,12 +36,12 @@ The product is a multi-phased pipeline that reads PostgreSQL relational schema, 
 
 | Component | Function |
 | :--- | :--- |
-| **Schema reader** | Connects to PostgreSQL to read and parse schema metadata: tables, columns, primary keys, and foreign keys. |
+| **Schema reader** | Connects to PostgreSQL to read and parse schema metadata: tables, columns, primary keys, and foreign keys (including composite FKs). Supports any named schema via `--pg-schema`. |
 | **Metadata store** | Persists the ingested PostgreSQL schema and the user-defined target ArangoDB ontology/schema as JSON and YAML files. |
 | **Mapping engine** | Applies transformation logic: tables to document collections; foreign keys to edge collections (PK/FK values to `_from` / `_to` with collection prefixes). |
 | **Data egress / import generator** | Generates executable bash import scripts. Supports two modes: JSONL-based (transforms CSV to intermediate JSONL) and CSV-direct (uses `arangoimport --type csv` with `--translate` and `--datatype` flags to import PG dumps without intermediate files). |
 | **Mapping visualizer** | Generates self-contained HTML reports with an interactive D3.js force-directed graph showing the PG-to-ArangoDB mapping, relational schema cards, edge mapping details, and a mapping editor with YAML export. |
-| **Streaming engine** | Reads from PostgreSQL using server-side cursors with REPEATABLE READ isolation and writes directly to ArangoDB via python-arango HTTP bulk import API, with configurable batch sizes. No intermediate files. |
+| **Streaming engine** | Reads from PostgreSQL using server-side cursors with REPEATABLE READ isolation and writes directly to ArangoDB via python-arango HTTP bulk import API, with configurable batch sizes. Supports `--dry-run` for pre-flight validation, `--drop-collections` for idempotent re-import, `--workers` for parallel streaming with per-worker connections, and retry with exponential backoff. Rich progress bars and throughput reporting. No intermediate files. |
 | **Table dumper** | Connects to PostgreSQL and exports each table as a CSV file via `COPY ... TO STDOUT WITH CSV HEADER`, automating the manual dump step. |
 
 ### Relational-to-graph mapping logic
@@ -71,7 +71,6 @@ The mechanical mapping handles several non-trivial patterns:
 
 The following patterns are **not yet handled**:
 
-- **Composite foreign keys** (multi-column FKs): untested and likely broken.
 - **Circular FK dependencies** (table A references B, B references A): will produce valid edges but import ordering may need manual adjustment.
 - **Inheritance patterns** (single-table inheritance, table-per-type): no special handling; each table is mapped independently.
 - **Polymorphic associations**: not supported.
@@ -136,9 +135,8 @@ The roadmap is organized into four implementation phases, from MVP through Kafka
 
 ### Known constraints
 
-- **`public` schema only**: the schema reader queries `information_schema` filtered to `table_schema = 'public'`. Multi-schema databases are not supported without manual schema file editing.
 - **No referential integrity validation**: the tool does not verify that FK values actually reference existing PKs. Orphaned references will produce edges pointing to non-existent vertices in ArangoDB.
-- **No idempotency guarantees**: re-running the pipeline with `--overwrite` replaces all data. There is no merge, diff, or conflict resolution for repeated loads.
+- **No idempotency guarantees**: re-running the pipeline with `--drop-collections` replaces all data. There is no merge, diff, or conflict resolution for repeated loads.
 - **Credential handling**: connection strings and passwords appear in CLI arguments. Generated import scripts use environment variable overrides (`ARANGO_ENDPOINT`, `ARANGO_PASSWORD`, etc.) but the tool has no integrated secrets management.
 
 ---
@@ -161,6 +159,8 @@ These ideas are exploratory and represent potential directions, not committed wo
 | Narrative supplement (NotebookLM source) | December 2025 | Overlapping content with expanded relational-to-graph mapping (transliteration, join tables, normalization) and synchronization framing. |
 | **Consolidated PRD** | **April 2026** | Single authoritative document. Gemini structure and requirement IDs preserved; NotebookLM mapping logic merged; conversational phrasing removed. Scope clarified as experimental reference implementation. Status columns added to phase tables. Edge cases, known constraints, and security notes added. "Antigravity" branding removed. |
 | **Phase 1 extensions** | **April 2026** | CSV-direct import path (P1.7) and interactive mapping visualizer (P1.8) added. README updated to reflect the CSV-direct path as the preferred pipeline. |
-| **Phase 2 implemented** | **April 2026** | Direct PG streaming to ArangoDB (P2.1--P2.4) implemented via psycopg server-side cursors and python-arango HTTP bulk import. `dump-tables` command, join table auto-detection, and interactive mapping editor with YAML export added. 209 tests. |
+| **Phase 2 implemented** | **April 2026** | Direct PG streaming to ArangoDB (P2.1--P2.4) implemented via psycopg server-side cursors and python-arango HTTP bulk import. `dump-tables` command, join table auto-detection, and interactive mapping editor with YAML export added. |
+| **Hardening** | **April 2026** | Composite FK support (introspection, transformation, CSV-direct `--merge-attributes`). Multi-schema support (`--pg-schema`). Dry-run mode (`stream --dry-run`). GitHub Actions CI (pytest + ruff). 230 tests. |
+| **Robustness & Performance** | **April 2026** | Rich progress bars for streaming. `validate-config` CLI command for static mapping/schema consistency checks. `--drop-collections` flag for idempotent re-import. Retry logic with exponential backoff in ArangoDB bulk writes. `--workers` flag for parallel table streaming (concurrent PG connections + ArangoDB writers). Elapsed time and throughput (rows/s) in stream output. Docker-based integration test suite. 251 tests. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
