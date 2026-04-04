@@ -9,17 +9,63 @@ from r2g.types import CollectionMapping, EdgeDefinition, MappingConfig, Schema, 
 
 DEFAULT_TYPE_MAP: Dict[str, str] = {
     "integer": "integer",
+    "int": "integer",
+    "int4": "integer",
+    "int8": "integer",
+    "int2": "integer",
     "bigint": "integer",
     "smallint": "integer",
     "serial": "integer",
     "bigserial": "integer",
+    "smallserial": "integer",
+    "oid": "integer",
     "numeric": "float",
     "decimal": "float",
     "real": "float",
+    "float4": "float",
+    "float8": "float",
     "double precision": "float",
+    "money": "string",
     "boolean": "boolean",
+    "bool": "boolean",
     "json": "object",
     "jsonb": "object",
+    "uuid": "string",
+    "text": "string",
+    "varchar": "string",
+    "character varying": "string",
+    "char": "string",
+    "character": "string",
+    "bpchar": "string",
+    "name": "string",
+    "bytea": "string",
+    "date": "string",
+    "time": "string",
+    "time without time zone": "string",
+    "time with time zone": "string",
+    "timetz": "string",
+    "timestamp": "string",
+    "timestamp without time zone": "string",
+    "timestamp with time zone": "string",
+    "timestamptz": "string",
+    "interval": "string",
+    "inet": "string",
+    "cidr": "string",
+    "macaddr": "string",
+    "macaddr8": "string",
+    "xml": "string",
+    "point": "string",
+    "line": "string",
+    "lseg": "string",
+    "box": "string",
+    "path": "string",
+    "polygon": "string",
+    "circle": "string",
+    "tsvector": "string",
+    "tsquery": "string",
+    "bit": "string",
+    "bit varying": "string",
+    "varbit": "string",
 }
 
 
@@ -138,7 +184,7 @@ class ConfigManager:
     """Load, save, and synthesize table-to-graph mapping configuration."""
 
     @staticmethod
-    def generate_default_config(schema: Schema) -> MappingConfig:
+    def generate_default_config(schema: Schema, source_schema: str = "public") -> MappingConfig:
         collections: Dict[str, CollectionMapping] = {}
         edges: list[EdgeDefinition] = []
         edge_collection_names: Set[str] = set()
@@ -171,7 +217,7 @@ class ConfigManager:
                 )
 
         return MappingConfig(
-            source_schema="public",
+            source_schema=source_schema,
             collections=collections,
             edges=edges,
         )

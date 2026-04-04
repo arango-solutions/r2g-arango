@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from r2g.connectors.arango_writer import ArangoWriter
+from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
 
 
 @pytest.fixture
@@ -82,7 +82,9 @@ class TestImportBatch:
         docs = [{"_key": "1", "name": "a"}, {"_key": "2", "name": "b"}, {"_key": "3", "name": "c"}]
         result = writer.import_batch("users", docs)
 
-        mock_coll.import_bulk.assert_called_once_with(docs, on_duplicate="replace", halt_on_error=False)
+        mock_coll.import_bulk.assert_called_once_with(
+            docs, on_duplicate="replace", halt_on_error=False, details=True,
+        )
         assert result["created"] == 3
 
     @patch("r2g.connectors.arango_writer.ArangoClient")
@@ -91,6 +93,33 @@ class TestImportBatch:
         writer.connect()
         result = writer.import_batch("users", [])
         assert result["created"] == 0
+
+
+class TestImportBatchErrors:
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_raises_on_document_errors(self, mock_client_cls, writer):
+        mock_db = MagicMock()
+        mock_coll = MagicMock()
+        mock_coll.import_bulk.return_value = {
+            "created": 1, "errors": 2, "empty": 0, "updated": 0, "ignored": 0,
+            "details": ["doc at pos 1: unique constraint violated", "doc at pos 2: invalid key"],
+        }
+        mock_db.collection.return_value = mock_coll
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        writer.connect()
+        with pytest.raises(ImportBatchError) as exc_info:
+            writer.import_batch("users", [{"_key": "1"}, {"_key": "2"}, {"_key": "3"}])
+
+        assert exc_info.value.error_count == 2
+        assert exc_info.value.total_count == 3
+        assert exc_info.value.collection == "users"
+        assert len(exc_info.value.details) == 2
+
+    def test_import_batch_error_message(self):
+        err = ImportBatchError("col", error_count=5, total_count=100, details=["a", "b"])
+        assert "5/100" in str(err)
+        assert "col" in str(err)
 
 
 class TestCreateNamedGraph:

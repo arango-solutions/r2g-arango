@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from r2g.connectors.arango_writer import ArangoWriter
+from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
 from r2g.streaming.pipeline import StreamingPipeline
 from r2g.types import (
     CollectionMapping,
@@ -325,3 +325,151 @@ class TestDryRun:
 
         assert "orders_to_users" in pipeline.previews
         assert len(pipeline.previews["orders_to_users"]) == 1
+
+
+class TestTableFiltering:
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_include_tables_filters_documents(self, mock_psycopg, simple_schema, simple_config, mock_writer):
+        mock_conn = MagicMock()
+
+        def make_cursor(*args, **kwargs):
+            cursor = MagicMock()
+            name = kwargs.get("name", "")
+            if "users" in name:
+                cursor.__iter__ = MagicMock(return_value=iter([
+                    {"id": 1, "name": "Alice", "email": "a@b.com"},
+                ]))
+            else:
+                cursor.__iter__ = MagicMock(return_value=iter([]))
+            cursor.__enter__ = MagicMock(return_value=cursor)
+            cursor.__exit__ = MagicMock(return_value=False)
+            return cursor
+
+        mock_conn.cursor.side_effect = make_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            include_tables={"users"},
+        )
+
+        results = pipeline.run()
+
+        doc_names = [name for name, _ in results["documents"]]
+        assert "users" in doc_names
+        assert "orders" not in doc_names
+        assert len(results["edges"]) == 0
+
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_exclude_tables_filters_documents(self, mock_psycopg, simple_schema, simple_config, mock_writer):
+        mock_conn = MagicMock()
+
+        def make_cursor(*args, **kwargs):
+            cursor = MagicMock()
+            name = kwargs.get("name", "")
+            if "users" in name:
+                cursor.__iter__ = MagicMock(return_value=iter([
+                    {"id": 1, "name": "Alice", "email": "a@b.com"},
+                ]))
+            else:
+                cursor.__iter__ = MagicMock(return_value=iter([]))
+            cursor.__enter__ = MagicMock(return_value=cursor)
+            cursor.__exit__ = MagicMock(return_value=False)
+            return cursor
+
+        mock_conn.cursor.side_effect = make_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            exclude_tables={"orders"},
+        )
+
+        results = pipeline.run()
+
+        doc_names = [name for name, _ in results["documents"]]
+        assert "users" in doc_names
+        assert "orders" not in doc_names
+        assert len(results["edges"]) == 0
+
+
+class TestImportErrorSurfacing:
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_batch_errors_captured_in_results(self, mock_psycopg, simple_schema, simple_config):
+        mock_writer = MagicMock(spec=ArangoWriter)
+        mock_writer.import_batch.side_effect = ImportBatchError(
+            collection="users",
+            error_count=2,
+            total_count=5,
+            details=["doc 1: unique constraint", "doc 3: invalid key"],
+        )
+
+        mock_conn = MagicMock()
+
+        def make_cursor(*args, **kwargs):
+            cursor = MagicMock()
+            name = kwargs.get("name", "")
+            if "users" in name:
+                cursor.__iter__ = MagicMock(return_value=iter([
+                    {"id": 1, "name": "Alice", "email": "a@b.com"},
+                ]))
+            elif "orders" in name:
+                cursor.__iter__ = MagicMock(return_value=iter([
+                    {"id": 10, "user_id": 1, "total": 99.99},
+                ]))
+            else:
+                cursor.__iter__ = MagicMock(return_value=iter([]))
+            cursor.__enter__ = MagicMock(return_value=cursor)
+            cursor.__exit__ = MagicMock(return_value=False)
+            return cursor
+
+        mock_conn.cursor.side_effect = make_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+        )
+
+        results = pipeline.run()
+
+        assert "errors" in results
+        assert "users" in results["errors"]
+        assert len(results["errors"]["users"]) == 2
+
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_no_errors_key_when_clean(self, mock_psycopg, simple_schema, simple_config, mock_writer):
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+        )
+
+        results = pipeline.run()
+
+        assert "errors" not in results

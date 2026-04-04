@@ -57,6 +57,9 @@ flowchart LR
 - **Progress bars and throughput** -- Rich progress bars during streaming with real-time row counts; elapsed time and rows/second throughput displayed on completion
 - **Retry with backoff** -- transient ArangoDB write failures (connection errors, server overload) are retried with exponential backoff
 - **Collection management** -- `--drop-collections` flag drops and recreates target collections before import for idempotent re-runs
+- **Table filtering** -- `--include-tables` and `--exclude-tables` on the `stream` command for selective import of large schemas
+- **Import error reporting** -- document-level errors from ArangoDB bulk imports are captured, logged, and displayed in the summary table instead of silently dropped
+- **Comprehensive type mapping** -- 50+ PostgreSQL types explicitly mapped to JSON types: integer variants, float variants, boolean, JSON/JSONB, UUID, timestamps, intervals, network types, geometric types, and text search types
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
 - **Automated table dumping** -- `dump-tables` command connects to PostgreSQL and exports each table as a CSV file in one pass
@@ -226,7 +229,15 @@ r2g stream \
   --graph-name my_graph
 ```
 
-This uses server-side cursors with REPEATABLE READ isolation for consistent snapshots and bulk-imports via the ArangoDB HTTP API. Add `--workers 4` for parallel streaming with per-worker connections.
+This uses server-side cursors with REPEATABLE READ isolation for consistent snapshots and bulk-imports via the ArangoDB HTTP API.
+
+Options:
+
+- `--workers 4` -- parallel streaming with per-worker PG + ArangoDB connections. **Note:** each worker opens its own `REPEATABLE READ` transaction; this provides per-worker consistency but not a single global snapshot across all workers. For strict point-in-time consistency, use `--workers 1` (default).
+- `--on-duplicate replace` -- ArangoDB duplicate handling strategy (`replace`, `update`, `ignore`, `error`)
+- `--include-tables users,orders` -- only stream specified tables (and their edges)
+- `--exclude-tables audit_log` -- skip specified tables
+- `--drop-collections` -- drop and recreate target collections before import
 
 Add `--dry-run` to preview row counts and sample documents without writing to ArangoDB:
 
@@ -255,7 +266,7 @@ r2g stream --dry-run \
 | `visualize-mapping` | Generate interactive HTML visualization of the PG-to-graph mapping |
 | `dump-tables` | Connect to PostgreSQL and dump each table to a CSV file |
 | `validate-config` | Validate mapping config against schema (checks table references, column names, edge definitions) |
-| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, and `--workers` for parallel streaming |
+| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, and `--on-duplicate` |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
 
@@ -287,7 +298,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-251 tests covering types (including composite FK serialization), config validation, dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic), streaming pipeline (sequential and parallel), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+276 tests covering types (including composite FK serialization), config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 

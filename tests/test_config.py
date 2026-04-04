@@ -29,7 +29,16 @@ class TestPgTypeToJsonType:
 
     @pytest.mark.parametrize(
         "pg_type",
-        ["text", "varchar", "character varying", "uuid", "timestamp", "date"],
+        ["text", "varchar", "character varying", "uuid", "timestamp", "date",
+         "bytea", "interval", "inet", "cidr", "money", "time", "timetz",
+         "timestamptz", "macaddr", "xml", "tsvector", "bit", "point"],
+    )
+    def test_string_types(self, pg_type):
+        assert pg_type_to_json_type(pg_type) == "string"
+
+    @pytest.mark.parametrize(
+        "pg_type",
+        ["hstore", "ltree", "my_custom_enum"],
     )
     def test_unknown_types_fallback_to_string(self, pg_type):
         assert pg_type_to_json_type(pg_type) == "string"
@@ -79,6 +88,79 @@ class TestGenerateDefaultConfig:
     def test_default_schema_is_public(self, sample_schema):
         config = ConfigManager.generate_default_config(sample_schema)
         assert config.source_schema == "public"
+
+    def test_custom_source_schema(self, sample_schema):
+        config = ConfigManager.generate_default_config(sample_schema, source_schema="sales")
+        assert config.source_schema == "sales"
+
+    def test_self_referential_fk(self):
+        employees = Table(
+            name="employees",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="name", data_type="text"),
+                Column(name="manager_id", data_type="integer", is_nullable=True),
+            ],
+            primary_key=["id"],
+            foreign_keys=[
+                ForeignKey(
+                    column="manager_id",
+                    foreign_table="employees",
+                    foreign_column="id",
+                    constraint_name="fk_manager",
+                ),
+            ],
+        )
+        schema = Schema(tables={"employees": employees})
+        config = ConfigManager.generate_default_config(schema)
+        assert len(config.edges) == 1
+        edge = config.edges[0]
+        assert edge.from_collection == "employees"
+        assert edge.to_collection == "employees"
+        assert edge.edge_collection == "employees_to_employees"
+
+    def test_multiple_fks_to_same_table_disambiguated(self):
+        orders = Table(
+            name="orders",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="customer_id", data_type="integer"),
+                Column(name="referrer_id", data_type="integer", is_nullable=True),
+            ],
+            primary_key=["id"],
+            foreign_keys=[
+                ForeignKey(
+                    column="customer_id",
+                    foreign_table="customers",
+                    foreign_column="id",
+                    constraint_name="fk_customer",
+                ),
+                ForeignKey(
+                    column="referrer_id",
+                    foreign_table="customers",
+                    foreign_column="id",
+                    constraint_name="fk_referrer",
+                ),
+            ],
+        )
+        customers = Table(
+            name="customers",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="name", data_type="text"),
+            ],
+            primary_key=["id"],
+            foreign_keys=[],
+        )
+        schema = Schema(tables={"orders": orders, "customers": customers})
+        config = ConfigManager.generate_default_config(schema)
+        edge_names = [e.edge_collection for e in config.edges]
+        assert len(edge_names) == 2
+        assert len(set(edge_names)) == 2
+        assert "orders_to_customers" in edge_names
+        suffixed = [n for n in edge_names if n != "orders_to_customers"]
+        assert len(suffixed) == 1
+        assert suffixed[0].startswith("orders_to_customers_")
 
 
 class TestSaveAndLoadConfig:

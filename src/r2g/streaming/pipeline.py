@@ -13,7 +13,7 @@ from typing import Any, Callable, Generator
 import psycopg
 from psycopg.rows import dict_row
 
-from r2g.connectors.arango_writer import ArangoWriter
+from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
 from r2g.log import get_logger
 from r2g.transformers.edge_transformer import EdgeTransformer
 from r2g.transformers.node_transformer import NodeTransformer
@@ -55,6 +55,8 @@ class StreamingPipeline:
         dry_run: bool = False,
         drop_collections: bool = False,
         workers: int = 1,
+        include_tables: set[str] | None = None,
+        exclude_tables: set[str] | None = None,
     ) -> None:
         self.pg_conn_string = pg_conn_string
         self.writer = arango_writer
@@ -66,9 +68,40 @@ class StreamingPipeline:
         self.dry_run = dry_run
         self.drop_collections = drop_collections
         self.workers = max(1, workers)
+        self.include_tables: set[str] | None = include_tables
+        self.exclude_tables: set[str] | None = exclude_tables
         self.previews: dict[str, list[dict[str, Any]]] = {}
+        self.errors: dict[str, list[str]] = {}
         self._on_progress: ProgressFn | None = None
         self._lock = __import__("threading").Lock()
+
+    def _should_include_table(self, table_name: str) -> bool:
+        """Check whether a source table passes the include/exclude filters."""
+        if self.include_tables is not None and table_name not in self.include_tables:
+            return False
+        if self.exclude_tables is not None and table_name in self.exclude_tables:
+            return False
+        return True
+
+    def _flush_batch(
+        self,
+        writer: ArangoWriter,
+        collection: str,
+        batch: list[dict[str, Any]],
+    ) -> None:
+        """Import a batch, capturing document-level errors instead of aborting."""
+        try:
+            writer.import_batch(collection, batch, self.on_duplicate)
+        except ImportBatchError as exc:
+            with self._lock:
+                errs = self.errors.setdefault(collection, [])
+                errs.extend(exc.details[: 50 - len(errs)])
+            logger.warning(
+                "import_batch_partial_errors",
+                collection=collection,
+                error_count=exc.error_count,
+                total_count=exc.total_count,
+            )
 
     def _notify(self, event: str, name: str, current: int, total: int | None) -> None:
         if self._on_progress is not None:
@@ -148,14 +181,14 @@ class StreamingPipeline:
             batch.append(doc)
             if len(batch) >= self.batch_size:
                 if not self.dry_run:
-                    w.import_batch(target, batch, self.on_duplicate)
+                    self._flush_batch(w, target, batch)
                 total += len(batch)
                 batch.clear()
                 self._notify("progress", target, total, row_estimate)
 
         if batch:
             if not self.dry_run:
-                w.import_batch(target, batch, self.on_duplicate)
+                self._flush_batch(w, target, batch)
             total += len(batch)
 
         if self.dry_run:
@@ -207,14 +240,14 @@ class StreamingPipeline:
                 batch.append(doc)
                 if len(batch) >= self.batch_size:
                     if not self.dry_run:
-                        w.import_batch(edge_name, batch, self.on_duplicate)
+                        self._flush_batch(w, edge_name, batch)
                     total += len(batch)
                     batch.clear()
                     self._notify("progress", edge_name, total, row_estimate)
 
         if batch:
             if not self.dry_run:
-                w.import_batch(edge_name, batch, self.on_duplicate)
+                self._flush_batch(w, edge_name, batch)
             total += len(batch)
 
         if self.dry_run:
@@ -237,6 +270,9 @@ class StreamingPipeline:
             if cm.source_table not in self.schema.tables:
                 logger.warning("stream_skip_unknown_table", table=cm.source_table)
                 continue
+            if not self._should_include_table(cm.source_table):
+                logger.info("stream_skip_filtered_table", table=cm.source_table)
+                continue
             results.append(self._stream_one_document(cm.source_table, cm, conn=conn))
         return results
 
@@ -249,6 +285,9 @@ class StreamingPipeline:
         for edge_def in self.config.edges:
             if edge_def.from_collection not in self.schema.tables:
                 logger.warning("stream_edge_skip_unknown_table", table=edge_def.from_collection)
+                continue
+            if not self._should_include_table(edge_def.from_collection):
+                logger.info("stream_edge_skip_filtered_table", table=edge_def.from_collection)
                 continue
             results.append(self._stream_one_edge(edge_def, conn=conn))
         return results
@@ -301,11 +340,15 @@ class StreamingPipeline:
                 continue
             if cm.source_table not in self.schema.tables:
                 continue
+            if not self._should_include_table(cm.source_table):
+                continue
             doc_jobs.append((cm.source_table, cm))
 
         edge_jobs: list[tuple[Any, ...]] = []
         for edge_def in self.config.edges:
             if edge_def.from_collection not in self.schema.tables:
+                continue
+            if not self._should_include_table(edge_def.from_collection):
                 continue
             edge_jobs.append((edge_def,))
 
@@ -365,8 +408,11 @@ class StreamingPipeline:
         self.writer.close()
         elapsed = time.monotonic() - t0
 
-        return {
+        result: dict[str, Any] = {
             "documents": doc_results,
             "edges": edge_results,
             "elapsed_seconds": elapsed,
         }
+        if self.errors:
+            result["errors"] = self.errors
+        return result

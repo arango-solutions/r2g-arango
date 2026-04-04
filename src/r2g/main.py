@@ -546,6 +546,12 @@ def stream(
     workers: int = typer.Option(
         1, "--workers", "-w", help="Parallel workers (each gets its own PG + ArangoDB connection)"
     ),
+    include_tables: Optional[str] = typer.Option(
+        None, "--include-tables", help="Comma-separated list of tables to include (default: all)"
+    ),
+    exclude_tables: Optional[str] = typer.Option(
+        None, "--exclude-tables", help="Comma-separated list of tables to exclude"
+    ),
 ) -> None:
     """Stream data directly from PostgreSQL to ArangoDB (no intermediate files).
 
@@ -569,6 +575,9 @@ def stream(
             password=password,
         )
 
+        inc = {t.strip() for t in include_tables.split(",")} if include_tables else None
+        exc = {t.strip() for t in exclude_tables.split(",")} if exclude_tables else None
+
         pipeline = StreamingPipeline(
             pg_conn_string=pg_conn,
             arango_writer=writer,
@@ -580,6 +589,8 @@ def stream(
             dry_run=dry_run,
             drop_collections=drop_collections,
             workers=workers,
+            include_tables=inc,
+            exclude_tables=exc,
         )
 
         mode_label = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
@@ -645,6 +656,17 @@ def stream(
         total_rows = total_docs + total_edges
         elapsed = results.get("elapsed_seconds", 0)
         throughput = total_rows / elapsed if elapsed > 0 else 0
+
+        import_errors = results.get("errors", {})
+        if import_errors:
+            err_table = RichTable(title="Import Errors", style="red")
+            err_table.add_column("Collection", style="cyan")
+            err_table.add_column("Errors", justify="right", style="red")
+            err_table.add_column("Sample Details")
+            for coll_name, details in import_errors.items():
+                sample = details[0] if details else ""
+                err_table.add_row(coll_name, str(len(details)), sample)
+            console.print(err_table)
 
         if dry_run:
             console.print(

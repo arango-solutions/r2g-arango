@@ -23,6 +23,26 @@ logger = get_logger(__name__)
 RETRYABLE_HTTP_CODES = {408, 429, 500, 502, 503, 504}
 
 
+class ImportBatchError(Exception):
+    """Raised when an ``import_bulk`` call returns document-level errors."""
+
+    def __init__(
+        self,
+        collection: str,
+        error_count: int,
+        total_count: int,
+        details: list[str] | None = None,
+    ) -> None:
+        self.collection = collection
+        self.error_count = error_count
+        self.total_count = total_count
+        self.details = details or []
+        super().__init__(
+            f"{error_count}/{total_count} documents failed to import "
+            f"into '{collection}'"
+        )
+
+
 class ArangoWriter:
     """Connects to ArangoDB and bulk-imports documents via the HTTP API.
 
@@ -101,6 +121,9 @@ class ArangoWriter:
         with exponential backoff (1s, 2s, 4s, ...).
 
         Returns a dict with keys 'created', 'errors', 'empty', 'updated', 'ignored'.
+
+        Raises :class:`ImportBatchError` if the result contains document-level
+        errors (``errors > 0``), wrapping the details from ArangoDB.
         """
         if not documents:
             return {"created": 0, "errors": 0, "empty": 0, "updated": 0, "ignored": 0}
@@ -113,15 +136,27 @@ class ArangoWriter:
                     documents,
                     on_duplicate=on_duplicate,
                     halt_on_error=False,
+                    details=True,
                 )
+                error_count = result.get("errors", 0)
                 logger.debug(
                     "arango_batch_imported",
                     collection=collection_name,
                     count=len(documents),
                     created=result.get("created", 0),
-                    errors=result.get("errors", 0),
+                    errors=error_count,
                 )
+                if error_count > 0:
+                    details = result.get("details", [])
+                    raise ImportBatchError(
+                        collection=collection_name,
+                        error_count=error_count,
+                        total_count=len(documents),
+                        details=details,
+                    )
                 return result
+            except ImportBatchError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempt < self.max_retries and self._is_retryable(exc):
