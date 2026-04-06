@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Relational to Graph (R2G) ETL Pipeline"
 requires-python = ">=3.10"
 dependencies = [
-    "typer[all]>=0.9.0",
+    "typer[all]>=0.15.0",
     "psycopg[binary]>=3.1.0",
     "python-arango>=7.5.0",
     "pydantic>=2.5.0",

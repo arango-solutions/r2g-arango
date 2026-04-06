@@ -61,6 +61,7 @@ flowchart LR
 - **Import error reporting** -- document-level errors from ArangoDB bulk imports are captured, logged, and displayed in the summary table instead of silently dropped
 - **Comprehensive type mapping** -- 50+ PostgreSQL types explicitly mapped to JSON types: integer variants, float variants, boolean, JSON/JSONB, UUID, timestamps, intervals, network types, geometric types, and text search types
 - **Schema diff** -- `diff-schema` command compares two schema snapshots and reports added/removed tables, column type changes, nullable changes, primary key changes, and foreign key changes; supports `--json` output for scripting
+- **Config migration** -- `migrate-config` command auto-updates a mapping YAML when the PostgreSQL schema evolves: adds collections for new tables, adds edges for new FKs, removes edges for dropped FKs, flags orphaned collections, and cleans stale field references and type overrides -- all while preserving user customizations (renames, field mappings, include/exclude lists)
 - **Skip existing** -- `stream --skip-existing` skips collections that already contain data, enabling resumption of partial streaming runs without re-importing completed collections
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
@@ -71,7 +72,8 @@ flowchart LR
 
 ```
 src/r2g/
-├── main.py                     # Typer CLI (14 commands)
+├── main.py                     # Typer CLI (15 commands)
+├── config_migrate.py           # Config migration when schema evolves
 ├── schema_diff.py              # Schema comparison / structural diff
 ├── types.py                    # Pydantic models (Schema, Table, MappingConfig, EdgeDefinition, ...)
 ├── config.py                   # ConfigManager, YAML load/save, PG→JSON type map, join detection
@@ -217,6 +219,20 @@ Override connection details via environment variables (works with the generated 
 ARANGO_ENDPOINT=http://prod:8529 ARANGO_DB=prod_db ARANGO_PASSWORD=secret ./import_csv.sh
 ```
 
+### Schema evolution: migrating the mapping config
+
+When your PostgreSQL schema changes (new tables, dropped columns, added/removed FKs), update the mapping config automatically:
+
+```bash
+# Re-extract the updated schema
+r2g ingest-schema --conn "postgresql://user:pass@localhost/mydb" --output schema_v2.json
+
+# Migrate the existing config to match
+r2g migrate-config --schema schema_v2.json --config mapping.yaml
+```
+
+This preserves all your customizations (collection renames, field mappings, include/exclude lists, type overrides) while adapting to schema changes. Use `--output new_mapping.yaml` to write to a different file, or `--json-report` for machine-readable output.
+
 ### Alternative: Direct streaming (no intermediate files)
 
 Skip steps 3-5 entirely and stream data directly from PostgreSQL to ArangoDB:
@@ -271,6 +287,7 @@ r2g stream --dry-run \
 | `dump-tables` | Connect to PostgreSQL and dump each table to a CSV file |
 | `validate-config` | Validate mapping config against schema (checks table references, column names, edge definitions) |
 | `diff-schema` | Compare two schema.json files and report structural changes (tables, columns, types, PKs, FKs); supports `--json` for machine-readable output |
+| `migrate-config` | Auto-update a mapping config YAML to match an evolved schema: adds new tables/edges, removes stale edges, flags orphaned collections, cleans dropped-column references; `--json-report` for machine-readable output |
 | `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, and `--on-duplicate` |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
@@ -303,7 +320,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-314 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+341 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration (added/removed tables, edge sync, field cleanup, type override pruning, customization preservation), config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 

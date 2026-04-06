@@ -94,7 +94,7 @@ def visualize_mapping(
     schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
     config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
     output: str = typer.Option("mapping_viz.html", "--output", "-o", help="Output HTML file"),
-    open_browser: bool = typer.Option(True, "--open/--no-open", help="Open in default browser"),
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open in default browser"),
 ) -> None:
     """Generate an interactive HTML visualization of the PG-to-graph mapping."""
     try:
@@ -108,7 +108,7 @@ def visualize_mapping(
             f"{len(mapping.collections)} collections, "
             f"{len(mapping.edges)} edges[/dim]"
         )
-        if open_browser:
+        if not no_open:
             import webbrowser
             webbrowser.open(f"file://{Path(output).resolve()}")
     except Exception as e:
@@ -794,6 +794,80 @@ def diff_schema(
     except Exception as e:
         log.exception("diff_schema_failed")
         console.print(f"[red]Schema diff failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("migrate-config")
+def migrate_config_cmd(
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to the NEW schema.json"),
+    config_path: str = typer.Option(..., "--config", "-c", help="Existing mapping config YAML"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="Output path for updated config (default: overwrite input)"
+    ),
+    source_schema: Optional[str] = typer.Option(None, "--source-schema", help="Override source_schema in config"),
+    json_report: bool = typer.Option(False, "--json-report", help="Output migration report as JSON"),
+) -> None:
+    """Migrate a mapping config to match an updated PostgreSQL schema.
+
+    Preserves user customizations (collection renames, field mappings,
+    include/exclude lists, type overrides) while adding mappings for new
+    tables and edges, removing edges for dropped FKs, and flagging
+    orphaned collections whose source table no longer exists.
+    """
+    from r2g.config_migrate import migrate_config
+
+    try:
+        new_schema = Schema.load_from_file(schema_file)
+        old_config = ConfigManager.load_config(config_path)
+        updated, report = migrate_config(old_config, new_schema, source_schema=source_schema)
+
+        out_path = output or config_path
+        ConfigManager.save_config(updated, out_path)
+
+        if json_report:
+            typer.echo(json.dumps({
+                "added_collections": report.added_collections,
+                "orphaned_collections": report.orphaned_collections,
+                "added_edges": report.added_edges,
+                "removed_edges": report.removed_edges,
+                "cleaned_fields": report.cleaned_fields,
+                "output": out_path,
+            }, indent=2))
+            return
+
+        if not report.has_changes:
+            console.print("[green]Config is already up to date — no migration needed.[/green]")
+        else:
+            if report.added_collections:
+                console.print("[green]Added collections:[/green]")
+                for name in report.added_collections:
+                    console.print(f"  [green]+[/green] {name}")
+            if report.orphaned_collections:
+                console.print("[yellow]Orphaned collections (source table removed):[/yellow]")
+                for name in report.orphaned_collections:
+                    console.print(f"  [yellow]![/yellow] {name}")
+            if report.added_edges:
+                console.print("[green]Added edges:[/green]")
+                for name in report.added_edges:
+                    console.print(f"  [green]+[/green] {name}")
+            if report.removed_edges:
+                console.print("[red]Removed edges (FK dropped):[/red]")
+                for name in report.removed_edges:
+                    console.print(f"  [red]-[/red] {name}")
+            if report.cleaned_fields:
+                console.print("[yellow]Cleaned references:[/yellow]")
+                for note in report.cleaned_fields:
+                    console.print(f"  [yellow]~[/yellow] {note}")
+
+        console.print(
+            f"\n[green]Wrote updated config to[/green] [bold]{out_path}[/bold] "
+            f"([bold]{len(updated.collections)}[/bold] collections, "
+            f"[bold]{len(updated.edges)}[/bold] edges)."
+        )
+
+    except Exception as e:
+        log.exception("migrate_config_failed")
+        console.print(f"[red]Config migration failed:[/red] {e}")
         raise typer.Exit(code=1)
 
 

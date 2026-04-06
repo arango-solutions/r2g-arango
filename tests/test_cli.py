@@ -353,6 +353,109 @@ class TestVisualizeMappingCLI:
         assert "<html" in html.lower()
 
 
+class TestMigrateConfig:
+    def test_no_changes(self, schema_file, config_file):
+        result = runner.invoke(app, [
+            "migrate-config", "--schema", schema_file, "--config", config_file,
+        ])
+        assert result.exit_code == 0
+        assert "up to date" in result.output.lower() or "no migration" in result.output.lower()
+
+    def test_added_table(self, schema_file, config_file, tmp_path):
+        schema = Schema.load_from_file(schema_file)
+        schema.tables["products"] = Table(
+            name="products",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="name", data_type="text"),
+            ],
+            primary_key=["id"],
+        )
+        new_schema_path = tmp_path / "new_schema.json"
+        schema.save_to_file(str(new_schema_path))
+
+        output = str(tmp_path / "migrated.yaml")
+        result = runner.invoke(app, [
+            "migrate-config",
+            "--schema", str(new_schema_path),
+            "--config", config_file,
+            "--output", output,
+        ])
+        assert result.exit_code == 0
+        assert "products" in result.output
+        assert "Added" in result.output
+
+    def test_removed_fk(self, schema_file, config_file, tmp_path):
+        schema = Schema.load_from_file(schema_file)
+        schema.tables["orders"].foreign_keys = []
+        new_path = tmp_path / "no_fk_schema.json"
+        schema.save_to_file(str(new_path))
+
+        output = str(tmp_path / "migrated.yaml")
+        result = runner.invoke(app, [
+            "migrate-config",
+            "--schema", str(new_path),
+            "--config", config_file,
+            "--output", output,
+        ])
+        assert result.exit_code == 0
+        assert "Removed" in result.output or "removed" in result.output.lower()
+
+    def test_json_report(self, schema_file, config_file, tmp_path):
+        schema = Schema.load_from_file(schema_file)
+        schema.tables["products"] = Table(
+            name="products",
+            columns=[Column(name="id", data_type="integer", is_primary_key=True)],
+            primary_key=["id"],
+        )
+        new_path = tmp_path / "new_schema.json"
+        schema.save_to_file(str(new_path))
+
+        output = str(tmp_path / "migrated.yaml")
+        result = runner.invoke(app, [
+            "migrate-config",
+            "--schema", str(new_path),
+            "--config", config_file,
+            "--output", output,
+            "--json-report",
+        ])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "added_collections" in data
+        assert "products" in data["added_collections"]
+
+    def test_missing_schema_exits_1(self, config_file, tmp_path):
+        result = runner.invoke(app, [
+            "migrate-config",
+            "--schema", str(tmp_path / "missing.json"),
+            "--config", config_file,
+        ])
+        assert result.exit_code == 1
+
+    def test_overwrites_input_by_default(self, schema_file, tmp_path):
+        from r2g.config import ConfigManager as CM
+
+        schema = Schema.load_from_file(schema_file)
+        config = CM.generate_default_config(schema)
+        cfg_path = tmp_path / "mapping.yaml"
+        CM.save_config(config, cfg_path)
+
+        result = runner.invoke(app, [
+            "migrate-config",
+            "--schema", schema_file,
+            "--config", str(cfg_path),
+        ])
+        assert result.exit_code == 0
+        assert "mapping.yaml" in result.output
+
+    def test_help(self):
+        result = runner.invoke(app, ["migrate-config", "--help"])
+        assert result.exit_code == 0
+        assert "--schema" in result.output
+        assert "--config" in result.output
+        assert "--output" in result.output
+
+
 class TestDiffSchema:
     def test_no_changes(self, schema_file):
         result = runner.invoke(app, [
