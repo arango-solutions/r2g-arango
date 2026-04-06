@@ -57,6 +57,7 @@ class StreamingPipeline:
         workers: int = 1,
         include_tables: set[str] | None = None,
         exclude_tables: set[str] | None = None,
+        skip_existing: bool = False,
     ) -> None:
         self.pg_conn_string = pg_conn_string
         self.writer = arango_writer
@@ -70,10 +71,33 @@ class StreamingPipeline:
         self.workers = max(1, workers)
         self.include_tables: set[str] | None = include_tables
         self.exclude_tables: set[str] | None = exclude_tables
+        self.skip_existing = skip_existing
+        self.skipped: list[str] = []
         self.previews: dict[str, list[dict[str, Any]]] = {}
         self.errors: dict[str, list[str]] = {}
         self._on_progress: ProgressFn | None = None
         self._lock = __import__("threading").Lock()
+
+    def _should_skip_collection(self, writer: ArangoWriter, collection_name: str) -> bool:
+        """Return True if the collection exists and has data and skip_existing is on."""
+        if not self.skip_existing:
+            return False
+        try:
+            db = writer.db
+            if db.has_collection(collection_name):
+                count = db.collection(collection_name).count()
+                if count > 0:
+                    logger.info(
+                        "skip_existing_collection",
+                        collection=collection_name,
+                        count=count,
+                    )
+                    with self._lock:
+                        self.skipped.append(collection_name)
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _should_include_table(self, table_name: str) -> bool:
         """Check whether a source table passes the include/exclude filters."""
@@ -154,6 +178,8 @@ class StreamingPipeline:
         w = writer or self.writer
 
         if not self.dry_run:
+            if self._should_skip_collection(w, target):
+                return (target, 0)
             if self.drop_collections:
                 w.drop_collection(target)
             w.ensure_collection(target, edge=False)
@@ -213,6 +239,8 @@ class StreamingPipeline:
         w = writer or self.writer
 
         if not self.dry_run:
+            if self._should_skip_collection(w, edge_name):
+                return (edge_name, 0)
             if self.drop_collections:
                 w.drop_collection(edge_name)
             w.ensure_collection(edge_name, edge=True)
@@ -415,4 +443,6 @@ class StreamingPipeline:
         }
         if self.errors:
             result["errors"] = self.errors
+        if self.skipped:
+            result["skipped"] = self.skipped
         return result

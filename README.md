@@ -60,6 +60,8 @@ flowchart LR
 - **Table filtering** -- `--include-tables` and `--exclude-tables` on the `stream` command for selective import of large schemas
 - **Import error reporting** -- document-level errors from ArangoDB bulk imports are captured, logged, and displayed in the summary table instead of silently dropped
 - **Comprehensive type mapping** -- 50+ PostgreSQL types explicitly mapped to JSON types: integer variants, float variants, boolean, JSON/JSONB, UUID, timestamps, intervals, network types, geometric types, and text search types
+- **Schema diff** -- `diff-schema` command compares two schema snapshots and reports added/removed tables, column type changes, nullable changes, primary key changes, and foreign key changes; supports `--json` output for scripting
+- **Skip existing** -- `stream --skip-existing` skips collections that already contain data, enabling resumption of partial streaming runs without re-importing completed collections
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
 - **Automated table dumping** -- `dump-tables` command connects to PostgreSQL and exports each table as a CSV file in one pass
@@ -69,7 +71,8 @@ flowchart LR
 
 ```
 src/r2g/
-├── main.py                     # Typer CLI (13 commands)
+├── main.py                     # Typer CLI (14 commands)
+├── schema_diff.py              # Schema comparison / structural diff
 ├── types.py                    # Pydantic models (Schema, Table, MappingConfig, EdgeDefinition, ...)
 ├── config.py                   # ConfigManager, YAML load/save, PG→JSON type map, join detection
 ├── log.py                      # structlog setup
@@ -238,6 +241,7 @@ Options:
 - `--include-tables users,orders` -- only stream specified tables (and their edges)
 - `--exclude-tables audit_log` -- skip specified tables
 - `--drop-collections` -- drop and recreate target collections before import
+- `--skip-existing` -- skip collections that already have data (for resuming partial runs)
 
 Add `--dry-run` to preview row counts and sample documents without writing to ArangoDB:
 
@@ -266,7 +270,8 @@ r2g stream --dry-run \
 | `visualize-mapping` | Generate interactive HTML visualization of the PG-to-graph mapping |
 | `dump-tables` | Connect to PostgreSQL and dump each table to a CSV file |
 | `validate-config` | Validate mapping config against schema (checks table references, column names, edge definitions) |
-| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, and `--on-duplicate` |
+| `diff-schema` | Compare two schema.json files and report structural changes (tables, columns, types, PKs, FKs); supports `--json` for machine-readable output |
+| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, and `--on-duplicate` |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
 
@@ -298,7 +303,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-276 tests covering types (including composite FK serialization), config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+314 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 

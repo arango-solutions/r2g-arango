@@ -142,43 +142,44 @@ def transform_edges(
 
         reader = DumpReader(dump_file)
         out_path = Path(output_file)
-        transformers = {
-            e: EdgeTransformer(e, table_def, key_separator=mapping.key_separator)
+        transformers = [
+            (e, EdgeTransformer(e, table_def, key_separator=mapping.key_separator))
             for e in matching
-        }
+        ]
 
         if len(matching) == 1:
-            out_paths = {matching[0]: out_path}
+            out_paths = [(matching[0], out_path)]
         else:
             base = out_path.stem
             parent = out_path.parent
             suffix = out_path.suffix if out_path.suffix else ".jsonl"
-            out_paths = {
-                e: parent / f"{base}_{e.edge_collection}{suffix}" for e in matching
-            }
+            out_paths = [
+                (e, parent / f"{base}_{e.edge_collection}{suffix}") for e in matching
+            ]
 
-        handles: dict[EdgeDefinition, Any] = {}
+        handles: list[tuple[EdgeDefinition, Any]] = []
         try:
-            for e, path in out_paths.items():
+            for e, path in out_paths:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                handles[e] = path.open("w", encoding="utf-8")
+                handles.append((e, path.open("w", encoding="utf-8")))
 
+            handle_map = {e.edge_collection: h for e, h in handles}
             counts: dict[str, int] = {e.edge_collection: 0 for e in matching}
             row_num = 0
             for row in reader.read_rows():
-                for edge_def in matching:
-                    doc = transformers[edge_def].transform_row(row)
+                for edge_def, transformer in transformers:
+                    doc = transformer.transform_row(row)
                     if doc is not None:
-                        handles[edge_def].write(json.dumps(doc) + "\n")
+                        handle_map[edge_def.edge_collection].write(json.dumps(doc) + "\n")
                         counts[edge_def.edge_collection] += 1
                 row_num += 1
                 if limit is not None and row_num >= limit:
                     break
         finally:
-            for h in handles.values():
+            for _, h in handles:
                 h.close()
 
-        for e, path in out_paths.items():
+        for e, path in out_paths:
             console.print(
                 f"[green]Wrote[/green] [bold]{counts[e.edge_collection]}[/bold] edges "
                 f"to [bold]{path}[/bold] ([cyan]{e.edge_collection}[/cyan])."
@@ -552,6 +553,9 @@ def stream(
     exclude_tables: Optional[str] = typer.Option(
         None, "--exclude-tables", help="Comma-separated list of tables to exclude"
     ),
+    skip_existing: bool = typer.Option(
+        False, "--skip-existing", help="Skip collections that already contain data (for resuming partial runs)"
+    ),
 ) -> None:
     """Stream data directly from PostgreSQL to ArangoDB (no intermediate files).
 
@@ -591,6 +595,7 @@ def stream(
             workers=workers,
             include_tables=inc,
             exclude_tables=exc,
+            skip_existing=skip_existing,
         )
 
         mode_label = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
@@ -657,6 +662,13 @@ def stream(
         elapsed = results.get("elapsed_seconds", 0)
         throughput = total_rows / elapsed if elapsed > 0 else 0
 
+        skipped = results.get("skipped", [])
+        if skipped:
+            console.print(
+                f"[yellow]Skipped {len(skipped)} existing collection(s):[/yellow] "
+                + ", ".join(skipped)
+            )
+
         import_errors = results.get("errors", {})
         if import_errors:
             err_table = RichTable(title="Import Errors", style="red")
@@ -696,6 +708,92 @@ def stream(
     except Exception as e:
         log.exception("stream_failed")
         console.print(f"[red]Streaming pipeline failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("diff-schema")
+def diff_schema(
+    old_schema: str = typer.Option(..., "--old", help="Path to the old schema.json"),
+    new_schema: str = typer.Option(..., "--new", help="Path to the new schema.json"),
+    json_output: bool = typer.Option(False, "--json", help="Output diff as JSON"),
+) -> None:
+    """Compare two schema files and report structural changes.
+
+    Detects added/removed tables, added/removed/changed columns,
+    primary key changes, and foreign key changes.
+    """
+    from r2g.schema_diff import diff_schemas
+
+    try:
+        old = Schema.load_from_file(old_schema)
+        new = Schema.load_from_file(new_schema)
+        result = diff_schemas(old, new)
+
+        if json_output:
+            console.print(json.dumps(result, indent=2))
+            return
+
+        has_changes = False
+
+        if result["added_tables"]:
+            has_changes = True
+            console.print("[green]Added tables:[/green]")
+            for t in result["added_tables"]:
+                console.print(f"  [green]+[/green] {t}")
+
+        if result["removed_tables"]:
+            has_changes = True
+            console.print("[red]Removed tables:[/red]")
+            for t in result["removed_tables"]:
+                console.print(f"  [red]-[/red] {t}")
+
+        if result["modified_tables"]:
+            has_changes = True
+            for table_name, changes in result["modified_tables"].items():
+                console.print(f"\n[yellow]Modified table:[/yellow] [bold]{table_name}[/bold]")
+
+                for col in changes.get("added_columns", []):
+                    console.print(f"  [green]+[/green] column [cyan]{col['name']}[/cyan] ({col['type']})")
+
+                for col in changes.get("removed_columns", []):
+                    console.print(f"  [red]-[/red] column [cyan]{col}[/cyan]")
+
+                for change in changes.get("type_changes", []):
+                    console.print(
+                        f"  [yellow]~[/yellow] column [cyan]{change['column']}[/cyan]: "
+                        f"{change['old_type']} → {change['new_type']}"
+                    )
+
+                for change in changes.get("nullable_changes", []):
+                    label = "nullable" if change["new_nullable"] else "NOT NULL"
+                    console.print(
+                        f"  [yellow]~[/yellow] column [cyan]{change['column']}[/cyan]: → {label}"
+                    )
+
+                if changes.get("pk_changed"):
+                    console.print(
+                        f"  [yellow]~[/yellow] primary key: "
+                        f"{changes['old_pk']} → {changes['new_pk']}"
+                    )
+
+                for fk in changes.get("added_fks", []):
+                    console.print(
+                        f"  [green]+[/green] FK {fk['columns']} → "
+                        f"{fk['foreign_table']}.{fk['foreign_columns']}"
+                    )
+
+                for fk in changes.get("removed_fks", []):
+                    console.print(
+                        f"  [red]-[/red] FK {fk['columns']} → "
+                        f"{fk['foreign_table']}.{fk['foreign_columns']}"
+                    )
+
+        if not has_changes:
+            console.print("[green]Schemas are identical — no changes detected.[/green]")
+
+    except Exception as e:
+        log.exception("diff_schema_failed")
+        console.print(f"[red]Schema diff failed:[/red] {e}")
         raise typer.Exit(code=1)
 
 

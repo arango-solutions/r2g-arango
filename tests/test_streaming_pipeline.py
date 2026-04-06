@@ -473,3 +473,82 @@ class TestImportErrorSurfacing:
         results = pipeline.run()
 
         assert "errors" not in results
+
+
+class TestSkipExisting:
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_skips_populated_collections(self, mock_psycopg, simple_schema, simple_config):
+        mock_writer = MagicMock(spec=ArangoWriter)
+        mock_writer.import_batch.return_value = {
+            "created": 0, "errors": 0, "empty": 0, "updated": 0, "ignored": 0,
+        }
+        mock_db = MagicMock()
+        mock_db.has_collection.return_value = True
+        mock_coll = MagicMock()
+        mock_coll.count.return_value = 100
+        mock_db.collection.return_value = mock_coll
+        mock_writer.db = mock_db
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            skip_existing=True,
+        )
+
+        results = pipeline.run()
+
+        assert "skipped" in results
+        assert len(results["skipped"]) > 0
+        mock_writer.import_batch.assert_not_called()
+
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_no_skip_when_empty_collection(self, mock_psycopg, simple_schema, simple_config):
+        mock_writer = MagicMock(spec=ArangoWriter)
+        mock_writer.import_batch.return_value = {
+            "created": 0, "errors": 0, "empty": 0, "updated": 0, "ignored": 0,
+        }
+        mock_db = MagicMock()
+        mock_db.has_collection.return_value = True
+        mock_coll = MagicMock()
+        mock_coll.count.return_value = 0
+        mock_db.collection.return_value = mock_coll
+        mock_writer.db = mock_db
+
+        mock_conn = MagicMock()
+
+        def make_cursor(*args, **kwargs):
+            cursor = MagicMock()
+            cursor.__iter__ = MagicMock(return_value=iter([]))
+            cursor.__enter__ = MagicMock(return_value=cursor)
+            cursor.__exit__ = MagicMock(return_value=False)
+            return cursor
+
+        mock_conn.cursor.side_effect = make_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            skip_existing=True,
+        )
+
+        results = pipeline.run()
+
+        assert "skipped" not in results
+        mock_writer.ensure_collection.assert_called()
