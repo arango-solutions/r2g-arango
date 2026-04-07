@@ -1160,6 +1160,10 @@ def cdc_start(
         True, "--create-slot/--no-create-slot",
         help="Automatically create the replication slot if it doesn't exist",
     ),
+    conflict_policy: str = typer.Option(
+        "source_wins", "--conflict-policy",
+        help="Conflict resolution policy: source_wins, last_write_wins, log_and_skip, fail",
+    ),
 ) -> None:
     """Start the CDC listener (continuous polling for PostgreSQL changes).
 
@@ -1167,11 +1171,27 @@ def cdc_start(
     via the HTTP API.  Polls for row-level changes, transforms them
     through the mapping config, and applies deltas in near real-time.
 
+    Conflict policies:
+      source_wins     - PG is truth; upsert on duplicate, insert on missing (default)
+      last_write_wins - compare LSN; reject stale writes
+      log_and_skip    - log conflicts, skip writes
+      fail            - raise on any conflict
+
     Press Ctrl+C to stop gracefully.
     """
+    from r2g.cdc.conflict import ConflictPolicy
     from r2g.cdc.handler import CDCHandler
     from r2g.cdc.pg_listener import PGReplicationListener
     from r2g.connectors.arango_writer import ArangoWriter
+
+    try:
+        policy = ConflictPolicy(conflict_policy)
+    except ValueError:
+        console.print(
+            f"[red]Invalid conflict policy:[/red] '{conflict_policy}'. "
+            f"Choose from: source_wins, last_write_wins, log_and_skip, fail"
+        )
+        raise typer.Exit(code=1)
 
     try:
         schema = Schema.load_from_file(schema_file)
@@ -1185,7 +1205,7 @@ def cdc_start(
         )
         writer.connect()
 
-        handler = CDCHandler(writer, schema, mapping)
+        handler = CDCHandler(writer, schema, mapping, conflict_policy=policy)
         listener = PGReplicationListener(
             pg_conn_string=pg_conn,
             handler=handler,
@@ -1215,6 +1235,16 @@ def cdc_start(
         for k, v in stats.items():
             stats_table.add_row(k, str(v))
         console.print(stats_table)
+
+        conflict_summary = handler.resolver.log.summary()
+        if conflict_summary["total_conflicts"] > 0:
+            ct = RichTable(title=f"Conflicts (policy: {policy.value})")
+            ct.add_column("Type")
+            ct.add_column("Count", justify="right")
+            for ctype, count in conflict_summary["by_type"].items():
+                ct.add_row(ctype, str(count))
+            ct.add_row("[bold]Total[/bold]", f"[bold]{conflict_summary['total_conflicts']}[/bold]")
+            console.print(ct)
 
         writer.close()
 

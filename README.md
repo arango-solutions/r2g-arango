@@ -68,7 +68,7 @@ flowchart LR
 - **Skip existing** -- `stream --skip-existing` skips collections that already contain data, enabling resumption of partial streaming runs without re-importing completed collections
 - **Incremental streaming** -- `stream --since 2026-04-01T00:00:00` filters rows by a timestamp column (auto-detects `updated_at`/`created_at` or use `--since-column`); combine with `--on-duplicate=replace` for basic incremental updates
 - **PK-less table safety** -- tables without a primary key are warned during validation and streaming; documents receive auto-generated keys and edges referencing such tables are flagged
-- **CDC (Change Data Capture)** -- near real-time PostgreSQL→ArangoDB sync via logical replication. `PGReplicationListener` manages replication slots, polls `pg_logical_slot_get_changes`, parses output via `test_decoding` (built-in) or `wal2json` plugins. `DeltaTransformer` converts row-level changes to graph mutations (document upserts/deletes + edge recalculation). `CDCHandler` orchestrates event processing with transaction grouping and stats tracking. CLI commands: `cdc-setup`, `cdc-teardown`, `cdc-status`, `cdc-start`
+- **CDC (Change Data Capture)** -- near real-time PostgreSQL→ArangoDB sync via logical replication. `PGReplicationListener` manages replication slots, polls `pg_logical_slot_get_changes`, parses output via `test_decoding` (built-in) or `wal2json` plugins. `DeltaTransformer` converts row-level changes to graph mutations (document upserts/deletes + edge recalculation). `CDCHandler` orchestrates event processing with transaction grouping and stats tracking. Configurable conflict resolution policies: `source_wins` (default), `last_write_wins`, `log_and_skip`, `fail`. CLI commands: `cdc-setup`, `cdc-teardown`, `cdc-status`, `cdc-start`
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
 - **Automated table dumping** -- `dump-tables` command connects to PostgreSQL and exports each table as a CSV file in one pass
@@ -84,6 +84,7 @@ src/r2g/
 ├── schema_diff.py              # Schema comparison / structural diff
 ├── topo_sort.py                # Topological sort for import ordering, cycle detection
 ├── cdc/                        # Change Data Capture (Phase 3)
+│   ├── conflict.py             # ConflictPolicy, ConflictResolver, ConflictLog
 │   ├── models.py               # ChangeEvent, ArangoDelta, TransactionBatch
 │   ├── parsers.py              # Output plugin parsers (test_decoding, wal2json)
 │   ├── pg_listener.py          # PGReplicationListener: slot mgmt, polling loop
@@ -325,7 +326,7 @@ r2g stream --dry-run \
 | `cdc-setup` | Create a PostgreSQL logical replication slot for CDC (`--slot`, `--plugin test_decoding\|wal2json`) |
 | `cdc-teardown` | Drop a logical replication slot |
 | `cdc-status` | Show replication slot metadata (active, LSN positions) |
-| `cdc-start` | Start the CDC listener: polls for changes, transforms via mapping config, applies deltas to ArangoDB in near real-time (`--poll-interval`, `--batch-size`, `--create-slot/--no-create-slot`) |
+| `cdc-start` | Start the CDC listener: polls for changes, transforms via mapping config, applies deltas to ArangoDB in near real-time (`--poll-interval`, `--batch-size`, `--create-slot/--no-create-slot`, `--conflict-policy`) |
 | `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, `--on-duplicate`, `--since`, and `--since-column` |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
@@ -368,6 +369,24 @@ The listener supports two PostgreSQL output plugins:
 - **`test_decoding`** (default) -- built-in to PostgreSQL, no extensions needed
 - **`wal2json`** -- requires the [wal2json](https://github.com/eulerto/wal2json) extension; provides cleaner JSON output
 
+### Conflict resolution
+
+Use `--conflict-policy` to control how write conflicts are handled:
+
+```bash
+r2g cdc-start --pg-conn "..." schema.json mapping.yaml \
+  --conflict-policy last_write_wins
+```
+
+| Policy | Behaviour |
+| :--- | :--- |
+| `source_wins` (default) | PostgreSQL is the source of truth. INSERT duplicates become upserts; REPLACE on missing documents falls back to insert; DELETE is idempotent. |
+| `last_write_wins` | Compares event LSN against a per-document `_r2g_lsn` field. Stale events are rejected. |
+| `log_and_skip` | Logs every conflict as a warning, skips the write, and continues processing. Useful for monitoring conflict frequency. |
+| `fail` | Raises an error on the first conflict. Use when conflicts indicate a bug. |
+
+A conflict summary table is printed at the end of each CDC session showing counts by conflict type.
+
 For UPDATE/DELETE events, set `REPLICA IDENTITY FULL` on source tables to capture old row values:
 
 ```sql
@@ -391,7 +410,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-453 tests covering CLI commands (via typer.testing.CliRunner, including CDC commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic, error surfacing, and single-document CDC ops), CDC models (ChangeEvent, ArangoDelta, TransactionBatch), CDC output plugin parsers (test_decoding text parsing, wal2json JSON parsing), CDC delta transformer (INSERT/UPDATE/DELETE → graph mutations with edge cleanup), CDC handler (event processing, transaction batching, stats tracking, failure handling), CDC replication listener (slot management, polling, graceful shutdown), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+468 tests covering CLI commands (via typer.testing.CliRunner, including CDC commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic, error surfacing, and single-document CDC ops), CDC models (ChangeEvent, ArangoDelta, TransactionBatch), CDC output plugin parsers (test_decoding text parsing, wal2json JSON parsing), CDC delta transformer (INSERT/UPDATE/DELETE → graph mutations with edge cleanup), CDC handler (event processing, transaction batching, stats tracking, failure handling, conflict resolution integration), CDC conflict resolution (ConflictPolicy, ConflictResolver, ConflictLog -- all four policies with duplicate/missing/stale scenarios), CDC replication listener (slot management, polling, graceful shutdown), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 
@@ -411,7 +430,7 @@ Phases 1 and 2 are implemented. See [PRD.md](PRD.md) for the full phased roadmap
 
 - **Phase 1** -- Table dump file processing (MVP): schema ingestion, JSONL transforms, CSV-direct import, visualizer -- **implemented**
 - **Phase 2** -- Direct PostgreSQL streaming (server-side cursors, HTTP API bulk import, REPEATABLE READ snapshots) -- **implemented**
-- **Phase 3** -- CDC integration: event models, delta transformer, handler, replication listener, output plugin parsers (`test_decoding`/`wal2json`), continuous polling loop, CLI commands -- **implemented** (conflict resolution pending)
+- **Phase 3** -- CDC integration: event models, delta transformer, handler, replication listener, output plugin parsers (`test_decoding`/`wal2json`), continuous polling loop, conflict resolution (`source_wins`/`last_write_wins`/`log_and_skip`/`fail`), CLI commands -- **complete**
 - **Phase 4** -- Kafka consumer (Debezium, transactional ordering)
 - **Phase 5** -- Snowflake integration (schema reader, type mapping, streaming, FK inference, source abstraction layer)
 - **Phase 6+** -- Additional sources (MySQL, SQL Server), LLM-driven ontology derivation, ArangoRDF, bi-directional sync

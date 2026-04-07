@@ -94,7 +94,7 @@ class TestHandleEvent:
         assert handler.stats.events_received == 1
         assert handler.stats.deltas_applied == 1
         assert handler.stats.last_lsn == "0/ABC"
-        mock_writer.apply_delta.assert_called_once()
+        mock_writer.insert_document.assert_called_once()
 
     def test_insert_with_edge(self, schema, config, mock_writer):
         handler = CDCHandler(mock_writer, schema, config)
@@ -106,7 +106,7 @@ class TestHandleEvent:
         deltas = handler.handle_event(evt)
         assert len(deltas) == 2
         assert handler.stats.deltas_applied == 2
-        assert mock_writer.apply_delta.call_count == 2
+        assert mock_writer.insert_document.call_count == 2
 
     def test_delete_event(self, schema, config, mock_writer):
         handler = CDCHandler(mock_writer, schema, config)
@@ -196,7 +196,8 @@ class TestGroupByTransaction:
 class TestDeltaFailure:
     def test_failed_delta_increments_counter(self, schema, config):
         writer = MagicMock(spec=ArangoWriter)
-        writer.apply_delta = MagicMock(side_effect=RuntimeError("connection lost"))
+        writer.ensure_collection = MagicMock()
+        writer.insert_document = MagicMock(side_effect=RuntimeError("connection lost"))
         handler = CDCHandler(writer, schema, config)
         evt = ChangeEvent(
             operation=ChangeOperation.INSERT,

@@ -11,9 +11,11 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Callable, Iterable
 
+from r2g.cdc.conflict import ConflictPolicy, ConflictResolver
 from r2g.cdc.delta_transformer import DeltaTransformer
 from r2g.cdc.models import (
     ArangoDelta,
+    ArangoOperation,
     ChangeEvent,
     TransactionBatch,
 )
@@ -33,6 +35,7 @@ class CDCStats:
         self.events_received: int = 0
         self.deltas_applied: int = 0
         self.deltas_failed: int = 0
+        self.deltas_skipped: int = 0
         self.transactions_completed: int = 0
         self.last_lsn: str | None = None
 
@@ -41,6 +44,7 @@ class CDCStats:
             "events_received": self.events_received,
             "deltas_applied": self.deltas_applied,
             "deltas_failed": self.deltas_failed,
+            "deltas_skipped": self.deltas_skipped,
             "transactions_completed": self.transactions_completed,
             "last_lsn": self.last_lsn,
         }
@@ -54,6 +58,12 @@ class CDCHandler:
         handler.handle_event(event)        # one at a time
         handler.handle_events(events)      # batch
         handler.handle_transaction(events)  # grouped by txn
+
+    Conflict resolution policy can be set via ``conflict_policy``:
+    - ``source_wins`` (default) -- PG is truth; upsert on duplicate, insert on missing
+    - ``last_write_wins`` -- compare LSN; reject stale writes
+    - ``log_and_skip`` -- log conflicts, skip writes
+    - ``fail`` -- raise on any conflict
     """
 
     def __init__(
@@ -62,18 +72,40 @@ class CDCHandler:
         schema: Schema,
         config: MappingConfig,
         on_progress: ProgressFn | None = None,
+        conflict_policy: ConflictPolicy = ConflictPolicy.SOURCE_WINS,
     ) -> None:
         self.writer = writer
         self.transformer = DeltaTransformer(schema, config)
         self._on_progress = on_progress
         self.stats = CDCStats()
+        self.resolver = ConflictResolver(policy=conflict_policy)
 
-    def _apply_delta(self, delta: ArangoDelta) -> bool:
-        """Apply a single delta. Returns True on success."""
+    def _apply_delta(self, delta: ArangoDelta, lsn: str | None = None) -> bool:
+        """Apply a single delta with conflict resolution. Returns True on success."""
         try:
-            self.writer.apply_delta(delta)
-            self.stats.deltas_applied += 1
-            return True
+            self.writer.ensure_collection(delta.collection, edge=delta.is_edge)
+
+            if delta.operation == ArangoOperation.INSERT:
+                ok = self.resolver.resolve_insert(
+                    self.writer, delta.collection, delta.document, lsn=lsn,
+                )
+            elif delta.operation == ArangoOperation.REPLACE:
+                ok = self.resolver.resolve_replace(
+                    self.writer, delta.collection, delta.document, lsn=lsn,
+                )
+            elif delta.operation == ArangoOperation.DELETE:
+                ok = self.resolver.resolve_delete(
+                    self.writer, delta.collection, delta.effective_key,
+                )
+            else:
+                self.writer.apply_delta(delta)
+                ok = True
+
+            if ok:
+                self.stats.deltas_applied += 1
+            else:
+                self.stats.deltas_skipped += 1
+            return ok
         except Exception as exc:
             self.stats.deltas_failed += 1
             logger.warning(
@@ -83,6 +115,8 @@ class CDCHandler:
                 key=delta.effective_key,
                 error=str(exc),
             )
+            if self.resolver.policy == ConflictPolicy.FAIL:
+                raise
             return False
 
     def handle_event(self, event: ChangeEvent) -> list[ArangoDelta]:
@@ -95,7 +129,7 @@ class CDCHandler:
         deltas = self.transformer.transform(event)
 
         for delta in deltas:
-            self._apply_delta(delta)
+            self._apply_delta(delta, lsn=event.lsn)
 
         if event.lsn:
             self.stats.last_lsn = event.lsn
@@ -132,14 +166,15 @@ class CDCHandler:
             source_events=len(events),
         )
 
-        all_deltas: list[ArangoDelta] = []
+        all_deltas: list[tuple[ArangoDelta, str | None]] = []
         for event in events:
             self.stats.events_received += 1
             deltas = self.transformer.transform(event)
-            all_deltas.extend(deltas)
+            for d in deltas:
+                all_deltas.append((d, event.lsn))
 
-        for delta in all_deltas:
-            self._apply_delta(delta)
+        for delta, lsn in all_deltas:
+            self._apply_delta(delta, lsn=lsn)
             batch.deltas.append(delta)
 
         self.stats.transactions_completed += 1

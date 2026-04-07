@@ -158,6 +158,7 @@ class TestHelp:
         assert "--batch-size" in result.output
         assert "--endpoint" in result.output
         assert "SCHEMA_FILE" in result.output
+        assert "--conflict-policy" in result.output
 
 
 class TestValidateSchema:
