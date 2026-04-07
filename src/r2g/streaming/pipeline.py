@@ -59,6 +59,8 @@ class StreamingPipeline:
         include_tables: set[str] | None = None,
         exclude_tables: set[str] | None = None,
         skip_existing: bool = False,
+        since: str | None = None,
+        since_column: str | None = None,
     ) -> None:
         self.pg_conn_string = pg_conn_string
         self.writer = arango_writer
@@ -73,6 +75,8 @@ class StreamingPipeline:
         self.include_tables: set[str] | None = include_tables
         self.exclude_tables: set[str] | None = exclude_tables
         self.skip_existing = skip_existing
+        self.since = since
+        self.since_column = since_column
         self.skipped: list[str] = []
         self.previews: dict[str, list[dict[str, Any]]] = {}
         self.errors: dict[str, list[str]] = {}
@@ -137,9 +141,31 @@ class StreamingPipeline:
         from psycopg.rows import tuple_row
 
         qualified = f"{self.pg_schema}.{table_name}"
+        since_col = self._resolve_since_column(table_name)
         with conn.cursor(row_factory=tuple_row) as cur:
-            cur.execute(f"SELECT count(*) FROM {qualified}")  # noqa: S608
+            if since_col and self.since:
+                cur.execute(
+                    f"SELECT count(*) FROM {qualified} WHERE {since_col} >= %s",  # noqa: S608
+                    (self.since,),
+                )
+            else:
+                cur.execute(f"SELECT count(*) FROM {qualified}")  # noqa: S608
             return cur.fetchone()[0]
+
+    def _resolve_since_column(self, table_name: str) -> str | None:
+        """Determine the timestamp column for --since filtering on a table."""
+        if self.since is None:
+            return None
+        table = self.schema.tables.get(table_name)
+        if table is None:
+            return None
+        col_names = {c.name for c in table.columns}
+        if self.since_column:
+            return self.since_column if self.since_column in col_names else None
+        for candidate in ("updated_at", "modified_at", "last_modified", "created_at"):
+            if candidate in col_names:
+                return candidate
+        return None
 
     def _stream_rows(
         self,
@@ -150,9 +176,17 @@ class StreamingPipeline:
         qualified = f"{self.pg_schema}.{table_name}"
         cursor_name = f"r2g_{table_name}"
 
+        since_col = self._resolve_since_column(table_name)
         with conn.cursor(name=cursor_name, row_factory=dict_row) as cur:
             cur.itersize = self.batch_size
-            cur.execute(f"SELECT * FROM {qualified}")  # noqa: S608
+            if since_col and self.since:
+                logger.info("stream_since_filter", table=table_name, column=since_col, since=self.since)
+                cur.execute(
+                    f"SELECT * FROM {qualified} WHERE {since_col} >= %s",  # noqa: S608
+                    (self.since,),
+                )
+            else:
+                cur.execute(f"SELECT * FROM {qualified}")  # noqa: S608
             yield from cur
 
     def _make_writer(self) -> ArangoWriter:
@@ -184,6 +218,14 @@ class StreamingPipeline:
             if self.drop_collections:
                 w.drop_collection(target)
             w.ensure_collection(target, edge=False)
+
+        if not table_def.primary_key:
+            logger.warning(
+                "table_has_no_primary_key",
+                table=table_name,
+                target=target,
+                hint="Documents will receive auto-generated _key values; edges referencing this table may fail",
+            )
 
         transformer = NodeTransformer(
             table_def,

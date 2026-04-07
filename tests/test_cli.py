@@ -117,6 +117,8 @@ class TestHelp:
         assert "--include-tables" in result.output
         assert "--exclude-tables" in result.output
         assert "--on-duplicate" in result.output
+        assert "--since" in result.output
+        assert "--since-column" in result.output
 
     def test_validate_config_help(self):
         result = runner.invoke(app, ["validate-config", "--help"])

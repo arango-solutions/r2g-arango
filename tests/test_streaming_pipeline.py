@@ -552,3 +552,142 @@ class TestSkipExisting:
 
         assert "skipped" not in results
         mock_writer.ensure_collection.assert_called()
+
+
+class TestSinceFiltering:
+    def test_resolve_since_column_explicit(self, simple_schema, simple_config):
+        mock_writer = MagicMock(spec=ArangoWriter)
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            since="2026-01-01",
+            since_column="name",
+        )
+        assert pipeline._resolve_since_column("users") == "name"
+
+    def test_resolve_since_column_not_found(self, simple_schema, simple_config):
+        mock_writer = MagicMock(spec=ArangoWriter)
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            since="2026-01-01",
+            since_column="nonexistent",
+        )
+        assert pipeline._resolve_since_column("users") is None
+
+    def test_resolve_since_column_autodetect(self, simple_config):
+        schema_with_ts = Schema(tables={
+            "events": Table(
+                name="events",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(name="updated_at", data_type="timestamp"),
+                    Column(name="payload", data_type="text"),
+                ],
+                primary_key=["id"],
+            ),
+        })
+        mock_writer = MagicMock(spec=ArangoWriter)
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=schema_with_ts,
+            config=simple_config,
+            since="2026-01-01",
+        )
+        assert pipeline._resolve_since_column("events") == "updated_at"
+
+    def test_resolve_since_column_none_when_no_since(self, simple_schema, simple_config):
+        mock_writer = MagicMock(spec=ArangoWriter)
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+        )
+        assert pipeline._resolve_since_column("users") is None
+
+    def test_resolve_since_column_autodetect_created_at(self, simple_config):
+        schema_with_ts = Schema(tables={
+            "logs": Table(
+                name="logs",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(name="created_at", data_type="timestamp"),
+                    Column(name="msg", data_type="text"),
+                ],
+                primary_key=["id"],
+            ),
+        })
+        mock_writer = MagicMock(spec=ArangoWriter)
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=schema_with_ts,
+            config=simple_config,
+            since="2026-01-01",
+        )
+        assert pipeline._resolve_since_column("logs") == "created_at"
+
+    def test_resolve_since_column_no_match(self, simple_schema, simple_config):
+        """When --since is provided but the table has no timestamp column, returns None."""
+        mock_writer = MagicMock(spec=ArangoWriter)
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
+            since="2026-01-01",
+        )
+        assert pipeline._resolve_since_column("users") is None
+
+    @patch("r2g.streaming.pipeline.psycopg")
+    def test_pkless_table_warning(self, mock_psycopg, simple_config):
+        """Tables with no PK should log a warning but not crash."""
+        pkless_schema = Schema(tables={
+            "logs": Table(
+                name="logs",
+                columns=[
+                    Column(name="message", data_type="text"),
+                    Column(name="created_at", data_type="timestamp"),
+                ],
+                primary_key=[],
+            ),
+        })
+        pkless_config = MappingConfig(
+            collections={
+                "logs": CollectionMapping(source_table="logs", target_collection="logs"),
+            },
+        )
+
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__iter__ = MagicMock(return_value=iter([
+            {"message": "hello", "created_at": "2026-01-01"},
+        ]))
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_psycopg.connect.return_value = mock_conn
+
+        mock_writer = MagicMock(spec=ArangoWriter)
+        mock_writer.ensure_collection = MagicMock()
+        mock_writer.collection_count = MagicMock(return_value=0)
+        mock_writer.import_batch = MagicMock(return_value={
+            "created": 1, "errors": 0, "empty": 0, "updated": 0, "ignored": 0,
+        })
+        pipeline = StreamingPipeline(
+            pg_conn_string="postgresql://test",
+            arango_writer=mock_writer,
+            schema=pkless_schema,
+            config=pkless_config,
+            dry_run=True,
+        )
+        results = pipeline.run()
+        assert results is not None

@@ -437,3 +437,23 @@ class TestValidateConfig:
         )
         issues = validate_config(schema, config)
         assert len(issues) >= 2
+
+    def test_pkless_table_warning(self):
+        pkless_schema = Schema(tables={
+            "logs": Table(
+                name="logs",
+                columns=[
+                    Column(name="message", data_type="text"),
+                    Column(name="ts", data_type="timestamp"),
+                ],
+                primary_key=[],
+            ),
+        })
+        config = MappingConfig(
+            collections={
+                "logs": CollectionMapping(source_table="logs", target_collection="logs"),
+            },
+        )
+        issues = validate_config(pkless_schema, config)
+        assert len(issues) == 1
+        assert "no primary key" in issues[0]

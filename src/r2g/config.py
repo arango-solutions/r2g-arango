@@ -148,6 +148,15 @@ def validate_config(schema: Schema, config: MappingConfig) -> list[str]:
                         f"is not a column in table '{src}'"
                     )
 
+    for key, cm in config.collections.items():
+        src = cm.source_table
+        if src in schema.tables and not schema.tables[src].primary_key:
+            issues.append(
+                f"Collection '{key}': source table '{src}' has no primary key; "
+                f"documents will receive auto-generated _key values and edges "
+                f"referencing this table may produce broken links"
+            )
+
     for idx, edge in enumerate(config.edges):
         label = edge.edge_collection or f"edges[{idx}]"
         if edge.from_collection not in schema.tables:

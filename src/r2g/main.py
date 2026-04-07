@@ -627,6 +627,14 @@ def stream(
     skip_existing: bool = typer.Option(
         False, "--skip-existing", help="Skip collections that already contain data (for resuming partial runs)"
     ),
+    since: Optional[str] = typer.Option(
+        None, "--since",
+        help="Only stream rows where the timestamp column >= this value (ISO 8601, e.g. 2026-04-01T00:00:00)"
+    ),
+    since_column: Optional[str] = typer.Option(
+        None, "--since-column",
+        help="Column to use for --since filtering (default: auto-detect updated_at/created_at)"
+    ),
 ) -> None:
     """Stream data directly from PostgreSQL to ArangoDB (no intermediate files).
 
@@ -635,6 +643,7 @@ def stream(
     transforms rows on the fly, and bulk-imports into ArangoDB via the HTTP API.
 
     Use --dry-run to preview row counts and sample documents without writing.
+    Use --since with --on-duplicate=replace for basic incremental updates.
     """
     from r2g.connectors.arango_writer import ArangoWriter
     from r2g.streaming.pipeline import StreamingPipeline
@@ -667,6 +676,8 @@ def stream(
             include_tables=inc,
             exclude_tables=exc,
             skip_existing=skip_existing,
+            since=since,
+            since_column=since_column,
         )
 
         mode_label = "[yellow]DRY RUN[/yellow] — " if dry_run else ""

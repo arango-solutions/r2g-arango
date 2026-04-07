@@ -66,6 +66,8 @@ flowchart LR
 - **Topological import ordering** -- document collections are imported in dependency order (FK targets before FK sources) so that referenced vertices exist before edges are created; circular FK dependencies are detected and warned
 - **Environment variable support** -- connection parameters (`PG_CONN`, `ARANGO_ENDPOINT`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`) can be set via environment variables or a `.env` file; CLI flags override env vars when both are provided
 - **Skip existing** -- `stream --skip-existing` skips collections that already contain data, enabling resumption of partial streaming runs without re-importing completed collections
+- **Incremental streaming** -- `stream --since 2026-04-01T00:00:00` filters rows by a timestamp column (auto-detects `updated_at`/`created_at` or use `--since-column`); combine with `--on-duplicate=replace` for basic incremental updates
+- **PK-less table safety** -- tables without a primary key are warned during validation and streaming; documents receive auto-generated keys and edges referencing such tables are flagged
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
 - **Automated table dumping** -- `dump-tables` command connects to PostgreSQL and exports each table as a CSV file in one pass
@@ -313,7 +315,7 @@ r2g stream --dry-run \
 | `validate-data` | Check referential integrity of dump files (FK values vs target PKs); reports orphaned references before import |
 | `diff-schema` | Compare two schema.json files and report structural changes (tables, columns, types, PKs, FKs); supports `--json` for machine-readable output |
 | `migrate-config` | Auto-update a mapping config YAML to match an evolved schema: adds new tables/edges, removes stale edges, flags orphaned collections, cleans dropped-column references; `--json-report` for machine-readable output |
-| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, and `--on-duplicate` |
+| `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, `--on-duplicate`, `--since`, and `--since-column` |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
 
@@ -334,7 +336,7 @@ This is an experimental reference implementation. The following constraints appl
 
 - **PostgreSQL only (currently)** -- the schema reader uses `pg_catalog` queries specific to PostgreSQL. Snowflake support is planned (Phase 5 in the PRD). No MySQL, SQLite, or other source support yet.
 - **Data validation is opt-in** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. Use `validate-data` before import to catch these, but it is not enforced automatically.
-- **No incremental/delta support** -- every run is a full re-export. There is no change tracking, CDC, or diff-based processing yet (see Phases 2-4 in the PRD).
+- **Basic incremental support only** -- `stream --since` filters rows by a timestamp column for basic incremental updates, but there is no change tracking, CDC, or diff-based processing yet (see Phases 3-4 in the PRD).
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
 - **ArangoDB write path** -- the `stream` command connects directly to ArangoDB via python-arango, but the file-based paths (`generate-csv-import`, `generate-import`) still require `arangoimport` installed separately.
 - **Credential handling** -- connection strings and passwords appear in CLI arguments and generated scripts. The import script uses environment variable overrides, but the tool has no secrets management.
@@ -345,7 +347,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-359 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+373 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 
