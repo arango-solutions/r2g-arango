@@ -7,14 +7,14 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--2 implemented and hardened; Phases 3--5 are planned or exploratory |
+| **Status** | Phases 1--2 implemented and hardened; Phases 3--6 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
 
 ## 1. Goals and objectives
 
-The primary goal of the R2G-ETL Pipeline is an experimental, configurable tool for transforming and loading data from PostgreSQL relational schemas into ArangoDB graph schemas. It serves as a reference implementation demonstrating the mechanical mapping patterns.
+The primary goal of the R2G-ETL Pipeline is an experimental, configurable tool for transforming and loading data from relational schemas into ArangoDB graph schemas. It serves as a reference implementation demonstrating the mechanical mapping patterns. While PostgreSQL is the primary supported source, the architecture is designed to accommodate additional relational sources (see Phase 5: Snowflake integration).
 
 ### Key objectives
 
@@ -127,7 +127,7 @@ The roadmap is organized into four implementation phases, from MVP through Kafka
 
 | Category | Requirement | Details |
 | :--- | :--- | :--- |
-| **Architecture** | Modularity | Design so data sources can be swapped (e.g., PostgreSQL replaced by MySQL) without rewriting the whole tool. Currently PostgreSQL-only. |
+| **Architecture** | Modularity | Design so data sources can be swapped (e.g., PostgreSQL replaced by Snowflake or MySQL) without rewriting the whole tool. Currently PostgreSQL-only; Snowflake planned (Phase 5). |
 | **Target DB** | ArangoDB | Load via `arangoimport` (implemented) and/or the ArangoDB HTTP API (planned for Phase 2). |
 | **Transformation** | Schema mapping | Configurable prefix mapping for `_from` and `_to` (e.g., `user_1` to `Users/1`). |
 | **Data integrity** | Key generation | Correct document `_key` values derived from source primary keys, including composite keys joined by a configurable separator. |
@@ -135,19 +135,41 @@ The roadmap is organized into four implementation phases, from MVP through Kafka
 
 ### Known constraints
 
-- **No referential integrity validation**: the tool does not verify that FK values actually reference existing PKs. Orphaned references will produce edges pointing to non-existent vertices in ArangoDB.
+- **Referential integrity is opt-in**: the `validate-data` command checks FK values against PK sets from dump files, but this check is not enforced automatically during import. Orphaned references will still produce edges pointing to non-existent vertices if validation is skipped.
 - **No idempotency guarantees**: re-running the pipeline with `--drop-collections` replaces all data. There is no merge, diff, or conflict resolution for repeated loads.
-- **Credential handling**: connection strings and passwords appear in CLI arguments. Generated import scripts use environment variable overrides (`ARANGO_ENDPOINT`, `ARANGO_PASSWORD`, etc.) but the tool has no integrated secrets management.
+- **Credential handling**: connection parameters can be loaded from `.env` files or environment variables (`PG_CONN`, `ARANGO_ENDPOINT`, etc.), but generated import scripts still contain connection defaults. No integrated secrets management (e.g., HashiCorp Vault).
+
+### Phase 5: Snowflake integration -- Planned
+
+Snowflake is a common data warehouse among R2G users. This phase adds Snowflake as a source alongside PostgreSQL, reusing the existing mapping, transformation, and loading infrastructure.
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P5.1** | **Snowflake schema reader** | Connect to Snowflake via the Snowflake Connector for Python (`snowflake-connector-python`) and introspect `INFORMATION_SCHEMA` to extract tables, columns, primary keys, and foreign key constraints (imported/inferred). Output the same `Schema` model used by PostgreSQL. | P1.1 |
+| **P5.2** | **Snowflake type mapping** | Map Snowflake data types (`NUMBER`, `VARCHAR`, `BOOLEAN`, `TIMESTAMP_*`, `VARIANT`, `ARRAY`, `OBJECT`, `GEOGRAPHY`, `GEOMETRY`, etc.) to JSON types. `VARIANT`/`OBJECT` map to JSON objects; `ARRAY` maps to JSON arrays. Extend `DEFAULT_TYPE_MAP` with Snowflake-specific entries. | P1.4 |
+| **P5.3** | **Snowflake dump export** | `dump-tables` command variant that uses `COPY INTO @stage` or cursor-based extraction to export Snowflake tables as CSV files. Handle Snowflake-specific CSV quoting and NULL representation. | P5.1 |
+| **P5.4** | **Snowflake streaming** | `stream` command variant that reads from Snowflake using the Python connector's cursor (Snowflake does not support server-side cursors like PostgreSQL, but supports `fetch_pandas_all()` / `fetch_arrow_all()` for batched reads). Reuse the ArangoDB writer path. Snowflake's `RESULT_SCAN` or warehouse-level snapshot isolation provides read consistency. | P5.1, P2.3 |
+| **P5.5** | **Source abstraction layer** | Refactor the schema reader and streaming pipeline behind a `SourceConnector` protocol/ABC so PostgreSQL and Snowflake (and future sources) share a common interface. CLI commands accept `--source-type pg|snowflake` or auto-detect from connection string format. | P5.1, P5.4 |
+| **P5.6** | **Snowflake FK inference** | Snowflake does not enforce foreign key constraints (they are informational only and often absent). Provide a `--infer-fks` option that analyzes column naming conventions (e.g., `user_id` matching `users.id`) and value overlap to suggest FK relationships. Require user confirmation via the mapping config. | P5.1 |
+
+#### Snowflake-specific considerations
+
+- **FK constraints are not enforced in Snowflake.** They can be declared but are informational only. Many Snowflake schemas have no FK metadata at all. The FK inference feature (P5.6) addresses this gap.
+- **Semi-structured data.** Snowflake `VARIANT`, `OBJECT`, and `ARRAY` columns can contain nested JSON. These should be preserved as nested structures in ArangoDB documents rather than flattened.
+- **Large tables.** Snowflake tables can be very large. The streaming path should support `LIMIT`/`OFFSET` pagination or warehouse-level result caching to manage memory. Arrow-based fetching (`fetch_arrow_all()`) provides the best throughput for large result sets.
+- **Authentication.** Snowflake supports multiple auth methods (user/password, key-pair, SSO/OAuth, external browser). The connector should accept standard Snowflake connection parameters: `account`, `user`, `password`, `warehouse`, `database`, `schema`, `role`. These should be loadable from env vars (`SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, etc.) and `.env` files.
+- **Cost implications.** Every query against Snowflake consumes warehouse credits. The schema reader and streaming pipeline should minimize the number of queries. `--dry-run` should clearly report query cost implications.
 
 ---
 
-## 5. Future considerations (Phase 5+) -- Exploratory
+## 6. Future considerations (Phase 6+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
 
-- **Ontology derivation (LLM integration):** Use a large language model to analyze the PostgreSQL schema and propose an optimized target ArangoDB graph schema for a given domain. This could suggest which tables should be vertices vs. edges, identify implicit relationships, and recommend denormalization strategies. Feasibility has improved significantly with current model capabilities.
+- **Additional source databases:** MySQL, SQL Server, Oracle, and other relational databases could be added following the same `SourceConnector` pattern established in Phase 5. Each requires a source-specific schema reader, type map, and streaming adapter.
+- **Ontology derivation (LLM integration):** Use a large language model to analyze the source schema and propose an optimized target ArangoDB graph schema for a given domain. This could suggest which tables should be vertices vs. edges, identify implicit relationships, and recommend denormalization strategies. Feasibility has improved significantly with current model capabilities.
 - **ArangoRDF integration:** Emit data compatible with ArangoRDF so RDF, property graph, and labeled property graph representations can be selected as needed. Requires understanding the target use case (SPARQL queries, knowledge graphs, etc.) to choose the right representation.
-- **Bi-directional synchronization:** Propagate changes from ArangoDB back to PostgreSQL. This is an extremely complex problem involving conflict resolution, schema evolution, and transactional consistency across two fundamentally different data models. Should be considered only if a concrete use case demands it.
+- **Bi-directional synchronization:** Propagate changes from ArangoDB back to the source database. This is an extremely complex problem involving conflict resolution, schema evolution, and transactional consistency across two fundamentally different data models. Should be considered only if a concrete use case demands it.
 
 ---
 
@@ -165,5 +187,6 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **Data Integrity & UX** | **April 2026** | Import error surfacing (document-level errors captured and reported instead of silent failures). `--include-tables` / `--exclude-tables` for selective streaming. `source_schema` now populated from actual PG schema. Extended PG type map (50+ types). Tests for self-referential FKs and duplicate edge naming. 276 tests. |
 | **Developer Experience** | **April 2026** | `diff-schema` command for comparing schema snapshots (added/removed tables, column changes, FK changes, with `--json` output). `--skip-existing` flag for resuming partial streaming runs. CLI integration test suite (31 tests via typer CliRunner). Fixed `transform-edges` unhashable EdgeDefinition bug. 314 tests. |
 | **Config Migration** | **April 2026** | `migrate-config` command auto-updates mapping YAML when PG schema evolves: adds new tables/edges, removes stale edges, flags orphaned collections, cleans dropped-column references (field_mappings, include/exclude_fields, type_overrides). Preserves all user customizations. `--json-report` for CI pipelines. Typer upgraded from 0.12 to 0.24 for Click 8.3 compatibility. 341 tests. |
+| **Usability & Safety** | **April 2026** | `.env` file and environment variable support (`PG_CONN`, `ARANGO_ENDPOINT`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`) via python-dotenv -- credentials no longer required in CLI args. `validate-data` command checks FK referential integrity of dump files before import. Topological import ordering ensures FK targets are loaded before sources; circular FK deps detected and warned. `.env.example` template. 359 tests. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.

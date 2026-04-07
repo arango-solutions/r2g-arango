@@ -27,8 +27,73 @@ log = get_logger(__name__)
 def main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable debug logging"),
     json_log: bool = typer.Option(False, "--json-log", help="Output logs as JSON"),
+    env_file: Optional[str] = typer.Option(
+        None, "--env-file", help="Path to .env file (default: auto-detect .env in cwd)"
+    ),
 ) -> None:
+    from dotenv import load_dotenv
+
+    load_dotenv(env_file or ".env", override=False)
     setup_logging(level="DEBUG" if verbose else "INFO", json_output=json_log)
+
+
+@app.command("validate-data")
+def validate_data_cmd(
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+    dumps_dir: str = typer.Option(..., "--data-dir", help="Directory containing CSV dump files"),
+    file_pattern: str = typer.Option("*.csv", "--file-pattern", help="Glob pattern for dump files"),
+    max_issues: int = typer.Option(100, "--max-issues", help="Max issues to report per FK relationship"),
+) -> None:
+    """Validate referential integrity of dump data before import.
+
+    Reads CSV dump files, builds PK lookup sets per table, then checks
+    every FK column value to ensure the referenced PK exists in the
+    target table's dump. Reports orphaned references that would produce
+    broken edges in ArangoDB.
+    """
+    from r2g.data_validator import validate_data
+
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+        report = validate_data(schema, mapping, dumps_dir, file_pattern, max_issues)
+
+        console.print(
+            f"[dim]Scanned {report.rows_scanned:,} rows across "
+            f"{report.tables_checked} tables, {report.fk_checks:,} FK checks, "
+            f"{report.pk_sets_built} PK sets built[/dim]\n"
+        )
+
+        if report.is_clean:
+            console.print("[green]Data integrity check passed — no orphaned FK references found.[/green]")
+        else:
+            summary = report.summary_by_fk()
+            table = RichTable(title=f"Orphaned FK References ({len(report.issues)} issues)")
+            table.add_column("FK Relationship", style="cyan")
+            table.add_column("Orphans", justify="right", style="red")
+            for fk_label, count in sorted(summary.items(), key=lambda x: -x[1]):
+                table.add_row(fk_label, f"{count:,}")
+            console.print(table)
+
+            console.print(f"\n[yellow]Sample orphaned values (first {min(10, len(report.issues))}):[/yellow]")
+            for issue in report.issues[:10]:
+                console.print(
+                    f"  [red]![/red] {issue.source_table}.{issue.fk_column} "
+                    f"row {issue.row_number}: value '{issue.orphan_value}' "
+                    f"not in {issue.target_table} PKs"
+                )
+            if len(report.issues) > 10:
+                console.print(f"  [dim]... and {len(report.issues) - 10} more[/dim]")
+
+            raise typer.Exit(code=1)
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        log.exception("validate_data_failed")
+        console.print(f"[red]Data validation failed:[/red] {e}")
+        raise typer.Exit(code=1)
 
 
 @app.command("validate-config")
@@ -311,10 +376,12 @@ def generate_import(
     config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
     data_dir: str = typer.Option(..., "--data-dir", help="Directory containing JSONL files"),
     output: str = typer.Option("import.sh", "--output", "-o", help="Output shell script path"),
-    endpoint: str = typer.Option("http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL"),
-    database: str = typer.Option("_system", "--database", "-d", help="Database name"),
-    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username"),
-    password: str = typer.Option("", "--password", "-p", help="ArangoDB password"),
+    endpoint: str = typer.Option(
+        "http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL", envvar="ARANGO_ENDPOINT"
+    ),
+    database: str = typer.Option("_system", "--database", "-d", help="Database name", envvar="ARANGO_DB"),
+    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username", envvar="ARANGO_USER"),
+    password: str = typer.Option("", "--password", "-p", help="ArangoDB password", envvar="ARANGO_PASSWORD"),
     on_duplicate: str = typer.Option("ignore", "--on-duplicate", help="arangoimport --on-duplicate value"),
     graph_name: Optional[str] = typer.Option(None, "--graph-name", help="If set, also write a graph creation AQL file"),
 ) -> None:
@@ -352,10 +419,12 @@ def generate_csv_import(
     config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
     data_dir: str = typer.Option(..., "--data-dir", help="Directory containing PG CSV dump files"),
     output: str = typer.Option("import_csv.sh", "--output", "-o", help="Output shell script path"),
-    endpoint: str = typer.Option("http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL"),
-    database: str = typer.Option("_system", "--database", "-d", help="Database name"),
-    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username"),
-    password: str = typer.Option("", "--password", "-p", help="ArangoDB password"),
+    endpoint: str = typer.Option(
+        "http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL", envvar="ARANGO_ENDPOINT"
+    ),
+    database: str = typer.Option("_system", "--database", "-d", help="Database name", envvar="ARANGO_DB"),
+    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username", envvar="ARANGO_USER"),
+    password: str = typer.Option("", "--password", "-p", help="ArangoDB password", envvar="ARANGO_PASSWORD"),
     on_duplicate: str = typer.Option("replace", "--on-duplicate", help="arangoimport --on-duplicate value"),
     graph_name: Optional[str] = typer.Option(
         None, "--graph-name", help="Create a named graph after import via Gharial API"
@@ -483,7 +552,7 @@ def inspect_dump(
 
 @app.command()
 def ingest_schema(
-    connection_string: str = typer.Option(..., "--conn", "-c", help="PostgreSQL connection string"),
+    connection_string: str = typer.Option(..., "--conn", "-c", help="PostgreSQL connection string", envvar="PG_CONN"),
     output: str = typer.Option("./schema.json", "--output", "-o", help="Path to save the schema metadata"),
     pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name to introspect"),
 ) -> None:
@@ -527,13 +596,15 @@ def validate_schema(
 
 @app.command("stream")
 def stream(
-    pg_conn: str = typer.Option(..., "--pg-conn", help="PostgreSQL connection string"),
+    pg_conn: str = typer.Option(..., "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"),
     schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
     config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
-    endpoint: str = typer.Option("http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL"),
-    database: str = typer.Option("_system", "--database", "-d", help="ArangoDB database name"),
-    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username"),
-    password: str = typer.Option("", "--password", "-p", help="ArangoDB password"),
+    endpoint: str = typer.Option(
+        "http://127.0.0.1:8529", "--endpoint", help="ArangoDB endpoint URL", envvar="ARANGO_ENDPOINT"
+    ),
+    database: str = typer.Option("_system", "--database", "-d", help="ArangoDB database name", envvar="ARANGO_DB"),
+    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username", envvar="ARANGO_USER"),
+    password: str = typer.Option("", "--password", "-p", help="ArangoDB password", envvar="ARANGO_PASSWORD"),
     batch_size: int = typer.Option(10000, "--batch-size", "-b", help="Rows per batch"),
     on_duplicate: str = typer.Option("replace", "--on-duplicate", help="ArangoDB on-duplicate strategy"),
     graph_name: Optional[str] = typer.Option(None, "--graph-name", help="Create a named graph after import"),
@@ -873,7 +944,7 @@ def migrate_config_cmd(
 
 @app.command("dump-tables")
 def dump_tables(
-    connection_string: str = typer.Option(..., "--conn", "-c", help="PostgreSQL connection string"),
+    connection_string: str = typer.Option(..., "--conn", "-c", help="PostgreSQL connection string", envvar="PG_CONN"),
     output_dir: str = typer.Option("./dumps", "--output-dir", "-o", help="Directory to write CSV files"),
     schema_filter: Optional[str] = typer.Option("public", "--schema", help="PostgreSQL schema to dump"),
     tables: Optional[str] = typer.Option(None, "--tables", "-t", help="Comma-separated list of tables (default: all)"),

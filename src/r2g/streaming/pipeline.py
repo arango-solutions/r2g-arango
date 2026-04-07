@@ -15,6 +15,7 @@ from psycopg.rows import dict_row
 
 from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
 from r2g.log import get_logger
+from r2g.topo_sort import topological_sort_tables
 from r2g.transformers.edge_transformer import EdgeTransformer
 from r2g.transformers.node_transformer import NodeTransformer
 from r2g.types import MappingConfig, Schema
@@ -290,10 +291,22 @@ class StreamingPipeline:
         self,
         conn: psycopg.Connection,
     ) -> list[tuple[str, int]]:
-        """Stream all document collections (sequential, single connection)."""
+        """Stream all document collections in topological (dependency) order."""
+        ordered, cycles = topological_sort_tables(self.schema)
+        if cycles:
+            for cycle in cycles:
+                logger.warning(
+                    "circular_fk_dependency",
+                    cycle=" -> ".join(cycle),
+                    hint="Import order may not satisfy all FK dependencies",
+                )
+
+        cm_by_table = {cm.source_table: cm for cm in self.config.collections.values()}
+
         results: list[tuple[str, int]] = []
-        for _key, cm in self.config.collections.items():
-            if cm.collection_type != "document":
+        for table_name in ordered:
+            cm = cm_by_table.get(table_name)
+            if cm is None or cm.collection_type != "document":
                 continue
             if cm.source_table not in self.schema.tables:
                 logger.warning("stream_skip_unknown_table", table=cm.source_table)
@@ -362,9 +375,21 @@ class StreamingPipeline:
         """Execute documents then edges in parallel using separate connections."""
         logger.info("parallel_streaming", workers=self.workers)
 
+        ordered, cycles = topological_sort_tables(self.schema)
+        if cycles:
+            for cycle in cycles:
+                logger.warning(
+                    "circular_fk_dependency",
+                    cycle=" -> ".join(cycle),
+                    hint="Import order may not satisfy all FK dependencies",
+                )
+
+        cm_by_table = {cm.source_table: cm for cm in self.config.collections.values()}
+
         doc_jobs: list[tuple[Any, ...]] = []
-        for _key, cm in self.config.collections.items():
-            if cm.collection_type != "document":
+        for table_name in ordered:
+            cm = cm_by_table.get(table_name)
+            if cm is None or cm.collection_type != "document":
                 continue
             if cm.source_table not in self.schema.tables:
                 continue

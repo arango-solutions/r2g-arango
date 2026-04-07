@@ -62,6 +62,9 @@ flowchart LR
 - **Comprehensive type mapping** -- 50+ PostgreSQL types explicitly mapped to JSON types: integer variants, float variants, boolean, JSON/JSONB, UUID, timestamps, intervals, network types, geometric types, and text search types
 - **Schema diff** -- `diff-schema` command compares two schema snapshots and reports added/removed tables, column type changes, nullable changes, primary key changes, and foreign key changes; supports `--json` output for scripting
 - **Config migration** -- `migrate-config` command auto-updates a mapping YAML when the PostgreSQL schema evolves: adds collections for new tables, adds edges for new FKs, removes edges for dropped FKs, flags orphaned collections, and cleans stale field references and type overrides -- all while preserving user customizations (renames, field mappings, include/exclude lists)
+- **Data validation** -- `validate-data` command checks referential integrity of dump files before import: builds PK lookup sets per table and verifies every FK value references an existing PK; reports orphaned references that would produce broken edges
+- **Topological import ordering** -- document collections are imported in dependency order (FK targets before FK sources) so that referenced vertices exist before edges are created; circular FK dependencies are detected and warned
+- **Environment variable support** -- connection parameters (`PG_CONN`, `ARANGO_ENDPOINT`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`) can be set via environment variables or a `.env` file; CLI flags override env vars when both are provided
 - **Skip existing** -- `stream --skip-existing` skips collections that already contain data, enabling resumption of partial streaming runs without re-importing completed collections
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
@@ -72,9 +75,11 @@ flowchart LR
 
 ```
 src/r2g/
-├── main.py                     # Typer CLI (15 commands)
+├── main.py                     # Typer CLI (17 commands)
 ├── config_migrate.py           # Config migration when schema evolves
+├── data_validator.py           # Referential integrity checker for dump data
 ├── schema_diff.py              # Schema comparison / structural diff
+├── topo_sort.py                # Topological sort for import ordering, cycle detection
 ├── types.py                    # Pydantic models (Schema, Table, MappingConfig, EdgeDefinition, ...)
 ├── config.py                   # ConfigManager, YAML load/save, PG→JSON type map, join detection
 ├── log.py                      # structlog setup
@@ -113,6 +118,17 @@ pip install -e ".[test,dev]"
 ```
 
 ## Quick start
+
+### 0. Configure credentials (optional)
+
+Instead of passing connection strings on the command line, create a `.env` file (see `.env.example`):
+
+```bash
+cp .env.example .env
+# Edit .env with your PostgreSQL and ArangoDB credentials
+```
+
+The CLI auto-loads `.env` from the working directory. All connection flags (`--conn`, `--pg-conn`, `--endpoint`, `--database`, `--username`, `--password`) can be set via environment variables (`PG_CONN`, `ARANGO_ENDPOINT`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`). CLI flags override env vars.
 
 ### 1. Extract schema from PostgreSQL
 
@@ -219,6 +235,14 @@ Override connection details via environment variables (works with the generated 
 ARANGO_ENDPOINT=http://prod:8529 ARANGO_DB=prod_db ARANGO_PASSWORD=secret ./import_csv.sh
 ```
 
+### Pre-flight: validate data integrity (optional)
+
+```bash
+r2g validate-data --schema schema.json --config mapping.yaml --data-dir ./dumps
+```
+
+Checks that every FK value in your dump files references an existing PK in the target table. Reports orphaned references that would produce broken edges in ArangoDB.
+
 ### Schema evolution: migrating the mapping config
 
 When your PostgreSQL schema changes (new tables, dropped columns, added/removed FKs), update the mapping config automatically:
@@ -286,6 +310,7 @@ r2g stream --dry-run \
 | `visualize-mapping` | Generate interactive HTML visualization of the PG-to-graph mapping |
 | `dump-tables` | Connect to PostgreSQL and dump each table to a CSV file |
 | `validate-config` | Validate mapping config against schema (checks table references, column names, edge definitions) |
+| `validate-data` | Check referential integrity of dump files (FK values vs target PKs); reports orphaned references before import |
 | `diff-schema` | Compare two schema.json files and report structural changes (tables, columns, types, PKs, FKs); supports `--json` for machine-readable output |
 | `migrate-config` | Auto-update a mapping config YAML to match an evolved schema: adds new tables/edges, removes stale edges, flags orphaned collections, cleans dropped-column references; `--json-report` for machine-readable output |
 | `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, and `--on-duplicate` |
@@ -307,8 +332,8 @@ Key sections:
 
 This is an experimental reference implementation. The following constraints apply:
 
-- **PostgreSQL only** -- the schema reader uses `pg_catalog` queries specific to PostgreSQL. No MySQL, SQLite, or other source support.
-- **No data validation** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. The tool does not verify referential integrity.
+- **PostgreSQL only (currently)** -- the schema reader uses `pg_catalog` queries specific to PostgreSQL. Snowflake support is planned (Phase 5 in the PRD). No MySQL, SQLite, or other source support yet.
+- **Data validation is opt-in** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. Use `validate-data` before import to catch these, but it is not enforced automatically.
 - **No incremental/delta support** -- every run is a full re-export. There is no change tracking, CDC, or diff-based processing yet (see Phases 2-4 in the PRD).
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
 - **ArangoDB write path** -- the `stream` command connects directly to ArangoDB via python-arango, but the file-based paths (`generate-csv-import`, `generate-import`) still require `arangoimport` installed separately.
@@ -320,7 +345,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-341 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration (added/removed tables, edge sync, field cleanup, type override pruning, customization preservation), config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+359 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs and duplicate edge naming), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 
@@ -342,4 +367,5 @@ Phases 1 and 2 are implemented. See [PRD.md](PRD.md) for the full phased roadmap
 - **Phase 2** -- Direct PostgreSQL streaming (server-side cursors, HTTP API bulk import, REPEATABLE READ snapshots) -- **implemented**
 - **Phase 3** -- CDC integration (logical decoding, near real-time sync)
 - **Phase 4** -- Kafka consumer (Debezium, transactional ordering)
-- **Phase 5+** -- LLM-driven ontology derivation, ArangoRDF, bi-directional sync
+- **Phase 5** -- Snowflake integration (schema reader, type mapping, streaming, FK inference, source abstraction layer)
+- **Phase 6+** -- Additional sources (MySQL, SQL Server), LLM-driven ontology derivation, ArangoRDF, bi-directional sync

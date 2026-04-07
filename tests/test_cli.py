@@ -353,6 +353,39 @@ class TestVisualizeMappingCLI:
         assert "<html" in html.lower()
 
 
+class TestValidateData:
+    def test_clean_data(self, schema_file, config_file, dumps_dir):
+        result = runner.invoke(app, [
+            "validate-data",
+            "--schema", schema_file,
+            "--config", config_file,
+            "--data-dir", dumps_dir,
+        ])
+        assert result.exit_code == 0
+        assert "passed" in result.output.lower() or "no orphan" in result.output.lower()
+
+    def test_orphan_detected(self, schema_file, config_file, tmp_path):
+        dump_dir = tmp_path / "dumps"
+        dump_dir.mkdir()
+        (dump_dir / "users.csv").write_text("id,name,email\n1,Alice,a@e.com\n")
+        (dump_dir / "orders.csv").write_text("id,user_id,total\n10,1,50\n20,999,99\n")
+
+        result = runner.invoke(app, [
+            "validate-data",
+            "--schema", schema_file,
+            "--config", config_file,
+            "--data-dir", str(dump_dir),
+        ])
+        assert result.exit_code == 1
+        assert "999" in result.output
+
+    def test_help(self):
+        result = runner.invoke(app, ["validate-data", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--schema" in result.output
+
+
 class TestMigrateConfig:
     def test_no_changes(self, schema_file, config_file):
         result = runner.invoke(app, [
