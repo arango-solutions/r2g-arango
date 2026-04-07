@@ -160,6 +160,19 @@ class TestHelp:
         assert "SCHEMA_FILE" in result.output
         assert "--conflict-policy" in result.output
 
+    def test_kafka_start_help(self):
+        result = runner.invoke(app, ["kafka-start", "--help"])
+        assert result.exit_code == 0
+        assert "--brokers" in result.output
+        assert "--topics" in result.output
+        assert "--group-id" in result.output
+        assert "--format" in result.output
+        assert "--offset-reset" in result.output
+        assert "--batch-size" in result.output
+        assert "--endpoint" in result.output
+        assert "--conflict-policy" in result.output
+        assert "SCHEMA_FILE" in result.output
+
 
 class TestValidateSchema:
     def test_valid_schema(self, schema_file):

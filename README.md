@@ -89,7 +89,9 @@ src/r2g/
 │   ├── parsers.py              # Output plugin parsers (test_decoding, wal2json)
 │   ├── pg_listener.py          # PGReplicationListener: slot mgmt, polling loop
 │   ├── delta_transformer.py    # Convert CDC events → ArangoDB mutations
-│   └── handler.py              # CDCHandler: orchestrate event processing with stats
+│   ├── handler.py              # CDCHandler: orchestrate event processing with stats
+│   ├── kafka_parser.py         # Debezium and flat JSON message parsers
+│   └── kafka_consumer.py        # Kafka consumer with confluent-kafka
 ├── types.py                    # Pydantic models (Schema, Table, MappingConfig, EdgeDefinition, ...)
 ├── config.py                   # ConfigManager, YAML load/save, PG→JSON type map, join detection
 ├── log.py                      # structlog setup
@@ -327,6 +329,7 @@ r2g stream --dry-run \
 | `cdc-teardown` | Drop a logical replication slot |
 | `cdc-status` | Show replication slot metadata (active, LSN positions) |
 | `cdc-start` | Start the CDC listener: polls for changes, transforms via mapping config, applies deltas to ArangoDB in near real-time (`--poll-interval`, `--batch-size`, `--create-slot/--no-create-slot`, `--conflict-policy`) |
+| `kafka-start` | Start Kafka CDC consumer: consumes Debezium or flat JSON messages from Kafka topics, transforms via mapping config, applies deltas to ArangoDB (`--brokers`, `--topics`, `--group-id`, `--format`, `--offset-reset`, `--conflict-policy`) |
 | `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, `--on-duplicate`, `--since`, and `--since-column` |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
@@ -393,6 +396,43 @@ For UPDATE/DELETE events, set `REPLICA IDENTITY FULL` on source tables to captur
 ALTER TABLE users REPLICA IDENTITY FULL;
 ```
 
+### Kafka CDC
+
+Consume change events from Kafka instead of PostgreSQL logical replication. Requires the optional dependency:
+
+```bash
+pip install 'r2g[kafka]'
+```
+
+**Debezium** messages (default `--format debezium`):
+
+```bash
+r2g kafka-start schema.json mapping.yaml \
+  --brokers localhost:9092 \
+  --topics dbserver1.public.users,dbserver1.public.orders \
+  --group-id r2g-cdc \
+  --format debezium \
+  --offset-reset earliest \
+  --endpoint http://localhost:8529 \
+  --database mydb \
+  --username root --password secret
+```
+
+**Flat JSON** from custom producers (`--format flat`):
+
+```bash
+r2g kafka-start schema.json mapping.yaml \
+  --brokers kafka.example.com:9092 \
+  --topics my_app.changes \
+  --format flat \
+  --group-id r2g-flat \
+  --conflict-policy source_wins \
+  --endpoint http://localhost:8529 \
+  --database mydb
+```
+
+Use `--offset-reset earliest` or `latest` to control where a new consumer group starts. The same conflict policies as PG CDC apply via `--conflict-policy`. Press Ctrl+C for graceful shutdown (offsets committed for processed batches). Optional flags include `--batch-size` for poll batching.
+
 ## Known limitations
 
 This is an experimental reference implementation. The following constraints apply:
@@ -410,7 +450,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-468 tests covering CLI commands (via typer.testing.CliRunner, including CDC commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic, error surfacing, and single-document CDC ops), CDC models (ChangeEvent, ArangoDelta, TransactionBatch), CDC output plugin parsers (test_decoding text parsing, wal2json JSON parsing), CDC delta transformer (INSERT/UPDATE/DELETE → graph mutations with edge cleanup), CDC handler (event processing, transaction batching, stats tracking, failure handling, conflict resolution integration), CDC conflict resolution (ConflictPolicy, ConflictResolver, ConflictLog -- all four policies with duplicate/missing/stale scenarios), CDC replication listener (slot management, polling, graceful shutdown), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+502 tests covering CLI commands (via typer.testing.CliRunner, including CDC and Kafka commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic, error surfacing, and single-document CDC ops), CDC models (ChangeEvent, ArangoDelta, TransactionBatch), CDC output plugin parsers (test_decoding text parsing, wal2json JSON parsing), CDC delta transformer (INSERT/UPDATE/DELETE → graph mutations with edge cleanup), CDC handler (event processing, transaction batching, stats tracking, failure handling, conflict resolution integration), CDC conflict resolution (ConflictPolicy, ConflictResolver, ConflictLog -- all four policies with duplicate/missing/stale scenarios), CDC replication listener (slot management, polling, graceful shutdown), Kafka parsers (Debezium envelope, flat JSON) and Kafka consumer (batch polling, offset commits, graceful shutdown), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 
@@ -431,6 +471,6 @@ Phases 1 and 2 are implemented. See [PRD.md](PRD.md) for the full phased roadmap
 - **Phase 1** -- Table dump file processing (MVP): schema ingestion, JSONL transforms, CSV-direct import, visualizer -- **implemented**
 - **Phase 2** -- Direct PostgreSQL streaming (server-side cursors, HTTP API bulk import, REPEATABLE READ snapshots) -- **implemented**
 - **Phase 3** -- CDC integration: event models, delta transformer, handler, replication listener, output plugin parsers (`test_decoding`/`wal2json`), continuous polling loop, conflict resolution (`source_wins`/`last_write_wins`/`log_and_skip`/`fail`), CLI commands -- **complete**
-- **Phase 4** -- Kafka consumer (Debezium, transactional ordering)
+- **Phase 4** -- Kafka integration: Debezium parser, flat JSON parser, confluent-kafka consumer, kafka-start CLI command -- **complete**
 - **Phase 5** -- Snowflake integration (schema reader, type mapping, streaming, FK inference, source abstraction layer)
 - **Phase 6+** -- Additional sources (MySQL, SQL Server), LLM-driven ontology derivation, ArangoRDF, bi-directional sync

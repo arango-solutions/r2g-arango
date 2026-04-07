@@ -1254,5 +1254,142 @@ def cdc_start(
         raise typer.Exit(code=1)
 
 
+@app.command()
+def kafka_start(
+    schema_file: Path = typer.Argument(..., help="Path to schema JSON"),
+    config_path: Path = typer.Argument(..., help="Path to mapping YAML"),
+    brokers: str = typer.Option(
+        "localhost:9092", "--brokers",
+        help="Kafka bootstrap servers (comma-separated)",
+    ),
+    topics: str = typer.Option(
+        ..., "--topics",
+        help="Comma-separated list of Kafka topics to consume",
+    ),
+    group_id: str = typer.Option(
+        "r2g-cdc", "--group-id",
+        help="Kafka consumer group ID",
+    ),
+    message_format: str = typer.Option(
+        "debezium", "--format",
+        help="Message format: debezium, flat",
+    ),
+    auto_offset_reset: str = typer.Option(
+        "earliest", "--offset-reset",
+        help="Where to start consuming: earliest, latest",
+    ),
+    batch_size: int = typer.Option(
+        500, "--batch-size",
+        help="Max messages to consume per poll",
+    ),
+    endpoint: str = typer.Option(
+        "http://localhost:8529", "--endpoint",
+        help="ArangoDB endpoint URL",
+    ),
+    database: str = typer.Option(
+        "_system", "--database",
+        help="ArangoDB database name",
+    ),
+    username: str = typer.Option("root", "--username", help="ArangoDB username"),
+    password: str = typer.Option("", "--password", help="ArangoDB password"),
+    conflict_policy: str = typer.Option(
+        "source_wins", "--conflict-policy",
+        help="Conflict resolution: source_wins, last_write_wins, log_and_skip, fail",
+    ),
+) -> None:
+    """Start the Kafka CDC consumer (Debezium or flat JSON messages).
+
+    Connects to Kafka broker(s), consumes change events from the
+    specified topics, transforms them through the mapping config,
+    and applies deltas to ArangoDB.
+
+    Requires confluent-kafka: pip install 'r2g[kafka]'
+
+    Press Ctrl+C to stop gracefully.
+    """
+    from r2g.cdc.conflict import ConflictPolicy
+    from r2g.cdc.handler import CDCHandler
+    from r2g.connectors.arango_writer import ArangoWriter
+
+    try:
+        policy = ConflictPolicy(conflict_policy)
+    except ValueError:
+        console.print(
+            f"[red]Invalid conflict policy:[/red] '{conflict_policy}'. "
+            "Choose from: source_wins, last_write_wins, log_and_skip, fail"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        from r2g.cdc.kafka_consumer import KafkaConsumer
+    except ImportError:
+        console.print(
+            "[red]confluent-kafka is not installed.[/red] "
+            "Install it with: [bold]pip install 'r2g[kafka]'[/bold]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+
+        writer = ArangoWriter(
+            endpoint=endpoint,
+            database=database,
+            username=username,
+            password=password,
+        )
+        writer.connect()
+
+        handler = CDCHandler(writer, schema, mapping, conflict_policy=policy)
+
+        topic_list = [t.strip() for t in topics.split(",") if t.strip()]
+        if not topic_list:
+            console.print("[red]No topics specified.[/red]")
+            raise typer.Exit(code=1)
+
+        consumer = KafkaConsumer(
+            handler=handler,
+            brokers=brokers,
+            topics=topic_list,
+            group_id=group_id,
+            auto_offset_reset=auto_offset_reset,
+            message_format=message_format,
+            batch_size=batch_size,
+        )
+
+        console.print(
+            f"[green]Kafka consumer starting[/green] -- "
+            f"brokers={brokers}, topics={topic_list}, "
+            f"group={group_id}, format={message_format}"
+        )
+        consumer.run()
+
+        stats = handler.stats.as_dict()
+        stats_table = RichTable(title="Kafka CDC Session Statistics")
+        stats_table.add_column("Metric")
+        stats_table.add_column("Value", justify="right")
+        for k, v in stats.items():
+            stats_table.add_row(k, str(v))
+        console.print(stats_table)
+
+        conflict_summary = handler.resolver.log.summary()
+        if conflict_summary["total_conflicts"] > 0:
+            ct = RichTable(title=f"Conflicts (policy: {policy.value})")
+            ct.add_column("Type")
+            ct.add_column("Count", justify="right")
+            for ctype, count in conflict_summary["by_type"].items():
+                ct.add_row(ctype, str(count))
+            ct.add_row("[bold]Total[/bold]", f"[bold]{conflict_summary['total_conflicts']}[/bold]")
+            console.print(ct)
+
+        writer.close()
+
+    except Exception as e:
+        log.exception("kafka_start_failed")
+        console.print(f"[red]Kafka consumer failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()
