@@ -1007,5 +1007,222 @@ def dump_tables(
         raise typer.Exit(code=1)
 
 
+# ── CDC commands ─────────────────────────────────────────────────────
+
+
+@app.command("cdc-setup")
+def cdc_setup(
+    pg_conn: str = typer.Option(
+        ..., "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"
+    ),
+    slot_name: str = typer.Option(
+        "r2g_slot", "--slot", help="Replication slot name"
+    ),
+    plugin: str = typer.Option(
+        "test_decoding", "--plugin",
+        help="Output plugin (test_decoding or wal2json)",
+    ),
+) -> None:
+    """Create a logical replication slot for CDC."""
+    from r2g.cdc.pg_listener import PGReplicationListener
+
+    try:
+        listener = PGReplicationListener(
+            pg_conn_string=pg_conn,
+            handler=None,  # type: ignore[arg-type]
+            slot_name=slot_name,
+            plugin=plugin,
+        )
+        status = listener.setup()
+        console.print("[green]Replication slot ready:[/green]")
+        for k, v in status.items():
+            console.print(f"  {k}: {v}")
+    except Exception as e:
+        log.exception("cdc_setup_failed")
+        console.print(f"[red]CDC setup failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("cdc-teardown")
+def cdc_teardown(
+    pg_conn: str = typer.Option(
+        ..., "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"
+    ),
+    slot_name: str = typer.Option(
+        "r2g_slot", "--slot", help="Replication slot name"
+    ),
+    plugin: str = typer.Option(
+        "test_decoding", "--plugin",
+        help="Output plugin (test_decoding or wal2json)",
+    ),
+) -> None:
+    """Drop a logical replication slot."""
+    from r2g.cdc.pg_listener import PGReplicationListener
+
+    try:
+        listener = PGReplicationListener(
+            pg_conn_string=pg_conn,
+            handler=None,  # type: ignore[arg-type]
+            slot_name=slot_name,
+            plugin=plugin,
+        )
+        dropped = listener.drop_slot()
+        if dropped:
+            console.print(f"[green]Slot '{slot_name}' dropped.[/green]")
+        else:
+            console.print(f"[yellow]Slot '{slot_name}' not found.[/yellow]")
+    except Exception as e:
+        log.exception("cdc_teardown_failed")
+        console.print(f"[red]CDC teardown failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("cdc-status")
+def cdc_status(
+    pg_conn: str = typer.Option(
+        ..., "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"
+    ),
+    slot_name: str = typer.Option(
+        "r2g_slot", "--slot", help="Replication slot name"
+    ),
+    plugin: str = typer.Option(
+        "test_decoding", "--plugin",
+        help="Output plugin (test_decoding or wal2json)",
+    ),
+) -> None:
+    """Show the status of a logical replication slot."""
+    from r2g.cdc.pg_listener import PGReplicationListener
+
+    try:
+        listener = PGReplicationListener(
+            pg_conn_string=pg_conn,
+            handler=None,  # type: ignore[arg-type]
+            slot_name=slot_name,
+            plugin=plugin,
+        )
+        status = listener.slot_status()
+        if status is None:
+            console.print(f"[yellow]Slot '{slot_name}' not found.[/yellow]")
+            raise typer.Exit(code=1)
+        table = RichTable(title=f"Replication Slot: {slot_name}")
+        table.add_column("Property")
+        table.add_column("Value")
+        for k, v in status.items():
+            table.add_row(k, str(v))
+        console.print(table)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        log.exception("cdc_status_failed")
+        console.print(f"[red]CDC status failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("cdc-start")
+def cdc_start(
+    pg_conn: str = typer.Option(
+        ..., "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"
+    ),
+    schema_file: str = typer.Argument(..., help="Path to schema JSON file"),
+    config_path: str = typer.Argument(..., help="Path to mapping config YAML/JSON"),
+    endpoint: str = typer.Option(
+        "http://localhost:8529", "--endpoint",
+        help="ArangoDB endpoint", envvar="ARANGO_ENDPOINT",
+    ),
+    database: str = typer.Option(
+        "_system", "--database",
+        help="ArangoDB database name", envvar="ARANGO_DB",
+    ),
+    username: str = typer.Option(
+        "root", "--username",
+        help="ArangoDB username", envvar="ARANGO_USER",
+    ),
+    password: str = typer.Option(
+        "", "--password",
+        help="ArangoDB password", envvar="ARANGO_PASSWORD",
+    ),
+    slot_name: str = typer.Option(
+        "r2g_slot", "--slot", help="Replication slot name"
+    ),
+    plugin: str = typer.Option(
+        "test_decoding", "--plugin",
+        help="Output plugin (test_decoding or wal2json)",
+    ),
+    poll_interval: float = typer.Option(
+        1.0, "--poll-interval",
+        help="Seconds between polls when no changes are pending",
+    ),
+    batch_size: int = typer.Option(
+        1000, "--batch-size",
+        help="Maximum changes to consume per poll cycle",
+    ),
+    create_slot: bool = typer.Option(
+        True, "--create-slot/--no-create-slot",
+        help="Automatically create the replication slot if it doesn't exist",
+    ),
+) -> None:
+    """Start the CDC listener (continuous polling for PostgreSQL changes).
+
+    Connects to PostgreSQL via a logical replication slot and ArangoDB
+    via the HTTP API.  Polls for row-level changes, transforms them
+    through the mapping config, and applies deltas in near real-time.
+
+    Press Ctrl+C to stop gracefully.
+    """
+    from r2g.cdc.handler import CDCHandler
+    from r2g.cdc.pg_listener import PGReplicationListener
+    from r2g.connectors.arango_writer import ArangoWriter
+
+    try:
+        schema = Schema.load_from_file(schema_file)
+        mapping = ConfigManager.load_config(config_path)
+
+        writer = ArangoWriter(
+            endpoint=endpoint,
+            database=database,
+            username=username,
+            password=password,
+        )
+        writer.connect()
+
+        handler = CDCHandler(writer, schema, mapping)
+        listener = PGReplicationListener(
+            pg_conn_string=pg_conn,
+            handler=handler,
+            slot_name=slot_name,
+            plugin=plugin,
+            poll_interval=poll_interval,
+            batch_size=batch_size,
+        )
+
+        if create_slot:
+            listener.setup()
+
+        console.print(
+            f"[green]CDC listener starting[/green] "
+            f"(slot={slot_name}, plugin={plugin}, "
+            f"poll={poll_interval}s, batch={batch_size})"
+        )
+        console.print("[dim]Press Ctrl+C to stop.[/dim]")
+
+        listener.run()
+
+        stats = handler.stats.as_dict()
+        console.print("\n[green]CDC listener stopped.[/green]")
+        stats_table = RichTable(title="CDC Session Statistics")
+        stats_table.add_column("Metric")
+        stats_table.add_column("Value", justify="right")
+        for k, v in stats.items():
+            stats_table.add_row(k, str(v))
+        console.print(stats_table)
+
+        writer.close()
+
+    except Exception as e:
+        log.exception("cdc_start_failed")
+        console.print(f"[red]CDC start failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 if __name__ == "__main__":
     app()

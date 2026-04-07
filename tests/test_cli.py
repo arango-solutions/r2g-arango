@@ -131,6 +131,34 @@ class TestHelp:
         assert "--old" in result.output
         assert "--new" in result.output
 
+    def test_cdc_setup_help(self):
+        result = runner.invoke(app, ["cdc-setup", "--help"])
+        assert result.exit_code == 0
+        assert "--pg-conn" in result.output
+        assert "--slot" in result.output
+        assert "--plugin" in result.output
+
+    def test_cdc_teardown_help(self):
+        result = runner.invoke(app, ["cdc-teardown", "--help"])
+        assert result.exit_code == 0
+        assert "--slot" in result.output
+
+    def test_cdc_status_help(self):
+        result = runner.invoke(app, ["cdc-status", "--help"])
+        assert result.exit_code == 0
+        assert "--slot" in result.output
+
+    def test_cdc_start_help(self):
+        result = runner.invoke(app, ["cdc-start", "--help"])
+        assert result.exit_code == 0
+        assert "--pg-conn" in result.output
+        assert "--slot" in result.output
+        assert "--plugin" in result.output
+        assert "--poll-interval" in result.output
+        assert "--batch-size" in result.output
+        assert "--endpoint" in result.output
+        assert "SCHEMA_FILE" in result.output
+
 
 class TestValidateSchema:
     def test_valid_schema(self, schema_file):
