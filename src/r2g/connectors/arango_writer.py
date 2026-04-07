@@ -173,6 +173,112 @@ class ArangoWriter:
                     raise
         raise last_exc  # type: ignore[misc]
 
+    def insert_document(
+        self,
+        collection_name: str,
+        document: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Insert a single document. Retries on transient errors."""
+        return self._single_doc_op(collection_name, document, "insert")
+
+    def replace_document(
+        self,
+        collection_name: str,
+        document: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Replace a single document (by _key). Retries on transient errors."""
+        return self._single_doc_op(collection_name, document, "replace")
+
+    def delete_document(
+        self,
+        collection_name: str,
+        key: str,
+    ) -> bool:
+        """Delete a single document by _key. Returns True if deleted."""
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                coll = self.db.collection(collection_name)
+                coll.delete(key, ignore_missing=True)
+                logger.debug(
+                    "arango_doc_deleted",
+                    collection=collection_name,
+                    key=key,
+                )
+                return True
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self.max_retries and self._is_retryable(exc):
+                    wait = 2**attempt
+                    logger.warning(
+                        "arango_delete_retry",
+                        collection=collection_name,
+                        key=key,
+                        attempt=attempt + 1,
+                        wait_seconds=wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+        raise last_exc  # type: ignore[misc]
+
+    def _single_doc_op(
+        self,
+        collection_name: str,
+        document: dict[str, Any],
+        op: str,
+    ) -> dict[str, Any]:
+        """Execute a single-document insert or replace with retry."""
+        last_exc: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                coll = self.db.collection(collection_name)
+                if op == "insert":
+                    result = coll.insert(document, overwrite=False, silent=False)
+                else:
+                    result = coll.replace(document, silent=False)
+                logger.debug(
+                    f"arango_doc_{op}",
+                    collection=collection_name,
+                    key=document.get("_key"),
+                )
+                return result  # type: ignore[return-value]
+            except Exception as exc:
+                last_exc = exc
+                if attempt < self.max_retries and self._is_retryable(exc):
+                    wait = 2**attempt
+                    logger.warning(
+                        f"arango_{op}_retry",
+                        collection=collection_name,
+                        attempt=attempt + 1,
+                        wait_seconds=wait,
+                    )
+                    time.sleep(wait)
+                else:
+                    raise
+        raise last_exc  # type: ignore[misc]
+
+    def apply_delta(
+        self,
+        delta: Any,
+    ) -> None:
+        """Apply a single ArangoDelta to ArangoDB.
+
+        Dispatches to insert_document, replace_document, or delete_document
+        based on the delta's operation field.
+        """
+        from r2g.cdc.models import ArangoOperation
+
+        self.ensure_collection(delta.collection, edge=delta.is_edge)
+
+        if delta.operation == ArangoOperation.INSERT:
+            self.insert_document(delta.collection, delta.document)
+        elif delta.operation == ArangoOperation.REPLACE:
+            self.replace_document(delta.collection, delta.document)
+        elif delta.operation == ArangoOperation.DELETE:
+            if delta.effective_key:
+                self.delete_document(delta.collection, delta.effective_key)
+
     def create_named_graph(
         self,
         graph_name: str,

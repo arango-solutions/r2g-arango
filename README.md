@@ -68,6 +68,7 @@ flowchart LR
 - **Skip existing** -- `stream --skip-existing` skips collections that already contain data, enabling resumption of partial streaming runs without re-importing completed collections
 - **Incremental streaming** -- `stream --since 2026-04-01T00:00:00` filters rows by a timestamp column (auto-detects `updated_at`/`created_at` or use `--since-column`); combine with `--on-duplicate=replace` for basic incremental updates
 - **PK-less table safety** -- tables without a primary key are warned during validation and streaming; documents receive auto-generated keys and edges referencing such tables are flagged
+- **CDC foundation** -- `ChangeEvent` / `ArangoDelta` / `TransactionBatch` models, `DeltaTransformer` for converting row-level changes to graph mutations, `CDCHandler` for orchestrated event processing with stats tracking, and `ArangoWriter` single-document ops (`insert_document`, `replace_document`, `delete_document`) with retry logic. Ready for `pgoutput` listener integration (Phase 3.1)
 - **Composite foreign key support** -- multi-column foreign keys are correctly introspected from `pg_catalog`, represented in mappings, and transformed into composite `_key` / `_from` / `_to` values using a configurable separator
 - **Multi-schema support** -- `--pg-schema` option on `ingest-schema`, `dump-tables`, and `stream` commands allows introspection and import from any PostgreSQL schema, not just `public`
 - **Automated table dumping** -- `dump-tables` command connects to PostgreSQL and exports each table as a CSV file in one pass
@@ -82,6 +83,10 @@ src/r2g/
 ├── data_validator.py           # Referential integrity checker for dump data
 ├── schema_diff.py              # Schema comparison / structural diff
 ├── topo_sort.py                # Topological sort for import ordering, cycle detection
+├── cdc/                        # Change Data Capture foundation (Phase 3)
+│   ├── models.py               # ChangeEvent, ArangoDelta, TransactionBatch
+│   ├── delta_transformer.py    # Convert CDC events → ArangoDB mutations
+│   └── handler.py              # CDCHandler: orchestrate event processing with stats
 ├── types.py                    # Pydantic models (Schema, Table, MappingConfig, EdgeDefinition, ...)
 ├── config.py                   # ConfigManager, YAML load/save, PG→JSON type map, join detection
 ├── log.py                      # structlog setup
@@ -347,7 +352,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-373 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic and error surfacing), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+409 tests covering CLI commands (via typer.testing.CliRunner), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic, error surfacing, and single-document CDC ops), CDC models (ChangeEvent, ArangoDelta, TransactionBatch), CDC delta transformer (INSERT/UPDATE/DELETE → graph mutations with edge cleanup), CDC handler (event processing, transaction batching, stats tracking, failure handling), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 
@@ -367,7 +372,7 @@ Phases 1 and 2 are implemented. See [PRD.md](PRD.md) for the full phased roadmap
 
 - **Phase 1** -- Table dump file processing (MVP): schema ingestion, JSONL transforms, CSV-direct import, visualizer -- **implemented**
 - **Phase 2** -- Direct PostgreSQL streaming (server-side cursors, HTTP API bulk import, REPEATABLE READ snapshots) -- **implemented**
-- **Phase 3** -- CDC integration (logical decoding, near real-time sync)
+- **Phase 3** -- CDC integration: foundation implemented (event models, delta transformer, handler, single-doc writer ops); remaining: `pgoutput` listener, live stream loop, conflict resolution
 - **Phase 4** -- Kafka consumer (Debezium, transactional ordering)
 - **Phase 5** -- Snowflake integration (schema reader, type mapping, streaming, FK inference, source abstraction layer)
 - **Phase 6+** -- Additional sources (MySQL, SQL Server), LLM-driven ontology derivation, ArangoRDF, bi-directional sync

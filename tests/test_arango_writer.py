@@ -246,6 +246,98 @@ class TestRetryLogic:
         assert mock_coll.import_bulk.call_count == 1
 
 
+class TestSingleDocumentOps:
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_insert_document(self, mock_client_cls, writer):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_db = MagicMock()
+        mock_client.db.return_value = mock_db
+        mock_coll = MagicMock()
+        mock_coll.insert.return_value = {"_key": "1", "_id": "users/1"}
+        mock_db.collection.return_value = mock_coll
+
+        writer.connect()
+        result = writer.insert_document("users", {"_key": "1", "name": "Alice"})
+
+        mock_coll.insert.assert_called_once()
+        assert result["_key"] == "1"
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_replace_document(self, mock_client_cls, writer):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_db = MagicMock()
+        mock_client.db.return_value = mock_db
+        mock_coll = MagicMock()
+        mock_coll.replace.return_value = {"_key": "1", "_id": "users/1"}
+        mock_db.collection.return_value = mock_coll
+
+        writer.connect()
+        result = writer.replace_document("users", {"_key": "1", "name": "Bob"})
+
+        mock_coll.replace.assert_called_once()
+        assert result["_key"] == "1"
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_delete_document(self, mock_client_cls, writer):
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_db = MagicMock()
+        mock_client.db.return_value = mock_db
+        mock_coll = MagicMock()
+        mock_db.collection.return_value = mock_coll
+
+        writer.connect()
+        result = writer.delete_document("users", "1")
+
+        mock_coll.delete.assert_called_once_with("1", ignore_missing=True)
+        assert result is True
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_apply_delta_insert(self, mock_client_cls, writer):
+        from r2g.cdc.models import ArangoDelta, ArangoOperation
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_db = MagicMock()
+        mock_client.db.return_value = mock_db
+        mock_coll = MagicMock()
+        mock_coll.insert.return_value = {"_key": "1"}
+        mock_db.collection.return_value = mock_coll
+        mock_db.has_collection.return_value = True
+
+        writer.connect()
+        delta = ArangoDelta(
+            operation=ArangoOperation.INSERT,
+            collection="users",
+            document={"_key": "1", "name": "Alice"},
+        )
+        writer.apply_delta(delta)
+        mock_coll.insert.assert_called_once()
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_apply_delta_delete(self, mock_client_cls, writer):
+        from r2g.cdc.models import ArangoDelta, ArangoOperation
+
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        mock_db = MagicMock()
+        mock_client.db.return_value = mock_db
+        mock_coll = MagicMock()
+        mock_db.collection.return_value = mock_coll
+        mock_db.has_collection.return_value = True
+
+        writer.connect()
+        delta = ArangoDelta(
+            operation=ArangoOperation.DELETE,
+            collection="users",
+            key="42",
+        )
+        writer.apply_delta(delta)
+        mock_coll.delete.assert_called_once_with("42", ignore_missing=True)
+
+
 class TestClose:
     @patch("r2g.connectors.arango_writer.ArangoClient")
     def test_closes_client(self, mock_client_cls, writer):

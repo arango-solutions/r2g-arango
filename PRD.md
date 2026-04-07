@@ -103,14 +103,18 @@ The roadmap is organized into four implementation phases, from MVP through Kafka
 | **P2.3** | **Streaming import** | Stream transformed data to ArangoDB via the python-arango HTTP bulk import API (`import_bulk`) without intermediate files. | P2.2, P1.4, P1.5 | Done |
 | **P2.4** | **Snapshotting logic** | Full initial load with REPEATABLE READ transaction isolation for consistent snapshot semantics. | P2.3 | Done |
 
-### Phase 3: Change Data Capture (CDC) integration -- Planned
+### Phase 3: Change Data Capture (CDC) integration -- Foundation Implemented
 
-| ID | Requirement | Description | Pre-requisite |
-| :--- | :--- | :--- | :--- |
-| **P3.1** | **CDC hook/listener** | Integrate with PostgreSQL CDC (e.g., logical decoding via `pgoutput`) to capture INSERT, UPDATE, and DELETE events. | P2.1 |
-| **P3.2** | **Delta transformation** | Map captured changes to ArangoDB replace/insert/delete operations. | P1.4, P1.5 |
-| **P3.3** | **Live stream processing** | Continuously apply deltas to ArangoDB for near real-time synchronization. | P3.2, P2.3 |
-| **P3.4** | **Conflict resolution** | Handling when updates touch nodes and edges in conflicting ways. Requires design work to define conflict policies (last-write-wins, source-of-truth priority, etc.). | P3.3 |
+| ID | Requirement | Description | Pre-requisite | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **P3.0** | **CDC event model** | Pydantic models for `ChangeEvent` (INSERT/UPDATE/DELETE with old/new row, LSN, timestamp, transaction ID), `ArangoDelta` (target mutation), and `TransactionBatch` (grouped deltas). | P1.4 | Done |
+| **P3.0b** | **Delta transformer** | `DeltaTransformer` converts `ChangeEvent`s into `ArangoDelta`s using existing `NodeTransformer` and `EdgeTransformer`. Handles INSERT→insert, UPDATE→replace (document + edges), DELETE→delete (document + edge cleanup). | P3.0, P1.4, P1.5 | Done |
+| **P3.0c** | **CDC handler** | `CDCHandler` orchestrates event consumption, transformation, and application. Supports single events, event streams, and transaction-grouped batches. Tracks stats (events, deltas, failures, LSN). | P3.0b | Done |
+| **P3.0d** | **Single-document writer ops** | `ArangoWriter.insert_document`, `replace_document`, `delete_document`, and `apply_delta` methods with retry logic for CDC use. | P2.3 | Done |
+| **P3.1** | **CDC hook/listener** | Integrate with PostgreSQL CDC (e.g., logical decoding via `pgoutput`) to capture INSERT, UPDATE, and DELETE events. Feed them into the existing `CDCHandler`. | P2.1, P3.0c | Planned |
+| **P3.2** | **Delta transformation** | Map captured changes to ArangoDB replace/insert/delete operations. | P1.4, P1.5 | Done (P3.0b) |
+| **P3.3** | **Live stream processing** | Continuously apply deltas to ArangoDB for near real-time synchronization. Connect `pgoutput` consumer loop to `CDCHandler`. | P3.1, P2.3 | Planned |
+| **P3.4** | **Conflict resolution** | Handling when updates touch nodes and edges in conflicting ways. Requires design work to define conflict policies (last-write-wins, source-of-truth priority, etc.). | P3.3 | Planned |
 
 ### Phase 4: Kafka integration -- Exploratory
 
@@ -188,5 +192,6 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **Developer Experience** | **April 2026** | `diff-schema` command for comparing schema snapshots (added/removed tables, column changes, FK changes, with `--json` output). `--skip-existing` flag for resuming partial streaming runs. CLI integration test suite (31 tests via typer CliRunner). Fixed `transform-edges` unhashable EdgeDefinition bug. 314 tests. |
 | **Config Migration** | **April 2026** | `migrate-config` command auto-updates mapping YAML when PG schema evolves: adds new tables/edges, removes stale edges, flags orphaned collections, cleans dropped-column references (field_mappings, include/exclude_fields, type_overrides). Preserves all user customizations. `--json-report` for CI pipelines. Typer upgraded from 0.12 to 0.24 for Click 8.3 compatibility. 341 tests. |
 | **Usability & Safety** | **April 2026** | `.env` file and environment variable support (`PG_CONN`, `ARANGO_ENDPOINT`, `ARANGO_DB`, `ARANGO_USER`, `ARANGO_PASSWORD`) via python-dotenv -- credentials no longer required in CLI args. `validate-data` command checks FK referential integrity of dump files before import. Topological import ordering ensures FK targets are loaded before sources; circular FK deps detected and warned. `--since` timestamp filtering for basic incremental streaming. PK-less table warnings during validation and streaming. `.env.example` template. Snowflake integration planned as Phase 5. 373 tests. |
+| **CDC Foundation** | **April 2026** | Phase 3 foundation: `ChangeEvent` model (INSERT/UPDATE/DELETE with old/new row, LSN, timestamp, transaction ID), `ArangoDelta` target mutation model, `TransactionBatch` grouping. `DeltaTransformer` converts change events to ArangoDB deltas reusing existing node/edge transformers. `CDCHandler` orchestrates event consumption, transformation, and application with stats tracking. `ArangoWriter` single-document ops (`insert_document`, `replace_document`, `delete_document`, `apply_delta`) with retry logic. Remaining: `pgoutput` listener (P3.1), live stream loop (P3.3), conflict resolution (P3.4). 409 tests. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
