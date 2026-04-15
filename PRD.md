@@ -21,16 +21,16 @@ The primary goal of the R2G-ETL Pipeline is an experimental, configurable tool f
 | Objective | Detail |
 | :--- | :--- |
 | **Automation** | Eliminate manual spreadsheet-based mapping and script generation for initial data migration. |
-| **Flexibility** | Support multiple ingestion paths: flat files (implemented), direct connection, CDC, and Kafka (planned). |
+| **Flexibility** | Support multiple ingestion paths: flat files, direct connection, CDC (PostgreSQL logical replication), and Kafka (Debezium / custom producers). All implemented. |
 | **Schema management** | Ingest PostgreSQL schema and maintain metadata for mapping to target ArangoDB graph topologies (property graph, labeled property graph). |
 | **Scalability** | Use `arangoimport` for efficient, high-volume bulk loading. |
-| **Synchronization** | Support synchronizing the relational system through live stream processing of delta changes (planned; see Section 3). |
+| **Synchronization** | Synchronize the relational system through live stream processing of delta changes via CDC (Phase 3) and Kafka (Phase 4), with configurable conflict resolution. |
 
 ---
 
 ## 2. Solution overview
 
-The product is a multi-phased pipeline that reads PostgreSQL relational schema, applies a defined mapping, and generates data in a form suitable for ArangoDB's `arangoimport` tool.
+The product is a multi-phased pipeline that reads relational schema, applies a configurable mapping, and loads data into ArangoDB via multiple paths: `arangoimport` scripts (file-based), HTTP API bulk streaming (direct connection), CDC logical replication (near real-time), and Kafka consumption (Debezium / custom producers).
 
 ### Core components
 
@@ -41,8 +41,12 @@ The product is a multi-phased pipeline that reads PostgreSQL relational schema, 
 | **Mapping engine** | Applies transformation logic: tables to document collections; foreign keys to edge collections (PK/FK values to `_from` / `_to` with collection prefixes). |
 | **Data egress / import generator** | Generates executable bash import scripts. Supports two modes: JSONL-based (transforms CSV to intermediate JSONL) and CSV-direct (uses `arangoimport --type csv` with `--translate` and `--datatype` flags to import PG dumps without intermediate files). |
 | **Mapping visualizer** | Generates self-contained HTML reports with an interactive D3.js force-directed graph showing the PG-to-ArangoDB mapping, relational schema cards, edge mapping details, and a mapping editor with YAML export. |
-| **Streaming engine** | Reads from PostgreSQL using server-side cursors with REPEATABLE READ isolation and writes directly to ArangoDB via python-arango HTTP bulk import API, with configurable batch sizes. Supports `--dry-run` for pre-flight validation, `--drop-collections` for idempotent re-import, `--workers` for parallel streaming with per-worker connections, and retry with exponential backoff. Rich progress bars and throughput reporting. No intermediate files. |
+| **Streaming engine** | Reads from PostgreSQL using server-side cursors with REPEATABLE READ isolation and writes directly to ArangoDB via python-arango HTTP bulk import API, with configurable batch sizes. Supports `--dry-run` for pre-flight validation, `--drop-collections` for idempotent re-import, `--workers` for parallel streaming with per-worker connections, and retry with exponential backoff. Rich progress bars and throughput reporting. Topological import ordering via FK dependency analysis. `--since` incremental filtering. No intermediate files. |
 | **Table dumper** | Connects to PostgreSQL and exports each table as a CSV file via `COPY ... TO STDOUT WITH CSV HEADER`, automating the manual dump step. |
+| **CDC engine** | Near real-time PostgreSQL-to-ArangoDB sync via logical replication. `PGReplicationListener` manages replication slots and polls `pg_logical_slot_get_changes`. Parsers for `test_decoding` (built-in) and `wal2json` output plugins. `DeltaTransformer` converts row-level changes to graph mutations. `CDCHandler` orchestrates event processing with transaction grouping, stats tracking, and configurable conflict resolution (`source_wins`, `last_write_wins`, `log_and_skip`, `fail`). |
+| **Kafka consumer** | Consumes CDC events from Kafka topics via `confluent-kafka`. `DebeziumParser` handles Debezium JSON envelopes (including Kafka Connect wrappers and snapshot reads). `FlatJsonParser` for custom producers. At-least-once delivery with post-write offset commits. Reuses the CDC engine's handler and conflict resolution. Optional dependency (`pip install r2g[kafka]`). |
+| **Schema diff / config migration** | `diff-schema` compares two schema snapshots (added/removed tables, column changes, FK changes). `migrate-config` auto-updates mapping YAML when the source schema evolves, preserving user customizations. |
+| **Data validator** | `validate-data` checks FK referential integrity of dump files before import, detecting orphaned references that would create dangling edges. |
 
 ### Relational-to-graph mapping logic
 
@@ -67,11 +71,11 @@ The mechanical mapping handles several non-trivial patterns:
 - **Self-referential FKs** (e.g., `employees.manager_id -> employees.id`): produces edges within the same vertex collection. This is correct graph modeling but may surprise users expecting separate collections.
 - **Multiple FKs to the same table** (e.g., `orders.customer_id` and `orders.referrer_id` both referencing `customers`): each FK produces a separate edge collection, named `{source}_to_{target}` with a `_{fk_column}` suffix to disambiguate.
 - **Nullable FKs**: rows where the FK value is NULL are silently skipped (no edge is created). This is intentional -- a NULL FK means "no relationship."
-- **Tables with no primary key**: these cannot produce meaningful `_key` values. The tool will fail if it encounters a table without a PK that is mapped as a document collection.
+- **Tables with no primary key**: these cannot produce meaningful `_key` values. The tool warns during config validation and streaming; documents receive auto-generated `_key` values and edges referencing such tables are flagged.
 
-The following patterns are **not yet handled**:
+The following patterns are **handled with caveats**:
 
-- **Circular FK dependencies** (table A references B, B references A): will produce valid edges but import ordering may need manual adjustment.
+- **Circular FK dependencies** (table A references B, B references A): detected by topological sort (Kahn's algorithm). The tool warns about cycles and proceeds with a best-effort ordering.
 - **Inheritance patterns** (single-table inheritance, table-per-type): no special handling; each table is mapped independently.
 - **Polymorphic associations**: not supported.
 
@@ -79,7 +83,7 @@ The following patterns are **not yet handled**:
 
 ## 3. Project phases and requirements
 
-The roadmap is organized into four implementation phases, from MVP through Kafka-backed change streams.
+The roadmap is organized into six phases: four implemented (MVP through Kafka), one planned (Snowflake), and one exploratory (future sources and advanced features).
 
 ### Phase 1: Table dump file processing (MVP) -- Implemented
 
@@ -132,15 +136,15 @@ The roadmap is organized into four implementation phases, from MVP through Kafka
 | Category | Requirement | Details |
 | :--- | :--- | :--- |
 | **Architecture** | Modularity | Design so data sources can be swapped (e.g., PostgreSQL replaced by Snowflake or MySQL) without rewriting the whole tool. Currently PostgreSQL-only; Snowflake planned (Phase 5). |
-| **Target DB** | ArangoDB | Load via `arangoimport` (implemented) and/or the ArangoDB HTTP API (planned for Phase 2). |
+| **Target DB** | ArangoDB | Load via `arangoimport` (file-based, Phase 1) and the ArangoDB HTTP API (streaming/CDC/Kafka, Phases 2--4). |
 | **Transformation** | Schema mapping | Configurable prefix mapping for `_from` and `_to` (e.g., `user_1` to `Users/1`). |
 | **Data integrity** | Key generation | Correct document `_key` values derived from source primary keys, including composite keys joined by a configurable separator. |
-| **Technology stack** | Python | Chosen for ecosystem support (psycopg, python-arango, Polars, Pydantic, structlog). |
+| **Technology stack** | Python | Chosen for ecosystem support (psycopg, python-arango, Polars, Pydantic, structlog, confluent-kafka, python-dotenv). |
 
 ### Known constraints
 
 - **Referential integrity is opt-in**: the `validate-data` command checks FK values against PK sets from dump files, but this check is not enforced automatically during import. Orphaned references will still produce edges pointing to non-existent vertices if validation is skipped.
-- **No idempotency guarantees**: re-running the pipeline with `--drop-collections` replaces all data. There is no merge, diff, or conflict resolution for repeated loads.
+- **Bulk load idempotency**: re-running the streaming pipeline with `--drop-collections` replaces all data. For incremental updates, CDC and Kafka pipelines provide configurable conflict resolution (`source_wins`, `last_write_wins`, `log_and_skip`, `fail`) with at-least-once delivery semantics.
 - **Credential handling**: connection parameters can be loaded from `.env` files or environment variables (`PG_CONN`, `ARANGO_ENDPOINT`, etc.), but generated import scripts still contain connection defaults. No integrated secrets management (e.g., HashiCorp Vault).
 
 ### Phase 5: Snowflake integration -- Planned
