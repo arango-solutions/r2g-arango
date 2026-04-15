@@ -7,14 +7,14 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phases 5--6 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phases 5--7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
 
 ## 1. Goals and objectives
 
-The primary goal of the R2G-ETL Pipeline is an experimental, configurable tool for transforming and loading data from relational schemas into ArangoDB graph schemas. It serves as a reference implementation demonstrating the mechanical mapping patterns. While PostgreSQL is the primary supported source, the architecture is designed to accommodate additional relational sources (see Phase 5: Snowflake integration).
+The primary goal of the R2G-ETL Pipeline is an experimental, configurable tool for transforming and loading data from relational schemas into ArangoDB graph schemas. It serves as a reference implementation demonstrating the mechanical mapping patterns. While PostgreSQL is the primary supported source, the architecture is designed to accommodate additional relational sources (see Phase 6: Snowflake integration).
 
 ### Key objectives
 
@@ -83,7 +83,7 @@ The following patterns are **handled with caveats**:
 
 ## 3. Project phases and requirements
 
-The roadmap is organized into six phases: four implemented (MVP through Kafka), one planned (Snowflake), and one exploratory (future sources and advanced features).
+The roadmap is organized into seven phases: four implemented (MVP through Kafka), two planned (temporal graph mode, Snowflake), and one exploratory (future sources and advanced features).
 
 ### Phase 1: Table dump file processing (MVP) -- Implemented
 
@@ -129,13 +129,46 @@ The roadmap is organized into six phases: four implemented (MVP through Kafka), 
 | **P4.3** | **Kafka message transformation** | `DebeziumParser` parses Debezium JSON envelope (`before`/`after`/`op`/`source`) including Kafka Connect `payload` wrapper, snapshot reads (`op: r`). `FlatJsonParser` for custom producers. Both produce `ChangeEvent` objects fed into existing `CDCHandler`. | P4.2, P3.2 | Done |
 | **P4.4** | **Transactional ordering** | Messages consumed in Kafka partition order. Events grouped by `transaction_id` (from Debezium `source.txId`) and applied through `CDCHandler.handle_transaction` for ordered delta application. Conflict resolution policies apply. | P4.3 | Done |
 
+### Phase 5: Temporal graph mode -- Planned
+
+CDC and Kafka pipelines currently apply changes as direct replaces/deletes. Temporal graph mode adds an alternative write strategy using the **immutable-proxy time travel pattern** (ProxyIn / Entity / ProxyOut), enabling full version history, point-in-time queries, and soft deletes with automatic TTL-based garbage collection.
+
+#### Architecture
+
+Stable identity (proxies) is separated from mutable state (versioned entities). Topology edges attach to proxies and are never rewritten when entities change.
+
+```
+Topology edges --> EntityProxyIn --hasVersion--> Entity v0 (current: expired=NEVER)
+                   (stable _key)  --hasVersion--> Entity v1 (historical: expired=T)
+                   EntityProxyOut <-- Entity     (outbound version link)
+```
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P5.1** | **Temporal write strategy** | `--temporal` flag on `cdc-start` and `kafka-start` that switches the delta application from direct replace/delete to versioned writes. CDC INSERT creates ProxyIn + ProxyOut + Entity v0 (with `created=now`, `expired=NEVER_EXPIRES`). CDC UPDATE expires the current Entity (`expired=now`) and inserts a new version (`created=now`, `expired=NEVER_EXPIRES`). CDC DELETE soft-deletes by setting `expired=now` on the current Entity; proxies and topology edges are preserved. | P3.4, P4.4 |
+| **P5.2** | **Proxy collection management** | Auto-create `{Collection}ProxyIn` and `{Collection}ProxyOut` document collections alongside each mapped entity collection. Proxies carry only the shard key attribute (for SmartGraph compatibility) and a stable `_key`. | P5.1 |
+| **P5.3** | **hasVersion edge collection** | Auto-create `hasVersion` edge collection with bidirectional edges: `ProxyIn -> Entity` (inbound) and `Entity -> ProxyOut` (outbound). Edges carry `created` and `expired` timestamps matching their entity version. | P5.2 |
+| **P5.4** | **Interval semantics** | Every versioned entity and version edge carries `created` (float, unix timestamp) and `expired` (float, unix timestamp or sentinel `sys.maxsize = 9223372036854775807` for current). Current entities: `expired == NEVER_EXPIRES`. Historical entities: `expired` is a finite timestamp. | P5.1 |
+| **P5.5** | **TTL aging** | Automatic garbage collection of historical versions via TTL indexes. Only documents with `expired != NEVER_EXPIRES` receive a `ttlExpireAt` field (`expired + ttl_retain_seconds`). TTL index is `sparse: true` to skip current documents. Configurable retention period via `--ttl-seconds` (default: 30 days). Static reference data and proxy collections are excluded from TTL. | P5.4 |
+| **P5.6** | **MDI-prefixed temporal indexes** | Create `mdi-prefixed` indexes on `[created, expired]` for all versioned entity and hasVersion edge collections. Accelerates point-in-time snapshot queries and interval intersection queries. Verify usage via `zkd` index type in query execution plans. | P5.4 |
+| **P5.7** | **Point-in-time query templates** | Emit AQL query templates for common temporal operations: snapshot at time T (`created <= @t AND expired > @t`), version history traversal (ProxyIn -> hasVersion -> Entity, sorted by `created DESC`), temporal overlap/interval intersection (`created <= @end AND expired >= @start`), and "what changed between T1 and T2". | P5.6 |
+| **P5.8** | **SmartGraph compatibility** | Key structure supports SmartGraph shard key prefixes (`{shardKey}:{entityType}{index}` for proxies, `{shardKey}:{entityType}{index}-{version}` for entities). Optional `--smart-field` parameter for multi-tenant isolation. Satellite collections for shared taxonomy/classification data. | P5.2 |
+
+#### Temporal-specific considerations
+
+- **Write amplification.** Each source UPDATE produces 3-5 ArangoDB writes (expire old entity + insert new entity + 2 hasVersion edges + optional classification edges). Size RocksDB write buffers and monitor compaction accordingly.
+- **Storage growth.** Without TTL, historical versions accumulate indefinitely. Monitor collection document counts; unbounded growth indicates TTL misconfiguration.
+- **Conflict resolution interaction.** `last_write_wins` is recommended for temporal mode to prevent out-of-order events from creating phantom versions. A replayed INSERT should not create a duplicate entity version.
+- **Topology edge stability.** Topology edges (connections, associations, locations) attach to proxies, NOT to versioned entities. This is the key invariant -- relationships survive entity versioning without being rewritten.
+- **DELETE semantics.** CDC DELETEs become soft deletes (set `expired=now`). The entity remains queryable at any historical point in time. Physical removal is handled exclusively by TTL.
+
 ---
 
 ## 4. Technical requirements
 
 | Category | Requirement | Details |
 | :--- | :--- | :--- |
-| **Architecture** | Modularity | Design so data sources can be swapped (e.g., PostgreSQL replaced by Snowflake or MySQL) without rewriting the whole tool. Currently PostgreSQL-only; Snowflake planned (Phase 5). |
+| **Architecture** | Modularity | Design so data sources can be swapped (e.g., PostgreSQL replaced by Snowflake or MySQL) without rewriting the whole tool. Currently PostgreSQL-only; Snowflake planned (Phase 6). |
 | **Target DB** | ArangoDB | Load via `arangoimport` (file-based, Phase 1) and the ArangoDB HTTP API (streaming/CDC/Kafka, Phases 2--4). |
 | **Transformation** | Schema mapping | Configurable prefix mapping for `_from` and `_to` (e.g., `user_1` to `Users/1`). |
 | **Data integrity** | Key generation | Correct document `_key` values derived from source primary keys, including composite keys joined by a configurable separator. |
@@ -147,22 +180,22 @@ The roadmap is organized into six phases: four implemented (MVP through Kafka), 
 - **Bulk load idempotency**: re-running the streaming pipeline with `--drop-collections` replaces all data. For incremental updates, CDC and Kafka pipelines provide configurable conflict resolution (`source_wins`, `last_write_wins`, `log_and_skip`, `fail`) with at-least-once delivery semantics.
 - **Credential handling**: connection parameters can be loaded from `.env` files or environment variables (`PG_CONN`, `ARANGO_ENDPOINT`, etc.), but generated import scripts still contain connection defaults. No integrated secrets management (e.g., HashiCorp Vault).
 
-### Phase 5: Snowflake integration -- Planned
+### Phase 6: Snowflake integration -- Planned
 
 Snowflake is a common data warehouse among R2G users. This phase adds Snowflake as a source alongside PostgreSQL, reusing the existing mapping, transformation, and loading infrastructure.
 
 | ID | Requirement | Description | Pre-requisite |
 | :--- | :--- | :--- | :--- |
-| **P5.1** | **Snowflake schema reader** | Connect to Snowflake via the Snowflake Connector for Python (`snowflake-connector-python`) and introspect `INFORMATION_SCHEMA` to extract tables, columns, primary keys, and foreign key constraints (imported/inferred). Output the same `Schema` model used by PostgreSQL. | P1.1 |
-| **P5.2** | **Snowflake type mapping** | Map Snowflake data types (`NUMBER`, `VARCHAR`, `BOOLEAN`, `TIMESTAMP_*`, `VARIANT`, `ARRAY`, `OBJECT`, `GEOGRAPHY`, `GEOMETRY`, etc.) to JSON types. `VARIANT`/`OBJECT` map to JSON objects; `ARRAY` maps to JSON arrays. Extend `DEFAULT_TYPE_MAP` with Snowflake-specific entries. | P1.4 |
-| **P5.3** | **Snowflake dump export** | `dump-tables` command variant that uses `COPY INTO @stage` or cursor-based extraction to export Snowflake tables as CSV files. Handle Snowflake-specific CSV quoting and NULL representation. | P5.1 |
-| **P5.4** | **Snowflake streaming** | `stream` command variant that reads from Snowflake using the Python connector's cursor (Snowflake does not support server-side cursors like PostgreSQL, but supports `fetch_pandas_all()` / `fetch_arrow_all()` for batched reads). Reuse the ArangoDB writer path. Snowflake's `RESULT_SCAN` or warehouse-level snapshot isolation provides read consistency. | P5.1, P2.3 |
-| **P5.5** | **Source abstraction layer** | Refactor the schema reader and streaming pipeline behind a `SourceConnector` protocol/ABC so PostgreSQL and Snowflake (and future sources) share a common interface. CLI commands accept `--source-type pg|snowflake` or auto-detect from connection string format. | P5.1, P5.4 |
-| **P5.6** | **Snowflake FK inference** | Snowflake does not enforce foreign key constraints (they are informational only and often absent). Provide a `--infer-fks` option that analyzes column naming conventions (e.g., `user_id` matching `users.id`) and value overlap to suggest FK relationships. Require user confirmation via the mapping config. | P5.1 |
+| **P6.1** | **Snowflake schema reader** | Connect to Snowflake via the Snowflake Connector for Python (`snowflake-connector-python`) and introspect `INFORMATION_SCHEMA` to extract tables, columns, primary keys, and foreign key constraints (imported/inferred). Output the same `Schema` model used by PostgreSQL. | P1.1 |
+| **P6.2** | **Snowflake type mapping** | Map Snowflake data types (`NUMBER`, `VARCHAR`, `BOOLEAN`, `TIMESTAMP_*`, `VARIANT`, `ARRAY`, `OBJECT`, `GEOGRAPHY`, `GEOMETRY`, etc.) to JSON types. `VARIANT`/`OBJECT` map to JSON objects; `ARRAY` maps to JSON arrays. Extend `DEFAULT_TYPE_MAP` with Snowflake-specific entries. | P1.4 |
+| **P6.3** | **Snowflake dump export** | `dump-tables` command variant that uses `COPY INTO @stage` or cursor-based extraction to export Snowflake tables as CSV files. Handle Snowflake-specific CSV quoting and NULL representation. | P6.1 |
+| **P6.4** | **Snowflake streaming** | `stream` command variant that reads from Snowflake using the Python connector's cursor (Snowflake does not support server-side cursors like PostgreSQL, but supports `fetch_pandas_all()` / `fetch_arrow_all()` for batched reads). Reuse the ArangoDB writer path. Snowflake's `RESULT_SCAN` or warehouse-level snapshot isolation provides read consistency. | P6.1, P2.3 |
+| **P6.5** | **Source abstraction layer** | Refactor the schema reader and streaming pipeline behind a `SourceConnector` protocol/ABC so PostgreSQL and Snowflake (and future sources) share a common interface. CLI commands accept `--source-type pg|snowflake` or auto-detect from connection string format. | P6.1, P6.4 |
+| **P6.6** | **Snowflake FK inference** | Snowflake does not enforce foreign key constraints (they are informational only and often absent). Provide a `--infer-fks` option that analyzes column naming conventions (e.g., `user_id` matching `users.id`) and value overlap to suggest FK relationships. Require user confirmation via the mapping config. | P6.1 |
 
 #### Snowflake-specific considerations
 
-- **FK constraints are not enforced in Snowflake.** They can be declared but are informational only. Many Snowflake schemas have no FK metadata at all. The FK inference feature (P5.6) addresses this gap.
+- **FK constraints are not enforced in Snowflake.** They can be declared but are informational only. Many Snowflake schemas have no FK metadata at all. The FK inference feature (P6.6) addresses this gap.
 - **Semi-structured data.** Snowflake `VARIANT`, `OBJECT`, and `ARRAY` columns can contain nested JSON. These should be preserved as nested structures in ArangoDB documents rather than flattened.
 - **Large tables.** Snowflake tables can be very large. The streaming path should support `LIMIT`/`OFFSET` pagination or warehouse-level result caching to manage memory. Arrow-based fetching (`fetch_arrow_all()`) provides the best throughput for large result sets.
 - **Authentication.** Snowflake supports multiple auth methods (user/password, key-pair, SSO/OAuth, external browser). The connector should accept standard Snowflake connection parameters: `account`, `user`, `password`, `warehouse`, `database`, `schema`, `role`. These should be loadable from env vars (`SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, etc.) and `.env` files.
@@ -170,11 +203,11 @@ Snowflake is a common data warehouse among R2G users. This phase adds Snowflake 
 
 ---
 
-## 6. Future considerations (Phase 6+) -- Exploratory
+## 6. Future considerations (Phase 7+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
 
-- **Additional source databases:** MySQL, SQL Server, Oracle, and other relational databases could be added following the same `SourceConnector` pattern established in Phase 5. Each requires a source-specific schema reader, type map, and streaming adapter.
+- **Additional source databases:** MySQL, SQL Server, Oracle, and other relational databases could be added following the same `SourceConnector` pattern established in Phase 6. Each requires a source-specific schema reader, type map, and streaming adapter.
 - **Ontology derivation (LLM integration):** Use a large language model to analyze the source schema and propose an optimized target ArangoDB graph schema for a given domain. This could suggest which tables should be vertices vs. edges, identify implicit relationships, and recommend denormalization strategies. Feasibility has improved significantly with current model capabilities.
 - **ArangoRDF integration:** Emit data compatible with ArangoRDF so RDF, property graph, and labeled property graph representations can be selected as needed. Requires understanding the target use case (SPARQL queries, knowledge graphs, etc.) to choose the right representation.
 - **Bi-directional synchronization:** Propagate changes from ArangoDB back to the source database. This is an extremely complex problem involving conflict resolution, schema evolution, and transactional consistency across two fundamentally different data models. Should be considered only if a concrete use case demands it.
