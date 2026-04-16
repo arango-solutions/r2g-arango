@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
 from typing import Any, Optional
@@ -19,6 +21,10 @@ from r2g.transformers.node_transformer import NodeTransformer
 from r2g.types import EdgeDefinition, Schema
 
 app = typer.Typer(help="R2G-ETL: Relational to Graph Pipeline")
+source_app = typer.Typer(help="Manage data sources")
+project_app = typer.Typer(help="Manage projects")
+app.add_typer(source_app, name="source")
+app.add_typer(project_app, name="project")
 console = Console()
 log = get_logger(__name__)
 
@@ -1389,6 +1395,399 @@ def kafka_start(
         log.exception("kafka_start_failed")
         console.print(f"[red]Kafka consumer failed:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+# ── Mapping diff / selective reload ──────────────────────────────────
+
+
+@app.command("mapping-diff")
+def mapping_diff_cmd(
+    old_config: str = typer.Argument(..., help="Path to old mapping config YAML"),
+    new_config: str = typer.Argument(..., help="Path to new mapping config YAML"),
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    json_output: bool = typer.Option(False, "--json", help="Output diff as JSON"),
+) -> None:
+    """Compare two mapping configs and show what ArangoDB changes are needed."""
+    from r2g.mapping_diff import diff_mappings
+
+    try:
+        old = ConfigManager.load_config(old_config)
+        new = ConfigManager.load_config(new_config)
+        schema = Schema.load_from_file(schema_file)
+        plan = diff_mappings(old, new, schema)
+
+        if not plan.changes:
+            console.print("[green]Mappings are identical[/green]")
+            return
+
+        if json_output:
+            console.print(plan.model_dump_json(indent=2))
+            return
+
+        changes_table = RichTable(title="Mapping Changes")
+        changes_table.add_column("Type", style="magenta")
+        changes_table.add_column("Collection / Edge", style="cyan")
+        changes_table.add_column("Details")
+        for change in plan.changes:
+            target = change.collection or change.edge or ""
+            details = ", ".join(f"{k}={v}" for k, v in change.details.items()) if change.details else ""
+            changes_table.add_row(change.change_type, target, details)
+        console.print(changes_table)
+
+        actions_table = RichTable(title="Reload Actions")
+        actions_table.add_column("Action", style="magenta")
+        actions_table.add_column("Collection", style="cyan")
+        actions_table.add_column("Reason")
+        for action in plan.actions:
+            actions_table.add_row(action.action_type, action.collection, action.reason)
+        console.print(actions_table)
+
+    except Exception as e:
+        log.exception("mapping_diff_failed")
+        console.print(f"[red]Mapping diff failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("selective-reload")
+def selective_reload_cmd(
+    old_config: str = typer.Argument(..., help="Path to old mapping config YAML"),
+    new_config: str = typer.Argument(..., help="Path to new mapping config YAML"),
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    pg_conn: Optional[str] = typer.Option(
+        None, "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"
+    ),
+    endpoint: str = typer.Option(
+        "http://localhost:8529", "--endpoint", help="ArangoDB endpoint", envvar="ARANGO_ENDPOINT"
+    ),
+    database: str = typer.Option("_system", "--database", "-d", help="ArangoDB database", envvar="ARANGO_DB"),
+    username: str = typer.Option("root", "--username", "-u", help="ArangoDB username", envvar="ARANGO_USER"),
+    password: str = typer.Option("", "--password", "-p", help="ArangoDB password", envvar="ARANGO_PASSWORD"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show plan without executing"),
+    batch_size: int = typer.Option(10000, "--batch-size", help="Rows per batch for reload"),
+    on_duplicate: str = typer.Option("replace", "--on-duplicate", help="On duplicate strategy"),
+) -> None:
+    """Compute and execute a selective reload based on mapping changes."""
+    from r2g.connectors.arango_writer import ArangoWriter
+    from r2g.mapping_diff import diff_mappings
+    from r2g.selective_reload import SelectiveReloader
+
+    try:
+        old = ConfigManager.load_config(old_config)
+        new = ConfigManager.load_config(new_config)
+        schema = Schema.load_from_file(schema_file)
+        plan = diff_mappings(old, new, schema)
+
+        if not plan.changes:
+            console.print("[green]No changes detected[/green]")
+            return
+
+        changes_table = RichTable(title="Mapping Changes")
+        changes_table.add_column("Type", style="magenta")
+        changes_table.add_column("Collection / Edge", style="cyan")
+        changes_table.add_column("Details")
+        for change in plan.changes:
+            target = change.collection or change.edge or ""
+            details = ", ".join(f"{k}={v}" for k, v in change.details.items()) if change.details else ""
+            changes_table.add_row(change.change_type, target, details)
+        console.print(changes_table)
+
+        writer = ArangoWriter(
+            endpoint=endpoint,
+            database=database,
+            username=username,
+            password=password,
+        )
+
+        reloader = SelectiveReloader(
+            writer=writer,
+            plan=plan,
+            pg_conn_string=pg_conn,
+            schema=schema,
+            config=new,
+            batch_size=batch_size,
+            on_duplicate=on_duplicate,
+        )
+        report = reloader.execute(dry_run=dry_run)
+
+        report_table = RichTable(title="Reload Report" + (" (dry run)" if dry_run else ""))
+        report_table.add_column("Action", style="magenta")
+        report_table.add_column("Collection", style="cyan")
+        report_table.add_column("Status")
+        report_table.add_column("Detail")
+        for entry in report.actions_executed:
+            report_table.add_row(
+                entry.get("action", ""),
+                entry.get("collection", ""),
+                "[green]executed[/green]",
+                entry.get("reason", ""),
+            )
+        for entry in report.actions_skipped:
+            report_table.add_row(
+                entry.get("action", ""),
+                entry.get("collection", ""),
+                "[yellow]skipped[/yellow]",
+                entry.get("reason", ""),
+            )
+        for entry in report.errors:
+            report_table.add_row(
+                entry.get("action", ""),
+                entry.get("collection", ""),
+                "[red]error[/red]",
+                entry.get("error", ""),
+            )
+        console.print(report_table)
+
+        if report.rows_reloaded:
+            console.print(f"[green]Rows reloaded:[/green] {report.rows_reloaded:,}")
+
+    except Exception as e:
+        log.exception("selective_reload_failed")
+        console.print(f"[red]Selective reload failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@app.command("ui")
+def ui_cmd(
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address"),
+    port: int = typer.Option(8501, "--port", help="Port to serve on"),
+    project: Optional[str] = typer.Option(None, "--project", help="Open directly to a project"),
+    catalog_dir: Optional[str] = typer.Option(None, "--catalog-dir", help="Catalog directory"),
+) -> None:
+    """Start the R2G Mapping Studio web UI."""
+    try:
+        import uvicorn
+
+        from r2g.ui.server import create_app
+    except ImportError:
+        console.print("[red]FastAPI/Uvicorn not installed.[/red] Install with: [bold]pip install 'r2g[ui]'[/bold]")
+        raise typer.Exit(code=1)
+
+    console.print(f"[green]R2G Mapping Studio[/green] starting at http://{host}:{port}")
+    if project:
+        console.print(f"  Default project: {project}")
+
+    app_instance = create_app(catalog_dir=catalog_dir)
+    uvicorn.run(app_instance, host=host, port=port, log_level="info")
+
+
+# ── Source commands ───────────────────────────────────────────────────
+
+
+def _get_catalog():
+    from r2g.catalog import CatalogManager
+    return CatalogManager()
+
+
+@source_app.command("add")
+def source_add(
+    name: str = typer.Option(..., "--name", help="Source name"),
+    source_type: str = typer.Option("postgresql", "--type", help="Source type"),
+    conn: str = typer.Option(..., "--conn", help="Connection string"),
+    description: str = typer.Option("", "--description", help="Description"),
+    owner: str = typer.Option("", "--owner", help="Owner"),
+) -> None:
+    """Register a new data source."""
+    try:
+        mgr = _get_catalog()
+        source = mgr.add_source(name, source_type, conn, description=description, owner=owner)
+        console.print(f"[green]Source '{source.name}' added.[/green]")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        log.exception("source_add_failed")
+        console.print(f"[red]Failed to add source:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@source_app.command("list")
+def source_list() -> None:
+    """List all registered data sources."""
+    mgr = _get_catalog()
+    sources = mgr.list_sources()
+    if not sources:
+        console.print("[dim]No sources registered.[/dim]")
+        return
+    table = RichTable(title="Data Sources")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="magenta")
+    table.add_column("Description")
+    table.add_column("Owner")
+    table.add_column("Updated")
+    for s in sources:
+        table.add_row(s.name, s.source_type, s.description, s.owner, s.updated_at.isoformat())
+    console.print(table)
+
+
+@source_app.command("remove")
+def source_remove(
+    name: str = typer.Argument(..., help="Source name to remove"),
+) -> None:
+    """Remove a registered data source."""
+    mgr = _get_catalog()
+    if mgr.remove_source(name):
+        console.print(f"[green]Source '{name}' removed.[/green]")
+    else:
+        console.print(f"[yellow]Source '{name}' not found.[/yellow]")
+        raise typer.Exit(code=1)
+
+
+@source_app.command("snapshot")
+def source_snapshot(
+    name: str = typer.Argument(..., help="Source name to snapshot"),
+    pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name"),
+    compare_last: bool = typer.Option(False, "--compare-last", help="Diff against previous snapshot"),
+) -> None:
+    """Introspect the schema from PostgreSQL and save a snapshot."""
+    mgr = _get_catalog()
+    source = mgr.get_source(name)
+    if source is None:
+        console.print(f"[red]Source '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        connector = PostgresConnector(source.connection_string, schema_name=pg_schema)
+        schema = connector.get_schema()
+        previous = mgr.get_latest_snapshot(name) if compare_last else None
+        snap = mgr.create_snapshot(name, schema, pg_schema=pg_schema)
+        console.print(
+            f"[green]Snapshot created:[/green] {snap.id}\n"
+            f"  {len(schema.tables)} tables captured at {snap.captured_at.isoformat()}"
+        )
+
+        if compare_last and previous is not None:
+            from r2g.schema_diff import diff_schemas
+
+            diff = diff_schemas(previous.schema_data, schema)
+            has_changes = diff["added_tables"] or diff["removed_tables"] or diff["modified_tables"]
+            if not has_changes:
+                console.print("[green]No schema changes since last snapshot.[/green]")
+            else:
+                if diff["added_tables"]:
+                    console.print("[green]Added tables:[/green] " + ", ".join(diff["added_tables"]))
+                if diff["removed_tables"]:
+                    console.print("[red]Removed tables:[/red] " + ", ".join(diff["removed_tables"]))
+                if diff["modified_tables"]:
+                    console.print(f"[yellow]Modified tables:[/yellow] {', '.join(diff['modified_tables'].keys())}")
+        elif compare_last and previous is None:
+            console.print("[dim]No previous snapshot to compare against.[/dim]")
+    except Exception as e:
+        log.exception("source_snapshot_failed")
+        console.print(f"[red]Snapshot failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+# ── Project commands ─────────────────────────────────────────────────
+
+
+@project_app.command("create")
+def project_create(
+    name: str = typer.Option(..., "--name", help="Project name"),
+    source: str = typer.Option(..., "--source", help="Source name"),
+    mapping: str = typer.Option(..., "--mapping", help="Path to mapping config"),
+    endpoint: str = typer.Option("http://localhost:8529", "--endpoint", help="ArangoDB endpoint URL"),
+    database: str = typer.Option("_system", "--database", help="ArangoDB database name"),
+) -> None:
+    """Create a new project."""
+    try:
+        mgr = _get_catalog()
+        project = mgr.create_project(name, source, mapping, arango_endpoint=endpoint, arango_database=database)
+        console.print(f"[green]Project '{project.name}' created.[/green]")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        log.exception("project_create_failed")
+        console.print(f"[red]Failed to create project:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@project_app.command("list")
+def project_list() -> None:
+    """List all projects."""
+    mgr = _get_catalog()
+    projects = mgr.list_projects()
+    if not projects:
+        console.print("[dim]No projects registered.[/dim]")
+        return
+    table = RichTable(title="Projects")
+    table.add_column("Name", style="cyan")
+    table.add_column("Source", style="magenta")
+    table.add_column("Mapping Config")
+    table.add_column("ArangoDB Endpoint")
+    table.add_column("Database")
+    for p in projects:
+        table.add_row(p.name, p.source_name, p.mapping_config_path, p.arango_endpoint, p.arango_database)
+    console.print(table)
+
+
+@project_app.command("status")
+def project_status(
+    name: str = typer.Argument(..., help="Project name"),
+) -> None:
+    """Show the status of a project (last load, snapshot age, mapping path)."""
+    mgr = _get_catalog()
+    project = mgr.get_project(name)
+    if project is None:
+        console.print(f"[red]Project '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    table = RichTable(title=f"Project: {name}")
+    table.add_column("Property")
+    table.add_column("Value")
+    table.add_row("Source", project.source_name)
+    table.add_row("Mapping Config", project.mapping_config_path)
+    table.add_row("ArangoDB Endpoint", project.arango_endpoint)
+    table.add_row("ArangoDB Database", project.arango_database)
+    table.add_row("Schema Snapshot ID", project.schema_snapshot_id or "[dim]none[/dim]")
+
+    history = mgr.get_history(project_name=name, limit=1)
+    if history:
+        last = history[0]
+        table.add_row("Last Load Status", last.status)
+        table.add_row("Last Load Type", last.load_type)
+        table.add_row("Last Load Rows", str(last.rows_loaded))
+        table.add_row("Last Load Started", last.started_at.isoformat())
+    else:
+        table.add_row("Last Load", "[dim]none[/dim]")
+
+    console.print(table)
+
+
+# ── History command ──────────────────────────────────────────────────
+
+
+@app.command("history")
+def history_cmd(
+    project: Optional[str] = typer.Option(None, "--project", help="Filter by project name"),
+    limit: int = typer.Option(20, "--limit", help="Max records to show"),
+) -> None:
+    """Show load history."""
+    mgr = _get_catalog()
+    records = mgr.get_history(project_name=project, limit=limit)
+    if not records:
+        console.print("[dim]No load history found.[/dim]")
+        return
+    table = RichTable(title="Load History")
+    table.add_column("ID", style="dim", max_width=8)
+    table.add_column("Project", style="cyan")
+    table.add_column("Type", style="magenta")
+    table.add_column("Status")
+    table.add_column("Rows", justify="right")
+    table.add_column("Errors", justify="right")
+    table.add_column("Started")
+    for r in records:
+        status_style = {"completed": "green", "failed": "red", "running": "yellow"}.get(r.status, "")
+        table.add_row(
+            r.id[:8],
+            r.project_name,
+            r.load_type,
+            f"[{status_style}]{r.status}[/{status_style}]" if status_style else r.status,
+            str(r.rows_loaded),
+            str(r.errors),
+            r.started_at.isoformat(),
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

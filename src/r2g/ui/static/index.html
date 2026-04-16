@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>R2G Mapping Studio</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+  :root {
+    --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
+    --border: #475569; --text: #e2e8f0; --text-muted: #94a3b8;
+    --accent: #38bdf8; --accent2: #818cf8; --green: #34d399;
+    --yellow: #fbbf24; --red: #f87171; --pink: #f472b6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+    overflow: hidden; height: 100vh;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    height: 52px; background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; padding: 0 16px; gap: 12px;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 200;
+  }
+  .toolbar-brand {
+    font-size: 15px; font-weight: 700; color: var(--accent);
+    white-space: nowrap; display: flex; align-items: center; gap: 8px;
+  }
+  .toolbar-brand svg { flex-shrink: 0; }
+  .toolbar-center { flex: 1; display: flex; justify-content: center; align-items: center; gap: 10px; }
+  .toolbar-center label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+  .toolbar-center select {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; font-family: inherit; font-size: 12px;
+    min-width: 200px; cursor: pointer; outline: none;
+  }
+  .toolbar-center select:focus { border-color: var(--accent); }
+  .toolbar-actions { display: flex; gap: 6px; }
+  .btn {
+    padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); font-family: inherit;
+    font-size: 11px; cursor: pointer; transition: all .15s; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn:active { transform: scale(.97); }
+  .btn-primary { background: var(--accent); color: #0f172a; border-color: var(--accent); font-weight: 600; }
+  .btn-primary:hover { background: #7dd3fc; border-color: #7dd3fc; color: #0f172a; }
+  .btn-danger { border-color: var(--red); color: var(--red); }
+  .btn-danger:hover { background: var(--red); color: #fff; }
+  .btn:disabled { opacity: .4; pointer-events: none; }
+
+  /* Main layout */
+  .main {
+    display: flex; height: calc(100vh - 52px); margin-top: 52px;
+  }
+
+  /* Left sidebar */
+  .sidebar-left {
+    width: 250px; min-width: 250px; background: var(--surface);
+    border-right: 1px solid var(--border); display: flex;
+    flex-direction: column; overflow: hidden;
+  }
+  .panel-header {
+    padding: 10px 14px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .5px;
+    color: var(--text-muted); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    background: var(--surface2); flex-shrink: 0;
+  }
+  .panel-body { overflow-y: auto; flex: 1; }
+
+  .source-item {
+    padding: 8px 14px; font-size: 12px; display: flex;
+    align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(71,85,105,.3); cursor: default;
+  }
+  .source-item:hover { background: rgba(56,189,248,.05); }
+  .source-name { color: var(--accent); font-weight: 600; }
+  .source-type { font-size: 10px; color: var(--text-muted); }
+  .btn-sm {
+    padding: 2px 8px; font-size: 10px; border-radius: 4px;
+    border: 1px solid var(--border); background: transparent;
+    color: var(--text-muted); font-family: inherit; cursor: pointer;
+  }
+  .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+
+  .schema-table-item {
+    padding: 6px 14px; font-size: 12px; display: flex;
+    align-items: center; justify-content: space-between;
+    border-bottom: 1px solid rgba(71,85,105,.2); cursor: pointer;
+    transition: background .1s;
+  }
+  .schema-table-item:hover { background: rgba(56,189,248,.08); }
+  .schema-table-item.active { background: rgba(56,189,248,.12); }
+  .table-col-count {
+    font-size: 10px; color: var(--text-muted); background: var(--surface2);
+    padding: 1px 6px; border-radius: 3px;
+  }
+
+  .empty-state {
+    padding: 20px 14px; text-align: center; font-size: 11px;
+    color: var(--text-muted); font-style: italic;
+  }
+
+  /* Center canvas */
+  .canvas-area {
+    flex: 1; min-width: 0; position: relative; background: var(--bg);
+    overflow: hidden;
+  }
+  .canvas-area svg { width: 100%; height: 100%; display: block; }
+  .canvas-placeholder {
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; flex-direction: column; gap: 12px;
+    color: var(--text-muted); font-size: 13px;
+  }
+  .canvas-placeholder svg { opacity: .3; }
+
+  .node circle { stroke-width: 2.5; cursor: grab; transition: filter .15s; }
+  .node circle:hover { filter: brightness(1.3); }
+  .node.selected circle { stroke-width: 3.5; filter: brightness(1.2) drop-shadow(0 0 8px rgba(56,189,248,.4)); }
+  .node text { font-size: 11px; fill: var(--text); pointer-events: none; text-anchor: middle; font-weight: 600; }
+  .node .col-count { font-size: 9px; fill: var(--text-muted); font-weight: 400; }
+  .link { stroke-opacity: .6; fill: none; }
+  .link.selected { stroke-opacity: 1; stroke-width: 3 !important; }
+  .link-label { font-size: 9px; fill: var(--text-muted); pointer-events: none; }
+  .link-label-bg { fill: var(--bg); opacity: .85; }
+
+  .legend {
+    position: absolute; bottom: 16px; left: 16px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px;
+    font-size: 11px; display: flex; flex-direction: column; gap: 6px; z-index: 10;
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; }
+  .legend-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    border: 2px solid; flex-shrink: 0;
+  }
+
+  /* Right sidebar */
+  .sidebar-right {
+    width: 280px; min-width: 280px; background: var(--surface);
+    border-left: 1px solid var(--border); display: flex;
+    flex-direction: column; overflow: hidden;
+    transition: width .2s;
+  }
+  .sidebar-right.collapsed { width: 0; min-width: 0; border: none; overflow: hidden; }
+  .props-body { overflow-y: auto; flex: 1; padding: 12px 14px; }
+  .prop-group { margin-bottom: 14px; }
+  .prop-group-title {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .5px; color: var(--text-muted); margin-bottom: 6px;
+  }
+  .prop-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 0; font-size: 12px; gap: 8px;
+  }
+  .prop-label { color: var(--text-muted); flex-shrink: 0; }
+  .prop-value { color: var(--text); text-align: right; word-break: break-all; }
+  .prop-input {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text); padding: 3px 8px;
+    font-family: inherit; font-size: 12px; width: 150px; outline: none;
+  }
+  .prop-input:focus { border-color: var(--accent); }
+  .prop-checkbox {
+    appearance: none; width: 16px; height: 16px; border: 1px solid var(--border);
+    border-radius: 3px; background: var(--surface2); cursor: pointer; position: relative;
+  }
+  .prop-checkbox:checked { background: var(--accent); border-color: var(--accent); }
+  .prop-checkbox:checked::after {
+    content: '✓'; position: absolute; top: -1px; left: 2px;
+    font-size: 12px; color: #0f172a; font-weight: 700;
+  }
+  .field-list { display: flex; flex-direction: column; gap: 2px; }
+  .field-item {
+    display: flex; align-items: center; gap: 6px; padding: 3px 6px;
+    border-radius: 4px; font-size: 11px; cursor: pointer; transition: background .1s;
+  }
+  .field-item:hover { background: rgba(56,189,248,.05); }
+  .field-item.excluded { opacity: .4; text-decoration: line-through; }
+  .field-badge {
+    font-size: 8px; padding: 0 4px; border-radius: 2px; font-weight: 700;
+  }
+  .field-badge.pk { background: var(--green); color: #000; }
+  .field-badge.fk { background: var(--accent); color: #000; }
+  .field-type {
+    margin-left: auto; font-size: 9px; color: var(--text-muted);
+  }
+
+  /* Modals */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.6);
+    backdrop-filter: blur(4px); z-index: 500;
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .modal-overlay.open { opacity: 1; pointer-events: auto; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; width: 90%; max-width: 700px;
+    max-height: 80vh; display: flex; flex-direction: column;
+    box-shadow: 0 24px 48px rgba(0,0,0,.4);
+  }
+  .modal-header {
+    padding: 16px 20px; display: flex; align-items: center;
+    justify-content: space-between; border-bottom: 1px solid var(--border);
+  }
+  .modal-title { font-size: 15px; font-weight: 700; color: var(--accent); }
+  .modal-close {
+    background: none; border: none; color: var(--text-muted);
+    font-size: 20px; cursor: pointer; padding: 4px 8px; line-height: 1;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
+  .modal-footer {
+    padding: 12px 20px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; justify-content: flex-end;
+  }
+
+  /* Modal tables */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .data-table th {
+    text-align: left; padding: 8px 10px; background: var(--surface2);
+    color: var(--text-muted); font-weight: 600; font-size: 10px;
+    text-transform: uppercase; letter-spacing: .5px;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+  }
+  .data-table td {
+    padding: 6px 10px; border-bottom: 1px solid rgba(71,85,105,.3);
+    max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .data-table tr:hover td { background: rgba(56,189,248,.04); }
+
+  /* Validation result */
+  .valid-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  }
+  .valid-badge.ok { background: rgba(52,211,153,.15); color: var(--green); }
+  .valid-badge.err { background: rgba(248,113,113,.15); color: var(--red); }
+  .issue-list { list-style: none; margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .issue-list li {
+    padding: 8px 12px; background: rgba(248,113,113,.08);
+    border-left: 3px solid var(--red); border-radius: 0 6px 6px 0;
+    font-size: 12px;
+  }
+
+  /* YAML export */
+  .yaml-area {
+    width: 100%; min-height: 300px; background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    color: var(--green); font-family: inherit; font-size: 11px;
+    padding: 12px; resize: vertical; outline: none;
+  }
+
+  /* Diff */
+  .diff-section { margin-bottom: 16px; }
+  .diff-section h4 { font-size: 12px; color: var(--accent); margin-bottom: 8px; }
+  .diff-added { color: var(--green); }
+  .diff-removed { color: var(--red); }
+  .diff-changed { color: var(--yellow); }
+
+  /* Toast */
+  .toast-container {
+    position: fixed; top: 64px; right: 16px; z-index: 600;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .toast {
+    padding: 10px 18px; border-radius: 8px; font-size: 12px;
+    font-family: inherit; box-shadow: 0 4px 16px rgba(0,0,0,.3);
+    animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards;
+    max-width: 340px;
+  }
+  .toast.success { background: rgba(52,211,153,.15); border: 1px solid var(--green); color: var(--green); }
+  .toast.error { background: rgba(248,113,113,.15); border: 1px solid var(--red); color: var(--red); }
+  .toast.info { background: rgba(56,189,248,.15); border: 1px solid var(--accent); color: var(--accent); }
+  @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+  @keyframes toastOut { from { opacity: 1; } to { opacity: 0; transform: translateY(-10px); } }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .sidebar-left { width: 200px; min-width: 200px; }
+    .sidebar-right { width: 240px; min-width: 240px; }
+    .toolbar-brand span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Toolbar -->
+<div class="toolbar">
+  <div class="toolbar-brand">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+      <rect x="2" y="3" width="8" height="7" rx="1.5" stroke="#38bdf8" stroke-width="1.5"/>
+      <rect x="14" y="3" width="8" height="7" rx="1.5" stroke="#34d399" stroke-width="1.5"/>
+      <rect x="8" y="14" width="8" height="7" rx="1.5" stroke="#818cf8" stroke-width="1.5"/>
+      <line x1="10" y1="6.5" x2="14" y2="6.5" stroke="#475569" stroke-width="1.2"/>
+      <line x1="12" y1="10" x2="12" y2="14" stroke="#475569" stroke-width="1.2"/>
+    </svg>
+    <span>R2G Mapping Studio</span>
+  </div>
+  <div class="toolbar-center">
+    <label>Project</label>
+    <select id="project-select"><option value="">Select a project…</option></select>
+  </div>
+  <div class="toolbar-actions">
+    <button class="btn" id="btn-validate" disabled onclick="validateMapping()">Validate</button>
+    <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()">Save</button>
+    <button class="btn" id="btn-diff" disabled onclick="showDiff()">Diff</button>
+    <button class="btn" id="btn-export" disabled onclick="exportYaml()">Export YAML</button>
+    <button class="btn" id="btn-history" disabled onclick="showHistory()">History</button>
+  </div>
+</div>
+
+<!-- Main layout -->
+<div class="main">
+
+  <!-- Left sidebar -->
+  <div class="sidebar-left">
+    <div class="panel-header">Sources</div>
+    <div class="panel-body" id="sources-panel" style="max-height: 40%;">
+      <div class="empty-state">Loading sources…</div>
+    </div>
+    <div class="panel-header">Schema Tables</div>
+    <div class="panel-body" id="schema-panel" style="flex: 1;">
+      <div class="empty-state">Select a project to view schema</div>
+    </div>
+  </div>
+
+  <!-- Center canvas -->
+  <div class="canvas-area" id="canvas-area">
+    <div class="canvas-placeholder" id="canvas-placeholder">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+        <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/>
+        <circle cx="12" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="10" y2="16"/>
+        <line x1="15.5" y1="7.5" x2="14" y2="16"/>
+      </svg>
+      Select a project to visualize its mapping
+    </div>
+    <svg id="graph-svg" style="display:none;"></svg>
+    <div class="legend" id="legend" style="display:none;">
+      <div class="legend-item">
+        <div class="legend-dot" style="background:rgba(56,189,248,.15);border-color:#38bdf8"></div>
+        <span>Document collection</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-dot" style="background:rgba(251,191,36,.15);border-color:#fbbf24"></div>
+        <span>Join table</span>
+      </div>
+      <div class="legend-item">
+        <svg width="30" height="12"><line x1="0" y1="6" x2="24" y2="6" stroke="#38bdf8" stroke-width="1.5"/>
+        <polygon points="24,3 30,6 24,9" fill="#38bdf8"/></svg>
+        <span>Edge relationship</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Right sidebar -->
+  <div class="sidebar-right" id="sidebar-right">
+    <div class="panel-header" id="props-header">Properties</div>
+    <div class="props-body" id="props-body">
+      <div class="empty-state">Click a node or edge to inspect</div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toast-container"></div>
+
+<!-- Modals -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title" id="modal-title"></div>
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-footer" id="modal-footer"></div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let currentProject = null;
+let currentSourceName = null;
+let graphDataCache = null;
+let simulation = null;
+let editState = { collections: {}, edges: [], typeOverrides: {}, keySeparator: '_', sourceSchema: 'public' };
+let selectedNode = null;
+let selectedLink = null;
+let tablesInfo = [];
+
+// ── Helpers ──
+
+async function apiFetch(path, opts = {}) {
+  const res = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json', ...opts.headers },
+    ...opts
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || res.statusText);
+  }
+  return res.json();
+}
+
+function toast(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.getElementById('toast-container').appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
+function openModal(title, bodyHtml, footerHtml = '') {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-body').innerHTML = bodyHtml;
+  document.getElementById('modal-footer').innerHTML = footerHtml;
+  document.getElementById('modal-overlay').classList.add('open');
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+document.getElementById('modal-overlay').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+function setActionButtons(enabled) {
+  ['btn-validate','btn-save','btn-diff','btn-export','btn-history'].forEach(id => {
+    document.getElementById(id).disabled = !enabled;
+  });
+}
+
+// ── YAML serializer ──
+
+function toYaml(obj, indent = 0) {
+  const pad = '  '.repeat(indent);
+  if (obj === null || obj === undefined) return 'null';
+  if (typeof obj === 'boolean') return obj ? 'true' : 'false';
+  if (typeof obj === 'number') return String(obj);
+  if (typeof obj === 'string') {
+    if (obj === '' || obj.includes(':') || obj.includes('#') || obj.includes("'")
+        || obj.includes('"') || obj.includes('\n') || /^\s|\s$/.test(obj)
+        || ['true','false','null','yes','no'].includes(obj.toLowerCase())) {
+      return JSON.stringify(obj);
+    }
+    return obj;
+  }
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return '[]';
+    return '\n' + obj.map(item => {
+      const v = toYaml(item, indent + 1);
+      if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
+        const lines = v.trim().split('\n');
+        return pad + '- ' + lines[0] + (lines.length > 1 ? '\n' + lines.slice(1).map(l => pad + '  ' + l).join('\n') : '');
+      }
+      return pad + '- ' + v;
+    }).join('\n');
+  }
+  if (typeof obj === 'object') {
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return '{}';
+    return '\n' + keys.map(k => {
+      const v = toYaml(obj[k], indent + 1);
+      if (typeof obj[k] === 'object' && obj[k] !== null) {
+        return pad + k + ':' + v;
+      }
+      return pad + k + ': ' + v;
+    }).join('\n');
+  }
+  return String(obj);
+}
+
+// ── Sources ──
+
+async function loadSources() {
+  try {
+    const sources = await apiFetch('/api/sources');
+    const panel = document.getElementById('sources-panel');
+    if (!sources.length) {
+      panel.innerHTML = '<div class="empty-state">No sources configured</div>';
+      return;
+    }
+    panel.innerHTML = sources.map(s => `
+      <div class="source-item">
+        <div>
+          <div class="source-name">${s.name}</div>
+          <div class="source-type">${s.source_type || 'postgres'}</div>
+        </div>
+        <button class="btn-sm" onclick="snapshotSource('${s.name}')">Snapshot</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('sources-panel').innerHTML =
+      '<div class="empty-state">Could not load sources</div>';
+  }
+}
+
+async function snapshotSource(name) {
+  try {
+    toast('Snapshotting ' + name + '…', 'info');
+    await apiFetch(`/api/sources/${name}/snapshot`, { method: 'POST' });
+    toast('Snapshot complete', 'success');
+  } catch (e) {
+    toast('Snapshot failed: ' + e.message, 'error');
+  }
+}
+
+// ── Projects ──
+
+async function loadProjects() {
+  try {
+    const projects = await apiFetch('/api/projects');
+    const sel = document.getElementById('project-select');
+    sel.innerHTML = '<option value="">Select a project…</option>';
+    projects.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    });
+  } catch (e) {
+    toast('Could not load projects', 'error');
+  }
+}
+
+document.getElementById('project-select').addEventListener('change', e => {
+  if (e.target.value) selectProject(e.target.value);
+});
+
+async function selectProject(name) {
+  currentProject = name;
+  setActionButtons(true);
+  toast('Loading project ' + name + '…', 'info');
+  try {
+    const data = await apiFetch(`/api/projects/${name}/graph-data`);
+    graphDataCache = data;
+    currentSourceName = data.config?.sourceName || name;
+
+    editState = {
+      sourceSchema: data.config?.sourceSchema || 'public',
+      collections: { ...data.config?.collections } || {},
+      edges: data.config?.edges ? [...data.config.edges] : [],
+      typeOverrides: { ...data.config?.typeOverrides } || {},
+      keySeparator: data.config?.keySeparator || '_'
+    };
+
+    tablesInfo = data.tables || [];
+    renderSchemaPanel(tablesInfo);
+    renderGraph(data.graph || data);
+    clearSelection();
+  } catch (e) {
+    toast('Failed to load project: ' + e.message, 'error');
+  }
+}
+
+// ── Schema panel ──
+
+function renderSchemaPanel(tables) {
+  const panel = document.getElementById('schema-panel');
+  if (!tables || !tables.length) {
+    panel.innerHTML = '<div class="empty-state">No tables found</div>';
+    return;
+  }
+  panel.innerHTML = tables.map(t => `
+    <div class="schema-table-item" data-table="${t.name}" onclick="onSchemaTableClick('${t.name}')">
+      <span>${t.name}</span>
+      <span class="table-col-count">${t.columns ? t.columns.length : '?'} cols</span>
+    </div>
+  `).join('');
+}
+
+function onSchemaTableClick(tableName) {
+  document.querySelectorAll('.schema-table-item').forEach(el => el.classList.remove('active'));
+  const el = document.querySelector(`.schema-table-item[data-table="${tableName}"]`);
+  if (el) el.classList.add('active');
+
+  const srcName = detectSourceName();
+  if (srcName) previewTable(srcName, tableName);
+}
+
+function detectSourceName() {
+  if (currentSourceName) return currentSourceName;
+  const src = document.querySelector('.source-name');
+  return src ? src.textContent : null;
+}
+
+// ── Data preview ──
+
+async function previewTable(sourceName, tableName) {
+  try {
+    const data = await apiFetch(`/api/sources/${sourceName}/preview/${tableName}?limit=20`);
+    const rows = Array.isArray(data) ? data : (data.rows || data.data || []);
+    if (!rows.length) {
+      openModal('Preview: ' + tableName, '<div class="empty-state">No rows returned</div>');
+      return;
+    }
+    const cols = Object.keys(rows[0]);
+    let html = '<div style="overflow-x:auto;"><table class="data-table"><thead><tr>';
+    cols.forEach(c => { html += `<th>${c}</th>`; });
+    html += '</tr></thead><tbody>';
+    rows.forEach(r => {
+      html += '<tr>';
+      cols.forEach(c => {
+        const v = r[c];
+        html += `<td title="${String(v ?? '')}">${v === null ? '<span style="color:var(--text-muted)">NULL</span>' : escHtml(String(v))}</td>`;
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table></div>';
+    openModal('Preview: ' + tableName, html);
+  } catch (e) {
+    toast('Preview failed: ' + e.message, 'error');
+  }
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Graph rendering ──
+
+function renderGraph(gd) {
+  const container = document.getElementById('canvas-area');
+  const svgEl = document.getElementById('graph-svg');
+  document.getElementById('canvas-placeholder').style.display = 'none';
+  svgEl.style.display = 'block';
+  document.getElementById('legend').style.display = 'flex';
+
+  const svg = d3.select(svgEl);
+  svg.selectAll('*').remove();
+  if (simulation) simulation.stop();
+
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  svg.attr('viewBox', [0, 0, width, height]);
+
+  const defs = svg.append('defs');
+  defs.append('marker')
+    .attr('id', 'arrowhead').attr('viewBox', '0 -5 10 10')
+    .attr('refX', 28).attr('refY', 0)
+    .attr('markerWidth', 8).attr('markerHeight', 8)
+    .attr('orient', 'auto')
+    .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', '#38bdf8');
+
+  const g = svg.append('g');
+  const linkGroup = g.append('g');
+  const labelGroup = g.append('g');
+  const nodeGroup = g.append('g');
+
+  const zoom = d3.zoom().scaleExtent([0.2, 4]).on('zoom', e => {
+    g.attr('transform', e.transform);
+  });
+  svg.call(zoom);
+
+  svg.on('click', function(e) {
+    if (e.target === this || e.target === g.node()) clearSelection();
+  });
+
+  const nodes = (gd.nodes || []).map(n => ({ ...n }));
+  const links = (gd.links || []).map(l => ({ ...l }));
+
+  simulation = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id).distance(200))
+    .force('charge', d3.forceManyBody().strength(-800))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(50));
+
+  const link = linkGroup.selectAll('path')
+    .data(links).join('path')
+    .attr('class', 'link')
+    .attr('stroke', '#38bdf8').attr('stroke-width', 1.5)
+    .attr('marker-end', 'url(#arrowhead)')
+    .style('cursor', 'pointer')
+    .on('click', (e, d) => { e.stopPropagation(); selectLink(d); });
+
+  const linkLabelBg = labelGroup.selectAll('rect')
+    .data(links).join('rect')
+    .attr('class', 'link-label-bg').attr('rx', 3);
+
+  const linkLabel = labelGroup.selectAll('text')
+    .data(links).join('text')
+    .attr('class', 'link-label')
+    .text(d => d.edgeCollection);
+
+  const node = nodeGroup.selectAll('g')
+    .data(nodes).join('g')
+    .attr('class', 'node')
+    .style('cursor', 'grab')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+    )
+    .on('click', (e, d) => { e.stopPropagation(); selectNode(d); });
+
+  node.append('circle')
+    .attr('r', d => 20 + (d.columns || 4) * 1.5)
+    .attr('fill', d => d.isJoinTable ? 'rgba(251,191,36,.15)' : 'rgba(56,189,248,.15)')
+    .attr('stroke', d => d.isJoinTable ? '#fbbf24' : '#38bdf8');
+
+  node.append('text').attr('dy', -2).text(d => d.id);
+  node.append('text').attr('class', 'col-count').attr('dy', 12)
+    .text(d => `${d.columns || '?'} cols`);
+
+  function arcPath(d) {
+    const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+    const parallel = links.filter(l =>
+      ((l.source.id||l.source)===(d.source.id||d.source) && (l.target.id||l.target)===(d.target.id||d.target)) ||
+      ((l.source.id||l.source)===(d.target.id||d.target) && (l.target.id||l.target)===(d.source.id||d.source))
+    );
+    const idx = parallel.indexOf(d);
+    if (parallel.length <= 1) return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
+    const dr = Math.sqrt(dx*dx + dy*dy) * (0.8 + idx * 0.6);
+    return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,${idx % 2} ${d.target.x},${d.target.y}`;
+  }
+
+  simulation.on('tick', () => {
+    link.attr('d', arcPath);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+    linkLabel.each(function(d) {
+      const mx = (d.source.x + d.target.x) / 2;
+      const my = (d.source.y + d.target.y) / 2;
+      d3.select(this).attr('x', mx).attr('y', my);
+    });
+    linkLabelBg.each(function(d, i) {
+      const textEl = linkLabel.nodes()[i];
+      if (!textEl) return;
+      const bbox = textEl.getBBox();
+      d3.select(this).attr('x', bbox.x - 3).attr('y', bbox.y - 1)
+        .attr('width', bbox.width + 6).attr('height', bbox.height + 2);
+    });
+  });
+
+  window._graphRefs = { svg, nodes, links, link, node, linkLabel, linkLabelBg, simulation };
+}
+
+// ── Selection ──
+
+function clearSelection() {
+  selectedNode = null;
+  selectedLink = null;
+  d3.selectAll('.node').classed('selected', false);
+  d3.selectAll('.link').classed('selected', false);
+  document.getElementById('props-header').textContent = 'Properties';
+  document.getElementById('props-body').innerHTML =
+    '<div class="empty-state">Click a node or edge to inspect</div>';
+}
+
+function selectNode(d) {
+  selectedNode = d;
+  selectedLink = null;
+  d3.selectAll('.node').classed('selected', false);
+  d3.selectAll('.link').classed('selected', false);
+  d3.selectAll('.node').filter(n => n.id === d.id).classed('selected', true);
+  updatePropertiesPanel(d);
+}
+
+function selectLink(d) {
+  selectedLink = d;
+  selectedNode = null;
+  d3.selectAll('.node').classed('selected', false);
+  d3.selectAll('.link').classed('selected', false);
+  d3.selectAll('.link').filter(l => l === d).classed('selected', true);
+  updateEdgePropertiesPanel(d);
+}
+
+function updatePropertiesPanel(d) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  header.textContent = 'Collection: ' + d.id;
+
+  const collCfg = editState.collections[d.sourceTable || d.id] || {};
+  const targetName = collCfg.targetCollection || d.id;
+  const isJoin = d.isJoinTable || false;
+
+  const tableInfo = tablesInfo.find(t => t.name === (d.sourceTable || d.id));
+  const columns = tableInfo ? tableInfo.columns : [];
+  const excluded = collCfg.excludeFields || [];
+
+  let html = `
+    <div class="prop-group">
+      <div class="prop-group-title">Configuration</div>
+      <div class="prop-row">
+        <span class="prop-label">Target collection</span>
+        <input class="prop-input" value="${escHtml(targetName)}"
+          onchange="editCollection('${d.sourceTable || d.id}', 'targetCollection', this.value)">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Join table</span>
+        <input type="checkbox" class="prop-checkbox" ${isJoin ? 'checked' : ''}
+          onchange="editCollectionJoin('${d.sourceTable || d.id}', this.checked, '${d.id}')">
+      </div>
+    </div>
+    <div class="prop-group">
+      <div class="prop-group-title">Source</div>
+      <div class="prop-row"><span class="prop-label">Table</span><span class="prop-value">${d.sourceTable || d.id}</span></div>
+      <div class="prop-row"><span class="prop-label">Columns</span><span class="prop-value">${d.columns || '?'}</span></div>
+      <div class="prop-row"><span class="prop-label">Primary key</span><span class="prop-value">${(d.pk || []).join(', ') || '–'}</span></div>
+    </div>`;
+
+  if (columns.length) {
+    html += `<div class="prop-group"><div class="prop-group-title">Fields</div><div class="field-list">`;
+    columns.forEach(c => {
+      const isExcl = excluded.includes(c.name);
+      html += `
+        <div class="field-item ${isExcl ? 'excluded' : ''}"
+             onclick="toggleField('${d.sourceTable || d.id}', '${c.name}')">
+          ${c.isPk ? '<span class="field-badge pk">PK</span>' : ''}
+          ${c.isFk ? '<span class="field-badge fk">FK</span>' : ''}
+          <span>${c.name}</span>
+          <span class="field-type">${c.type}</span>
+        </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  body.innerHTML = html;
+}
+
+function updateEdgePropertiesPanel(d) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  header.textContent = 'Edge: ' + d.edgeCollection;
+
+  const edgeIdx = editState.edges.findIndex(e =>
+    e.edgeCollection === d.edgeCollection ||
+    (e.fromCollection === (d.source.id || d.source) && e.toCollection === (d.target.id || d.target) && e.fromField === d.fromField)
+  );
+
+  body.innerHTML = `
+    <div class="prop-group">
+      <div class="prop-group-title">Edge Configuration</div>
+      <div class="prop-row">
+        <span class="prop-label">Edge collection</span>
+        <input class="prop-input" value="${escHtml(d.edgeCollection)}"
+          onchange="editEdgeName(${edgeIdx}, this.value, '${d.edgeCollection}')">
+      </div>
+    </div>
+    <div class="prop-group">
+      <div class="prop-group-title">Relationship</div>
+      <div class="prop-row"><span class="prop-label">From</span><span class="prop-value" style="color:var(--accent)">${d.source.id || d.source}</span></div>
+      <div class="prop-row"><span class="prop-label">To</span><span class="prop-value" style="color:var(--green)">${d.target.id || d.target}</span></div>
+      <div class="prop-row"><span class="prop-label">From field</span><span class="prop-value" style="color:var(--yellow)">${d.fromField}</span></div>
+      <div class="prop-row"><span class="prop-label">To field</span><span class="prop-value">${d.toField}</span></div>
+    </div>`;
+}
+
+// ── Edit state mutations ──
+
+function editCollection(sourceTable, key, value) {
+  if (!editState.collections[sourceTable]) {
+    editState.collections[sourceTable] = {};
+  }
+  editState.collections[sourceTable][key] = value;
+}
+
+function editCollectionJoin(sourceTable, checked, nodeId) {
+  if (!editState.collections[sourceTable]) {
+    editState.collections[sourceTable] = {};
+  }
+  editState.collections[sourceTable].isJoinTable = checked;
+  const nodeData = window._graphRefs?.nodes?.find(n => n.id === nodeId);
+  if (nodeData) {
+    nodeData.isJoinTable = checked;
+    d3.selectAll('.node').filter(n => n.id === nodeId).select('circle')
+      .attr('fill', checked ? 'rgba(251,191,36,.15)' : 'rgba(56,189,248,.15)')
+      .attr('stroke', checked ? '#fbbf24' : '#38bdf8');
+  }
+}
+
+function toggleField(sourceTable, fieldName) {
+  if (!editState.collections[sourceTable]) {
+    editState.collections[sourceTable] = {};
+  }
+  if (!editState.collections[sourceTable].excludeFields) {
+    editState.collections[sourceTable].excludeFields = [];
+  }
+  const arr = editState.collections[sourceTable].excludeFields;
+  const idx = arr.indexOf(fieldName);
+  if (idx >= 0) arr.splice(idx, 1);
+  else arr.push(fieldName);
+  if (selectedNode) updatePropertiesPanel(selectedNode);
+}
+
+function editEdgeName(idx, newName, oldName) {
+  if (idx >= 0 && editState.edges[idx]) {
+    editState.edges[idx].edgeCollection = newName;
+  }
+  if (window._graphRefs) {
+    const lnk = window._graphRefs.links.find(l => l.edgeCollection === oldName);
+    if (lnk) {
+      lnk.edgeCollection = newName;
+      window._graphRefs.linkLabel.text(d => d.edgeCollection);
+    }
+  }
+}
+
+// ── Toolbar actions ──
+
+async function validateMapping() {
+  if (!currentProject) return;
+  try {
+    const result = await apiFetch(`/api/projects/${currentProject}/validate`, { method: 'POST' });
+    const issues = result.issues || result.errors || [];
+    const valid = result.valid !== false && issues.length === 0;
+    let html = '';
+    if (valid) {
+      html = '<div class="valid-badge ok">&#10003; Mapping is valid</div>';
+    } else {
+      html = '<div class="valid-badge err">&#10007; Validation issues found</div>';
+      html += '<ul class="issue-list">';
+      issues.forEach(iss => {
+        html += `<li>${escHtml(typeof iss === 'string' ? iss : JSON.stringify(iss))}</li>`;
+      });
+      html += '</ul>';
+    }
+    openModal('Validation Result', html);
+  } catch (e) {
+    toast('Validation failed: ' + e.message, 'error');
+  }
+}
+
+async function saveMapping() {
+  if (!currentProject) return;
+  try {
+    const payload = {
+      source_schema: editState.sourceSchema,
+      collections: editState.collections,
+      edges: editState.edges,
+      type_overrides: editState.typeOverrides,
+      key_separator: editState.keySeparator
+    };
+    await apiFetch(`/api/projects/${currentProject}/mapping`, {
+      method: 'PUT',
+      body: JSON.stringify(payload)
+    });
+    toast('Mapping saved successfully', 'success');
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+async function showDiff() {
+  if (!currentProject) return;
+  try {
+    const payload = {
+      source_schema: editState.sourceSchema,
+      collections: editState.collections,
+      edges: editState.edges,
+      type_overrides: editState.typeOverrides,
+      key_separator: editState.keySeparator
+    };
+    const result = await apiFetch(`/api/projects/${currentProject}/diff`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    });
+
+    let html = '';
+    const changes = result.changes || result.diffs || [];
+    const actions = result.actions || [];
+
+    if (changes.length === 0 && actions.length === 0) {
+      html = '<div class="empty-state" style="padding:20px">No changes detected</div>';
+    } else {
+      if (changes.length) {
+        html += '<div class="diff-section"><h4>Changes</h4><table class="data-table"><thead><tr><th>Type</th><th>Name</th><th>Detail</th></tr></thead><tbody>';
+        changes.forEach(c => {
+          const cls = c.action === 'add' ? 'diff-added' : c.action === 'remove' ? 'diff-removed' : 'diff-changed';
+          html += `<tr><td class="${cls}">${c.action || c.type || ''}</td><td>${escHtml(c.name || c.collection || '')}</td><td>${escHtml(c.detail || c.description || '')}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+      }
+      if (actions.length) {
+        html += '<div class="diff-section"><h4>Actions Required</h4><table class="data-table"><thead><tr><th>Action</th><th>Target</th><th>Detail</th></tr></thead><tbody>';
+        actions.forEach(a => {
+          html += `<tr><td>${escHtml(a.action || '')}</td><td>${escHtml(a.target || a.name || '')}</td><td>${escHtml(a.detail || a.description || '')}</td></tr>`;
+        });
+        html += '</tbody></table></div>';
+      }
+    }
+    openModal('Mapping Diff', html);
+  } catch (e) {
+    toast('Diff failed: ' + e.message, 'error');
+  }
+}
+
+function exportYaml() {
+  const yamlObj = {
+    source_schema: editState.sourceSchema,
+    collections: editState.collections,
+    edges: editState.edges,
+    type_overrides: editState.typeOverrides,
+    key_separator: editState.keySeparator
+  };
+  const yamlStr = toYaml(yamlObj).trim();
+
+  openModal('Export YAML', `<textarea class="yaml-area" id="yaml-output" readonly>${escHtml(yamlStr)}</textarea>`,
+    `<button class="btn" onclick="copyYaml()">Copy</button>
+     <button class="btn btn-primary" onclick="downloadYaml()">Download</button>`);
+}
+
+function copyYaml() {
+  const ta = document.getElementById('yaml-output');
+  navigator.clipboard.writeText(ta.value).then(
+    () => toast('Copied to clipboard', 'success'),
+    () => toast('Copy failed', 'error')
+  );
+}
+
+function downloadYaml() {
+  const ta = document.getElementById('yaml-output');
+  const blob = new Blob([ta.value], { type: 'text/yaml' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = (currentProject || 'mapping') + '.yaml';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Download started', 'success');
+}
+
+async function showHistory() {
+  if (!currentProject) return;
+  try {
+    const history = await apiFetch(`/api/projects/${currentProject}/history`);
+    const rows = Array.isArray(history) ? history : (history.runs || history.entries || []);
+
+    if (!rows.length) {
+      openModal('Ingestion History', '<div class="empty-state">No history entries</div>');
+      return;
+    }
+
+    const cols = ['id', 'type', 'status', 'rows', 'errors', 'started_at'];
+    let html = '<table class="data-table"><thead><tr>';
+    cols.forEach(c => { html += `<th>${c}</th>`; });
+    html += '</tr></thead><tbody>';
+    rows.forEach(r => {
+      html += '<tr>';
+      cols.forEach(c => {
+        let v = r[c] ?? '';
+        if (c === 'status') {
+          const color = v === 'completed' || v === 'success' ? 'var(--green)' : v === 'failed' ? 'var(--red)' : 'var(--yellow)';
+          html += `<td style="color:${color};font-weight:600">${escHtml(String(v))}</td>`;
+        } else {
+          html += `<td>${escHtml(String(v))}</td>`;
+        }
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    openModal('Ingestion History', html);
+  } catch (e) {
+    toast('Could not load history: ' + e.message, 'error');
+  }
+}
+
+// ── Init ──
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadSources();
+  loadProjects();
+});
+</script>
+</body>
+</html>
