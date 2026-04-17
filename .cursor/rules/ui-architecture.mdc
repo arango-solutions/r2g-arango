@@ -1,0 +1,103 @@
+---
+description: Enforces single-page, context-centric UI patterns for the object-centric workspace
+globs: frontend/src/components/**/*.tsx, frontend/src/app/**/*.tsx
+alwaysApply: true
+---
+# UI Architecture Rules — Object-Centric Workspace
+
+## Intent
+
+The workspace is one persistent stage: users stay on the graph while acting on **objects** (classes, edges, documents, ontologies). Features are added as **capabilities on those objects**, not as new destinations. Anything that reads as “where am I?” or “what does this color mean?” without an answer is a defect.
+
+---
+
+## Core Principles
+
+1. **NO NEW ROUTES.** All new features integrate into the unified layout at `/workspace`. Exception: `/login` (and truly global auth/error shells if the stack requires them).
+
+2. **NO ACTION BUTTON PANELS AS THE PRIMARY PATH.** Node, edge, document, and ontology operations are initiated from **right-click context menus** (`onContextMenu`). Do not rely on side-panel or toolbar buttons as the *only* way to perform those actions.
+
+3. **CONTEXT OVER NAVIGATION.** Do not route the user away from the canvas to finish a task. Use overlays, lenses, and context menus. Prefer updating selection + a floating panel over a new page.
+
+4. **DRAG AND DROP.** Prefer DnD (e.g. document → canvas for extraction, class → class for reparenting) over multi-step wizards that imply navigation.
+
+5. **LENSES: CONTEXT MENU + STATUS, NOT MODE TABS.**  
+   - **Switch lens:** canvas background → **View As** submenu (and keyboard shortcuts as accelerators, e.g. 1–5 when focus is not in an input).  
+   - **Show active lens:** subtle, non-blocking indicator (e.g. header text like “(Semantic view)”, corner badge, or legend title) — **not** a second competing “mode switcher” row of tabs unless a future ADR explicitly adds one.  
+   - The workspace header may show **which** lens is active; it must not be the *only* discoverable way to change lenses if that contradicts context-menu-first.
+
+6. **RIGHT-CLICK MENUS (RICH, ENTITY-SPECIFIC).** Keep menus aligned with the domain; extend this list when new entity operations ship.
+
+   - **Class node:** Edit metadata, Approve/Reject, Create relationship, Merge, View history, View provenance, Delete (as applicable).
+   - **Edge:** View details, **Approve/Reject** when the API supports edge curation, change type / reverse direction when supported, Delete when supported.
+   - **Canvas:** View As, Layout, Edge style, Fit all, Center view, Add class/document when implemented.
+   - **Document (explorer):** Extract, View chunks, Rename, Delete, etc.
+   - **Ontology (explorer):** Open in canvas, Edit metadata, Export, Add document, View quality, Delete, etc.
+
+7. **PERSISTENT ZONES** (no full-page swap within the workspace):
+
+   - **Left:** Asset explorer (documents, ontologies, runs as needed).
+   - **Center:** Graph canvas (Sigma/graphology or React Flow).
+   - **Bottom:** VCR / timeline when an ontology is open (temporal navigation without leaving the stage).
+
+8. **OVERLAY PANELS, NOT PAGES.** Class/edge/provenance/quality details use slide-in or floating panels over the canvas, not new routes for the same workflow.
+
+---
+
+## Graph Lenses, Visual Encoding & Legend
+
+9. **EVERY ENCODING IS LEGIBLE IN-UI.** For each lens, document in the **canvas legend** (or equivalent):
+
+   - What **node color** and **node border** mean.
+   - What **edge color** and **edge weight** mean (when used).
+   - What **node size** means — explicitly. If size is **structural** (e.g. PageRank, degree), say so and state that it is **not** confidence or curation unless that lens intentionally ties size to those fields (e.g. confidence lens may scale size by score).
+
+10. **NO IMPLICIT METAPHORS.** Users will assume “big node = important to review” or “bright = bad” unless the legend contradicts that. Spell out fallbacks (e.g. “ontology tier from library when class has no `tier`”).
+
+11. **LENS SWITCHING MUST NOT DESTROY LAYOUT.** Rebuilding the graph or rerunning force layout when only the **lens** changes trains users to distrust the UI. Topology changes (new/removed nodes or edges, including timeline-filtered subgraphs) may relayout; **paint** attributes (color, size from the same `baseSize`, labels) on the stable graph instead of recreating it for lens-only updates.
+
+12. **TEMPORAL / DIFF LENS.** When the timeline filters entities, expect layout to change — that is a **data** change, not a lens change. The legend should distinguish “lens change = stable layout” vs “scrub = different subgraph”.
+
+---
+
+## Objects & Data Parity
+
+13. **EDGES ARE FIRST-CLASS.** Same bar as nodes: selection, detail panel, context actions, API mutations, and legend rules apply when the product supports them. Do not ship class curation without a plan for edge curation if edges carry review state.
+
+14. **OPTIMISTIC UI FOR CURATION.** Approve/reject from the menu should update local graph state immediately; refresh or roll back on API failure.
+
+15. **BOUNDARY METADATA & FALLBACKS.** When per-entity fields are often missing (e.g. `tier` on classes), define a clear fallback chain (registry, ontology record, default) and **document it in the legend** for that lens.
+
+---
+
+## Discoverability & A11y (Without Violating “No Button Panels”)
+
+16. **KEYBOARD SHORTCUTS** for high-frequency actions (lens switch, fit, center) where possible; document in a help surface or tooltip if you add one.
+
+17. **CONTEXT-MENU-PRIMARY IS HARD TO DISCOVER.** Mitigations that are allowed: one-line empty states (“Right-click the canvas…”), legend copy, first-run toast, or a single discreet “?” — not a permanent wall of toolbar buttons that duplicate every action.
+
+---
+
+## Anti-Patterns
+
+- ❌ New Next.js **routes** for workspace workflows that could be overlays.
+- ❌ `<Link>` as the primary path for canvas-adjacent tasks.
+- ❌ Multi-step **page** wizards for actions that could be DnD + panel.
+- ❌ **Toolbar-only** actions for graph entities (no context menu path).
+- ❌ Separate global “edit mode” vs “view mode” for the canvas.
+- ❌ Side panel that **replaces** the canvas instead of sitting beside/over it.
+- ❌ Lens or theme change that **re-runs layout** without a topology change.
+- ❌ Colors/sizes that **mean different things** in different lenses **without** legend text calling it out.
+
+---
+
+## Preferred Patterns
+
+- ✅ Context menus on node, edge, canvas, and explorer items.
+- ✅ Keyboard accelerators for lens and viewport.
+- ✅ Header / corner **status** for active lens and ontology name (not a duplicate primary switcher).
+- ✅ **Lens legend** anchored near the canvas (e.g. bottom-left), updated per `LensType`.
+- ✅ Drag-and-drop between explorer and canvas.
+- ✅ Inline edit where safe (e.g. rename).
+- ✅ Floating detail panels (class, edge) with minimize/dismiss.
+- ✅ Toasts for async success/failure, not blocking `alert()` for routine ops.

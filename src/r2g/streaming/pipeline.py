@@ -23,6 +23,7 @@ from r2g.types import MappingConfig, Schema
 logger = get_logger(__name__)
 
 ProgressFn = Callable[[str, str, int, int | None], None]
+EventFn = Callable[[dict[str, Any]], None]
 
 
 class StreamingPipeline:
@@ -81,6 +82,7 @@ class StreamingPipeline:
         self.previews: dict[str, list[dict[str, Any]]] = {}
         self.errors: dict[str, list[str]] = {}
         self._on_progress: ProgressFn | None = None
+        self._on_event: EventFn | None = None
         self._lock = __import__("threading").Lock()
 
     def _should_skip_collection(self, writer: ArangoWriter, collection_name: str) -> bool:
@@ -135,6 +137,10 @@ class StreamingPipeline:
     def _notify(self, event: str, name: str, current: int, total: int | None) -> None:
         if self._on_progress is not None:
             self._on_progress(event, name, current, total)
+
+    def _emit(self, event_data: dict[str, Any]) -> None:
+        if self._on_event is not None:
+            self._on_event(event_data)
 
     def _count_table_rows(self, conn: psycopg.Connection, table_name: str) -> int:
         """Fast row count within the current REPEATABLE READ transaction."""
@@ -242,6 +248,7 @@ class StreamingPipeline:
 
         logger.info("stream_documents_start", table=table_name, target=target, rows=row_estimate)
         self._notify("start", target, 0, row_estimate)
+        self._emit({"event": "start", "collection": target, "type": "document", "estimated_rows": row_estimate})
 
         for row in self._stream_rows(conn, table_name):
             doc = transformer.transform_row(row)
@@ -254,6 +261,7 @@ class StreamingPipeline:
                 total += len(batch)
                 batch.clear()
                 self._notify("progress", target, total, row_estimate)
+                self._emit({"event": "progress", "collection": target, "rows": total, "estimated_rows": row_estimate})
 
         if batch:
             if not self.dry_run:
@@ -265,6 +273,7 @@ class StreamingPipeline:
                 self.previews[target] = samples
 
         self._notify("done", target, total, row_estimate)
+        self._emit({"event": "done", "collection": target, "rows": total})
         logger.info("stream_documents_done", target=target, count=total)
         return (target, total)
 
@@ -302,6 +311,7 @@ class StreamingPipeline:
 
         logger.info("stream_edges_start", table=table_name, edge=edge_name, rows=row_estimate)
         self._notify("start", edge_name, 0, row_estimate)
+        self._emit({"event": "start", "collection": edge_name, "type": "edge", "estimated_rows": row_estimate})
 
         for row in self._stream_rows(conn, table_name):
             doc = transformer.transform_row(row)
@@ -315,6 +325,10 @@ class StreamingPipeline:
                     total += len(batch)
                     batch.clear()
                     self._notify("progress", edge_name, total, row_estimate)
+                    self._emit({
+                        "event": "progress", "collection": edge_name,
+                        "rows": total, "estimated_rows": row_estimate,
+                    })
 
         if batch:
             if not self.dry_run:
@@ -326,6 +340,7 @@ class StreamingPipeline:
                 self.previews[edge_name] = samples
 
         self._notify("done", edge_name, total, row_estimate)
+        self._emit({"event": "done", "collection": edge_name, "rows": total})
         logger.info("stream_edges_done", edge=edge_name, count=total)
         return (edge_name, total)
 
@@ -455,6 +470,7 @@ class StreamingPipeline:
         self,
         graph_name: str | None = None,
         on_progress: ProgressFn | None = None,
+        on_event: EventFn | None = None,
     ) -> dict[str, list[tuple[str, int]]]:
         """Execute the full streaming pipeline.
 
@@ -470,9 +486,12 @@ class StreamingPipeline:
         *on_progress* receives ``(event, collection, current, total)``
         callbacks for Rich progress bars or other UIs.
 
+        *on_event* receives structured dicts suitable for SSE streaming.
+
         Returns a dict with 'documents', 'edges', and 'elapsed_seconds' keys.
         """
         self._on_progress = on_progress
+        self._on_event = on_event
         t0 = time.monotonic()
         self.writer.connect()
 
@@ -502,6 +521,15 @@ class StreamingPipeline:
 
         self.writer.close()
         elapsed = time.monotonic() - t0
+
+        self._emit({
+            "event": "complete",
+            "documents": len(doc_results),
+            "edges": len(edge_results),
+            "total_rows": sum(r[1] for r in doc_results) + sum(r[1] for r in edge_results),
+            "elapsed_seconds": elapsed,
+            "errors": sum(len(e) for e in self.errors.values()),
+        })
 
         result: dict[str, Any] = {
             "documents": doc_results,

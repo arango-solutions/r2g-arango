@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>R2G Mapping Studio</title>
-<script src="https://d3js.org/d3.v7.min.js"></script>
 <style>
   :root {
     --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
@@ -58,9 +57,9 @@
     display: flex; height: calc(100vh - 52px); margin-top: 52px;
   }
 
-  /* Left sidebar */
+  /* Left sidebar — sources only */
   .sidebar-left {
-    width: 250px; min-width: 250px; background: var(--surface);
+    width: 180px; min-width: 180px; background: var(--surface);
     border-right: 1px solid var(--border); display: flex;
     flex-direction: column; overflow: hidden;
   }
@@ -88,64 +87,252 @@
   }
   .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
 
-  .schema-table-item {
-    padding: 6px 14px; font-size: 12px; display: flex;
-    align-items: center; justify-content: space-between;
-    border-bottom: 1px solid rgba(71,85,105,.2); cursor: pointer;
-    transition: background .1s;
-  }
-  .schema-table-item:hover { background: rgba(56,189,248,.08); }
-  .schema-table-item.active { background: rgba(56,189,248,.12); }
-  .table-col-count {
-    font-size: 10px; color: var(--text-muted); background: var(--surface2);
-    padding: 1px 6px; border-radius: 3px;
-  }
-
   .empty-state {
     padding: 20px 14px; text-align: center; font-size: 11px;
     color: var(--text-muted); font-style: italic;
   }
 
-  /* Center canvas */
-  .canvas-area {
-    flex: 1; min-width: 0; position: relative; background: var(--bg);
-    overflow: hidden;
+  /* ── Mapper layout ── */
+  .mapper-container {
+    display: flex; flex: 1; min-width: 0; overflow: hidden; position: relative;
   }
-  .canvas-area svg { width: 100%; height: 100%; display: block; }
-  .canvas-placeholder {
+  .mapper-source-pane, .mapper-target-pane {
+    width: 250px; min-width: 200px; background: var(--surface);
+    overflow-y: auto; flex-shrink: 0;
+  }
+  .mapper-source-pane { border-right: 1px solid var(--border); }
+  .mapper-target-pane { border-left: 1px solid var(--border); }
+  .mapper-pane-header {
+    padding: 10px 14px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted);
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .mapper-canvas {
+    flex: 1; min-width: 80px; position: relative; background: var(--bg); overflow: hidden;
+  }
+  .mapper-canvas svg {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  .mapper-canvas svg path.connector { pointer-events: stroke; cursor: pointer; }
+  .mapper-placeholder {
     position: absolute; inset: 0; display: flex; align-items: center;
     justify-content: center; flex-direction: column; gap: 12px;
     color: var(--text-muted); font-size: 13px;
   }
-  .canvas-placeholder svg { opacity: .3; }
+  .mapper-placeholder svg { opacity: .3; }
 
-  .node circle { stroke-width: 2.5; cursor: grab; transition: filter .15s; }
-  .node circle:hover { filter: brightness(1.3); }
-  .node.selected circle { stroke-width: 3.5; filter: brightness(1.2) drop-shadow(0 0 8px rgba(56,189,248,.4)); }
-  .node text { font-size: 11px; fill: var(--text); pointer-events: none; text-anchor: middle; font-weight: 600; }
-  .node .col-count { font-size: 9px; fill: var(--text-muted); font-weight: 400; }
-  .link { stroke-opacity: .6; fill: none; }
-  .link.selected { stroke-opacity: 1; stroke-width: 3 !important; }
-  .link-label { font-size: 9px; fill: var(--text-muted); pointer-events: none; }
-  .link-label-bg { fill: var(--bg); opacity: .85; }
+  /* Source cards */
+  .source-card { border-bottom: 1px solid rgba(71,85,105,.4); }
+  .source-card.selected { background: rgba(56,189,248,.06); }
+  .source-card-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; cursor: pointer; transition: background .1s;
+    position: relative;
+  }
+  .source-card-header:hover { background: rgba(56,189,248,.05); }
+  .source-card-header .expand-icon {
+    font-size: 10px; color: var(--text-muted); width: 14px; text-align: center;
+    transition: transform .15s; flex-shrink: 0;
+  }
+  .source-card-header .expand-icon.open { transform: rotate(90deg); }
+  .source-card-header .table-name { font-size: 12px; font-weight: 600; color: var(--accent); flex: 1; }
+  .source-card-header .col-count {
+    font-size: 10px; color: var(--text-muted); background: var(--surface2);
+    padding: 1px 6px; border-radius: 3px;
+  }
+  .source-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--accent); position: absolute; right: -5px;
+    top: 50%; transform: translateY(-50%); z-index: 5;
+  }
+  .source-card-body { overflow: hidden; }
+  .source-card-body.collapsed { display: none; }
+  .source-col-row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 12px 3px 24px; font-size: 11px; color: var(--text-muted);
+    position: relative; transition: background .1s;
+  }
+  .source-col-row:hover { background: rgba(56,189,248,.03); }
+  .source-col-row.excluded { opacity: .35; text-decoration: line-through; }
+  .source-col-row .col-name { flex: 1; }
+  .source-col-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(56,189,248,.3); border: 1.5px solid var(--accent);
+    position: absolute; right: -4px; top: 50%; transform: translateY(-50%);
+    z-index: 5; cursor: crosshair; transition: all .15s;
+  }
+  .source-col-row:hover .source-col-dot { background: var(--accent); transform: translateY(-50%) scale(1.3); }
+  .source-col-row.excluded .source-col-dot { background: transparent; border-color: var(--border); cursor: default; }
+  .field-badge {
+    font-size: 8px; padding: 0 4px; border-radius: 2px; font-weight: 700; flex-shrink: 0;
+  }
+  .field-badge.pk { background: var(--green); color: #000; }
+  .field-badge.fk { background: var(--accent); color: #000; }
+  .field-type { margin-left: auto; font-size: 9px; color: var(--text-muted); flex-shrink: 0; }
 
-  .legend {
-    position: absolute; bottom: 16px; left: 16px; background: var(--surface);
-    border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px;
-    font-size: 11px; display: flex; flex-direction: column; gap: 6px; z-index: 10;
+  /* Target cards */
+  .target-section-label {
+    padding: 8px 14px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .5px; color: var(--green);
+    background: rgba(52,211,153,.05); border-bottom: 1px solid var(--border);
+    position: sticky; z-index: 9;
   }
-  .legend-item { display: flex; align-items: center; gap: 8px; }
-  .legend-dot {
-    width: 12px; height: 12px; border-radius: 50%;
-    border: 2px solid; flex-shrink: 0;
+  .target-section-label.edge-section { color: var(--pink); background: rgba(244,114,182,.05); }
+  .target-card { border-bottom: 1px solid rgba(71,85,105,.4); }
+  .target-card.selected { background: rgba(52,211,153,.06); }
+  .target-card-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; cursor: pointer; transition: background .1s; position: relative;
   }
+  .target-card-header:hover { background: rgba(52,211,153,.05); }
+  .target-card-header .coll-name { font-size: 12px; font-weight: 600; color: var(--green); flex: 1; }
+  .target-card-header .coll-count {
+    font-size: 10px; color: var(--text-muted); background: var(--surface2);
+    padding: 1px 6px; border-radius: 3px;
+  }
+  .target-dot {
+    width: 10px; height: 10px; border-radius: 50%; background: var(--green);
+    position: absolute; left: -5px; top: 50%; transform: translateY(-50%); z-index: 5;
+  }
+  .target-card.edge-card .target-card-header .coll-name { color: var(--pink); }
+  .target-card.edge-card .target-dot { background: var(--pink); }
+  .target-prop-row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 24px 3px 12px; font-size: 11px; color: var(--text-muted);
+    position: relative; transition: background .1s;
+  }
+  .target-prop-row:hover { background: rgba(52,211,153,.03); }
+  .target-prop-row .prop-name { flex: 1; }
+  .target-prop-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: rgba(52,211,153,.3); border: 1.5px solid var(--green);
+    position: absolute; left: -4px; top: 50%; transform: translateY(-50%);
+    z-index: 5; transition: all .15s;
+  }
+  .target-prop-row:hover .target-prop-dot { background: var(--green); transform: translateY(-50%) scale(1.3); }
+  .target-card.edge-card .target-prop-dot { border-color: var(--pink); background: rgba(244,114,182,.3); }
+  .target-card.edge-card .target-prop-row:hover .target-prop-dot { background: var(--pink); }
+
+  /* Connector SVG lines */
+  .connector { fill: none; stroke-width: 1.5; stroke: var(--accent); opacity: .45; transition: opacity .15s, stroke-width .15s; }
+  .connector:hover { opacity: .9; stroke-width: 2.5; }
+  .connector.selected { opacity: 1; stroke-width: 3; filter: drop-shadow(0 0 6px rgba(56,189,248,.5)); }
+  .connector.table-conn { stroke-width: 2.5; opacity: .6; }
+  .connector.col-conn { stroke-width: 1; opacity: .3; }
+  .connector.col-conn:hover { opacity: .7; stroke-width: 2; }
+  .connector.edge-conn { stroke: var(--pink); stroke-dasharray: 6 3; opacity: .5; }
+  .connector.edge-conn:hover { opacity: .9; stroke-width: 2.5; }
+  .connector.drag-temp { stroke: var(--yellow); stroke-dasharray: 4 4; opacity: .8; stroke-width: 2; pointer-events: none; }
+
+  /* Mapping function circles on connector lines */
+  .func-circle { cursor: pointer; transition: all .15s; pointer-events: all; }
+  .func-circle.identity circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.3; r: 4; opacity: .55; }
+  .func-circle.identity:hover circle { opacity: 1; r: 6; }
+  .func-circle.expr circle { fill: var(--yellow); stroke: #000; stroke-width: 1.2; r: 7; }
+  .func-circle.expr.aql circle { fill: var(--accent2); }
+  .func-circle.expr.ksql circle { fill: var(--pink); }
+  .func-circle.expr.python circle { fill: var(--green); }
+  .func-circle.selected circle { stroke: var(--yellow); stroke-width: 2.5; filter: drop-shadow(0 0 6px rgba(251,191,36,.7)); }
+  .func-circle.drop-hover circle { stroke: var(--yellow); stroke-width: 3; r: 9; }
+  .func-circle text.fn-label {
+    font-size: 9px; fill: var(--text); font-weight: 600; text-anchor: middle;
+    pointer-events: none; user-select: none;
+  }
+  .func-circle text.fn-engine {
+    font-size: 7px; fill: #000; font-weight: 700; text-anchor: middle;
+    pointer-events: none; user-select: none;
+  }
+
+  /* In-pane graph edge layers (source FK edges, target edge-coll arrows) */
+  .pane-graph-svg {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    pointer-events: none; z-index: 1;
+  }
+  .pane-graph-svg path.pane-edge {
+    fill: none; stroke: var(--text-muted); stroke-width: 1; opacity: .35;
+    stroke-dasharray: 3 3; pointer-events: stroke; cursor: pointer;
+    transition: opacity .15s, stroke-width .15s;
+  }
+  .pane-graph-svg path.pane-edge.fk-edge { stroke: var(--yellow); }
+  .pane-graph-svg path.pane-edge.coll-edge { stroke: var(--pink); stroke-dasharray: 4 2; }
+  .pane-graph-svg path.pane-edge:hover { opacity: .9; stroke-width: 2; }
+  .pane-graph-svg path.pane-edge.selected { opacity: 1; stroke-width: 2.5; filter: drop-shadow(0 0 4px rgba(251,191,36,.6)); }
+  .pane-graph-svg text.pane-edge-label {
+    font-size: 9px; fill: var(--text-muted); font-weight: 600;
+    pointer-events: none; user-select: none; text-anchor: middle;
+  }
+  .pane-graph-svg rect.pane-edge-label-bg {
+    fill: var(--surface); opacity: .9;
+  }
+  /* Make pane scroll containers positionable for the SVG layer */
+  .mapper-source-pane, .mapper-target-pane { position: relative; }
+  .mapper-source-pane .source-card, .mapper-target-pane .target-card { position: relative; z-index: 2; }
+
+  /* Expression editor modal */
+  .expr-modal {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7);
+    z-index: 300; justify-content: center; align-items: center;
+  }
+  .expr-modal.visible { display: flex; }
+  .expr-modal-content {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px 24px; width: 90%; max-width: 640px;
+    max-height: 85vh; display: flex; flex-direction: column; gap: 14px;
+  }
+  .expr-modal-content h3 { color: var(--accent); font-size: 14px; margin: 0; }
+  .expr-modal-content .subtitle { color: var(--text-muted); font-size: 11px; margin-top: -8px; }
+  .expr-engines { display: flex; gap: 6px; }
+  .expr-engine-btn {
+    padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;
+    font-weight: 600; background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border); text-transform: uppercase;
+  }
+  .expr-engine-btn.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  .expr-sources { display: flex; flex-wrap: wrap; gap: 4px; }
+  .expr-source-chip {
+    font-size: 11px; padding: 2px 10px; border-radius: 4px;
+    background: var(--surface2); color: var(--text); cursor: pointer;
+    border: 1px solid var(--border);
+  }
+  .expr-source-chip.active { background: var(--accent); color: #000; border-color: var(--accent); }
+  .expr-textarea {
+    flex: 1; min-height: 120px;
+    background: var(--bg); color: var(--green); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px;
+    font-family: 'SF Mono','Fira Code',monospace; font-size: 12px;
+    resize: vertical; outline: none;
+  }
+  .expr-textarea:focus { border-color: var(--accent); }
+  .expr-desc-input {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; font-family: inherit; font-size: 12px;
+    outline: none;
+  }
+  .expr-modal-field-label {
+    font-size: 10px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .5px; color: var(--text-muted); margin-bottom: 4px;
+  }
+  .expr-modal-row { display: flex; flex-direction: column; gap: 4px; }
+  .expr-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+  .expr-hint {
+    font-size: 10px; color: var(--text-muted); font-style: italic;
+  }
+
+  /* Mapper legend */
+  .mapper-legend {
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 16px; font-size: 10px; display: flex; gap: 16px; z-index: 10; white-space: nowrap;
+  }
+  .mapper-legend-item { display: flex; align-items: center; gap: 6px; }
 
   /* Right sidebar */
   .sidebar-right {
     width: 280px; min-width: 280px; background: var(--surface);
     border-left: 1px solid var(--border); display: flex;
-    flex-direction: column; overflow: hidden;
-    transition: width .2s;
+    flex-direction: column; overflow: hidden; transition: width .2s;
   }
   .sidebar-right.collapsed { width: 0; min-width: 0; border: none; overflow: hidden; }
   .props-body { overflow-y: auto; flex: 1; padding: 12px 14px; }
@@ -172,7 +359,7 @@
   }
   .prop-checkbox:checked { background: var(--accent); border-color: var(--accent); }
   .prop-checkbox:checked::after {
-    content: '✓'; position: absolute; top: -1px; left: 2px;
+    content: '\2713'; position: absolute; top: -1px; left: 2px;
     font-size: 12px; color: #0f172a; font-weight: 700;
   }
   .field-list { display: flex; flex-direction: column; gap: 2px; }
@@ -182,14 +369,6 @@
   }
   .field-item:hover { background: rgba(56,189,248,.05); }
   .field-item.excluded { opacity: .4; text-decoration: line-through; }
-  .field-badge {
-    font-size: 8px; padding: 0 4px; border-radius: 2px; font-weight: 700;
-  }
-  .field-badge.pk { background: var(--green); color: #000; }
-  .field-badge.fk { background: var(--accent); color: #000; }
-  .field-type {
-    margin-left: auto; font-size: 9px; color: var(--text-muted);
-  }
 
   /* Modals */
   .modal-overlay {
@@ -221,7 +400,6 @@
     display: flex; gap: 8px; justify-content: flex-end;
   }
 
-  /* Modal tables */
   .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .data-table th {
     text-align: left; padding: 8px 10px; background: var(--surface2);
@@ -235,7 +413,6 @@
   }
   .data-table tr:hover td { background: rgba(56,189,248,.04); }
 
-  /* Validation result */
   .valid-badge {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 8px 16px; border-radius: 8px; font-size: 13px; font-weight: 600;
@@ -245,11 +422,9 @@
   .issue-list { list-style: none; margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
   .issue-list li {
     padding: 8px 12px; background: rgba(248,113,113,.08);
-    border-left: 3px solid var(--red); border-radius: 0 6px 6px 0;
-    font-size: 12px;
+    border-left: 3px solid var(--red); border-radius: 0 6px 6px 0; font-size: 12px;
   }
 
-  /* YAML export */
   .yaml-area {
     width: 100%; min-height: 300px; background: var(--bg);
     border: 1px solid var(--border); border-radius: 6px;
@@ -257,14 +432,12 @@
     padding: 12px; resize: vertical; outline: none;
   }
 
-  /* Diff */
   .diff-section { margin-bottom: 16px; }
   .diff-section h4 { font-size: 12px; color: var(--accent); margin-bottom: 8px; }
   .diff-added { color: var(--green); }
   .diff-removed { color: var(--red); }
   .diff-changed { color: var(--yellow); }
 
-  /* Toast */
   .toast-container {
     position: fixed; top: 64px; right: 16px; z-index: 600;
     display: flex; flex-direction: column; gap: 8px;
@@ -272,8 +445,7 @@
   .toast {
     padding: 10px 18px; border-radius: 8px; font-size: 12px;
     font-family: inherit; box-shadow: 0 4px 16px rgba(0,0,0,.3);
-    animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards;
-    max-width: 340px;
+    animation: toastIn .3s ease, toastOut .3s ease 2.7s forwards; max-width: 340px;
   }
   .toast.success { background: rgba(52,211,153,.15); border: 1px solid var(--green); color: var(--green); }
   .toast.error { background: rgba(248,113,113,.15); border: 1px solid var(--red); color: var(--red); }
@@ -281,21 +453,276 @@
   @keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
   @keyframes toastOut { from { opacity: 1; } to { opacity: 0; transform: translateY(-10px); } }
 
-  /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 
-  /* Responsive */
-  @media (max-width: 900px) {
-    .sidebar-left { width: 200px; min-width: 200px; }
+  .btn-load { background: var(--green); color: #0f172a; border-color: var(--green); font-weight: 600; }
+  .btn-load:hover { background: #6ee7b7; border-color: #6ee7b7; color: #0f172a; }
+
+  .progress-overlay {
+    position: absolute; inset: 0; background: var(--bg);
+    z-index: 50; padding: 24px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .progress-header { display: flex; align-items: center; justify-content: space-between; }
+  .progress-header h3 { color: var(--accent); font-size: 16px; }
+  .progress-status { font-size: 13px; font-weight: 600; }
+  .progress-status.running { color: var(--yellow); }
+  .progress-status.completed { color: var(--green); }
+  .progress-status.failed { color: var(--red); }
+  .progress-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+  .progress-stat {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 20px; min-width: 120px;
+  }
+  .progress-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+  .progress-stat-value { font-size: 22px; font-weight: 700; color: var(--text); margin-top: 4px; }
+  .progress-bar-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 14px; display: flex; align-items: center; gap: 12px;
+  }
+  .progress-bar-label { font-size: 12px; min-width: 160px; color: var(--text); }
+  .progress-bar-track { flex: 1; height: 8px; background: var(--surface2); border-radius: 4px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+  .progress-bar-fill.document { background: var(--accent); }
+  .progress-bar-fill.edge { background: var(--pink); }
+  .progress-bar-count { font-size: 11px; color: var(--text-muted); min-width: 80px; text-align: right; }
+
+  @media (max-width: 1100px) {
+    .sidebar-left { width: 140px; min-width: 140px; }
+    .mapper-source-pane, .mapper-target-pane { width: 200px; min-width: 160px; }
     .sidebar-right { width: 240px; min-width: 240px; }
     .toolbar-brand span { display: none; }
   }
+
+  /* ── Phase A: Context menu ─────────────────────────────────────── */
+  .ctx-menu {
+    position: fixed; z-index: 900;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px; min-width: 200px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.5);
+    font-size: 12px; user-select: none;
+    display: none;
+  }
+  .ctx-menu.open { display: block; animation: ctxIn .08s ease-out; }
+  @keyframes ctxIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+  .ctx-menu-header {
+    padding: 4px 12px 6px; font-size: 10px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: .5px; font-weight: 700;
+    border-bottom: 1px solid var(--border); margin-bottom: 4px;
+  }
+  .ctx-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 6px 12px; border-radius: 4px;
+    cursor: pointer; color: var(--text); position: relative;
+  }
+  .ctx-item:hover { background: var(--surface2); color: var(--accent); }
+  .ctx-item.danger { color: var(--red); }
+  .ctx-item.danger:hover { background: rgba(248,113,113,.12); color: var(--red); }
+  .ctx-item.disabled { color: var(--text-muted); cursor: default; pointer-events: none; opacity: .5; }
+  .ctx-item-icon { width: 14px; flex-shrink: 0; opacity: .8; font-size: 12px; }
+  .ctx-item-label { flex: 1; }
+  .ctx-item-shortcut { font-size: 10px; color: var(--text-muted); flex-shrink: 0; opacity: .8; }
+  .ctx-item-arrow { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+  .ctx-separator { height: 1px; background: var(--border); margin: 4px 8px; }
+
+  /* ── Phase A: Floating cards ───────────────────────────────────── */
+  .floating-card {
+    position: fixed; z-index: 400;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: 0 16px 36px rgba(0,0,0,.45);
+    display: flex; flex-direction: column; min-width: 320px; max-width: 720px;
+    max-height: 80vh; overflow: hidden;
+  }
+  .floating-card.minimized .fc-body, .floating-card.minimized .fc-actions { display: none; }
+  .floating-card.minimized {
+    min-width: auto; max-width: 320px;
+  }
+  .fc-header {
+    display: flex; align-items: center; padding: 8px 12px;
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+    cursor: move; user-select: none; gap: 8px;
+  }
+  .floating-card.minimized .fc-header { border-bottom: none; cursor: pointer; }
+  .fc-title { flex: 1; font-size: 12px; font-weight: 700; color: var(--accent); }
+  .fc-status { font-size: 11px; padding: 1px 8px; border-radius: 10px; font-weight: 600; flex-shrink: 0; }
+  .fc-status.running { color: var(--yellow); background: rgba(251,191,36,.12); }
+  .fc-status.completed { color: var(--green); background: rgba(52,211,153,.12); }
+  .fc-status.failed { color: var(--red); background: rgba(248,113,113,.12); }
+  .fc-btn {
+    background: transparent; border: none; color: var(--text-muted);
+    font-size: 14px; cursor: pointer; padding: 0 4px; line-height: 1;
+  }
+  .fc-btn:hover { color: var(--text); }
+  .fc-body { padding: 14px; overflow-y: auto; flex: 1; min-height: 0; }
+  .fc-actions {
+    padding: 10px 14px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; justify-content: flex-end;
+  }
+  .fc-tray {
+    position: fixed; bottom: 12px; right: 12px; z-index: 350;
+    display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none;
+  }
+  .fc-tray > * { pointer-events: auto; }
+
+  /* ── Phase A: Help button + active-lens chip in toolbar ───────── */
+  .toolbar-status {
+    display: flex; align-items: center; gap: 6px; margin-right: 8px;
+  }
+  .lens-chip {
+    font-size: 10px; padding: 2px 8px; border-radius: 10px;
+    background: var(--surface2); color: var(--text-muted);
+    border: 1px solid var(--border); text-transform: uppercase; letter-spacing: .4px;
+    cursor: pointer; user-select: none;
+  }
+  .lens-chip.active-lens { background: var(--accent2); color: #000; border-color: var(--accent2); }
+  .help-btn {
+    width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text-muted); cursor: pointer;
+    font-family: inherit; font-size: 13px; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .help-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* ── Phase E1: Comprehensive legend ───────────────────────────── */
+  .mapper-legend {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 0; font-size: 10px; z-index: 10; white-space: normal;
+    max-width: 360px; overflow: hidden;
+    transform: none; left: 12px;
+  }
+  .mapper-legend.collapsed .legend-body { display: none; }
+  .legend-header {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+    cursor: pointer; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+    color: var(--text-muted);
+  }
+  .mapper-legend.collapsed .legend-header { border-bottom: none; }
+  .legend-toggle { margin-left: auto; font-size: 10px; transition: transform .15s; }
+  .mapper-legend:not(.collapsed) .legend-toggle { transform: rotate(90deg); }
+  .legend-lens-name { color: var(--accent2); }
+  .legend-body { padding: 8px 10px; max-height: 320px; overflow-y: auto; }
+  .legend-section { margin-bottom: 8px; }
+  .legend-section:last-child { margin-bottom: 0; }
+  .legend-section-title {
+    font-size: 9px; color: var(--text-muted); text-transform: uppercase;
+    font-weight: 700; letter-spacing: .4px; margin-bottom: 4px;
+  }
+  .legend-row {
+    display: grid; grid-template-columns: 28px 1fr; gap: 6px; align-items: center;
+    padding: 2px 0; font-size: 10px;
+  }
+  .legend-swatch { display: inline-flex; align-items: center; justify-content: center; }
+  .legend-text { color: var(--text); }
+  .legend-text small { color: var(--text-muted); }
+  .legend-pill {
+    display: inline-block; padding: 1px 6px; font-size: 8px; font-weight: 700;
+    border-radius: 3px; margin-right: 4px;
+  }
+
+  /* ── Phase E1/E3: Validation badges + lens-aware paint ────────── */
+  .vbadge {
+    position: absolute; top: 4px; right: 4px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--red); border: 1.5px solid var(--surface); z-index: 6;
+    cursor: help;
+  }
+  .vbadge.warn { background: var(--yellow); }
+  .source-card.has-issue .source-card-header,
+  .target-card.has-issue .target-card-header { box-shadow: inset 3px 0 0 var(--red); }
+  .target-card.has-issue .target-card-header { box-shadow: inset -3px 0 0 var(--red); }
+
+  /* Lens: coverage */
+  body.lens-coverage .source-col-row.mapped, body.lens-coverage .target-prop-row.mapped { opacity: .35; }
+  body.lens-coverage .source-col-row.unmapped::after,
+  body.lens-coverage .target-prop-row.unmapped::after {
+    content: ''; position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    width: 6px; height: 6px; border-radius: 50%; background: var(--yellow);
+  }
+  body.lens-coverage .source-card-header .col-count.coverage,
+  body.lens-coverage .target-card-header .coll-count.coverage {
+    background: var(--accent2); color: #000;
+  }
+
+  /* Lens: validation */
+  body.lens-validation .source-card:not(.has-issue),
+  body.lens-validation .target-card:not(.has-issue) { opacity: .5; }
+  body.lens-validation .source-card.has-issue .source-card-header,
+  body.lens-validation .target-card.has-issue .target-card-header {
+    background: rgba(248,113,113,.08);
+  }
+
+  /* Lens: diff */
+  body.lens-diff .source-card.diff-added .source-card-header,
+  body.lens-diff .target-card.diff-added .target-card-header { box-shadow: inset 3px 0 0 var(--green); }
+  body.lens-diff .target-card.diff-changed .target-card-header { box-shadow: inset 3px 0 0 var(--yellow); }
+  body.lens-diff .target-card.diff-removed .target-card-header { box-shadow: inset 3px 0 0 var(--red); opacity: .6; }
+
+  /* ── Phase G: Bottom timeline strip ───────────────────────────── */
+  .bottom-strip {
+    flex-shrink: 0; background: var(--surface); border-top: 1px solid var(--border);
+    transition: height .2s; overflow: hidden;
+    height: 78px; display: flex; flex-direction: column;
+  }
+  .bottom-strip.collapsed { height: 14px; }
+  .bottom-strip.collapsed .bs-body { display: none; }
+  .bs-header {
+    display: flex; align-items: center; padding: 3px 12px; height: 14px;
+    background: var(--surface2); border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none; flex-shrink: 0;
+    font-size: 9px; text-transform: uppercase; letter-spacing: .4px;
+    color: var(--text-muted); font-weight: 700; gap: 8px;
+  }
+  .bs-header .bs-toggle { font-size: 10px; transition: transform .15s; }
+  .bottom-strip.collapsed .bs-header .bs-toggle { transform: rotate(-90deg); }
+  .bs-header .bs-summary { color: var(--text); font-weight: 600; }
+  .bs-body {
+    flex: 1; padding: 8px 12px; overflow-x: auto; overflow-y: hidden;
+    display: flex; gap: 6px; align-items: center; min-width: 0;
+  }
+  .bs-pill {
+    flex-shrink: 0; padding: 4px 10px; border-radius: 14px;
+    background: var(--surface2); border: 1px solid var(--border);
+    font-size: 10px; cursor: pointer; transition: all .12s;
+    display: flex; flex-direction: column; gap: 1px; min-width: 70px;
+  }
+  .bs-pill:hover { border-color: var(--accent); transform: translateY(-1px); }
+  .bs-pill.failed { border-color: var(--red); }
+  .bs-pill.failed .bs-pill-status { color: var(--red); }
+  .bs-pill.completed { border-color: var(--green); }
+  .bs-pill.completed .bs-pill-status { color: var(--green); }
+  .bs-pill.running { border-color: var(--yellow); }
+  .bs-pill.running .bs-pill-status { color: var(--yellow); }
+  .bs-pill-status { font-size: 9px; font-weight: 700; text-transform: uppercase; }
+  .bs-pill-time { font-size: 9px; color: var(--text-muted); }
+  .bs-empty { font-size: 11px; color: var(--text-muted); font-style: italic; padding: 0 8px; }
+
+  /* ── Phase H: helper utility ──────────────────────────────────── */
+  .hint-bar {
+    position: absolute; bottom: 12px; right: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 10px; font-size: 10px;
+    color: var(--text-muted); z-index: 9; pointer-events: none;
+  }
+  kbd {
+    background: var(--bg); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 3px; padding: 1px 5px; font-family: inherit;
+    font-size: 10px; color: var(--text); margin: 0 2px;
+  }
+  .body-flex { display: flex; flex-direction: column; height: 100vh; padding-top: 52px; overflow: hidden; }
+  .body-flex .main { height: auto; flex: 1; min-height: 0; margin-top: 0; }
+  .field-chip {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; padding: 2px 6px; font-size: 11px; color: var(--accent);
+  }
+  .floating-card.compact { min-width: 280px; }
+  .progress-bars-mini { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
 </style>
 </head>
-<body>
+<body class="body-flex">
 
 <!-- Toolbar -->
 <div class="toolbar">
@@ -311,71 +738,149 @@
   </div>
   <div class="toolbar-center">
     <label>Project</label>
-    <select id="project-select"><option value="">Select a project…</option></select>
+    <select id="project-select"><option value="">Select a project&hellip;</option></select>
+    <span class="toolbar-status">
+      <span class="lens-chip" id="lens-chip" title="Active view (right-click canvas to switch, or press 1-4)">Topology</span>
+      <span class="lens-chip" id="dirty-chip" style="display:none;color:var(--yellow);border-color:var(--yellow)">Unsaved</span>
+    </span>
   </div>
   <div class="toolbar-actions">
-    <button class="btn" id="btn-validate" disabled onclick="validateMapping()">Validate</button>
-    <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()">Save</button>
-    <button class="btn" id="btn-diff" disabled onclick="showDiff()">Diff</button>
+    <button class="btn" id="btn-validate" disabled onclick="validateMapping()" title="Validate (Cmd/Ctrl+Shift+V)">Validate</button>
+    <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()" title="Save (Cmd/Ctrl+S)">Save</button>
+    <button class="btn" id="btn-automap" disabled onclick="autoMap()" title="Auto-map (a)">Auto-Map</button>
+    <button class="btn" id="btn-diff" disabled onclick="showDiff()" title="Diff (Cmd/Ctrl+D)">Diff</button>
     <button class="btn" id="btn-export" disabled onclick="exportYaml()">Export YAML</button>
     <button class="btn" id="btn-history" disabled onclick="showHistory()">History</button>
+    <button class="btn" id="btn-settings" onclick="showSettings()" title="Settings" aria-label="Settings">&#9881;</button>
+    <button class="help-btn" id="btn-help" title="Help &amp; shortcuts (?)" aria-label="Help and keyboard shortcuts" onclick="openHelpModal()">?</button>
+    <button class="btn btn-load" id="btn-load" disabled onclick="showLoadModal()" title="Load (Cmd/Ctrl+Enter)">&#9654; Load</button>
   </div>
 </div>
 
 <!-- Main layout -->
 <div class="main">
 
-  <!-- Left sidebar -->
+  <!-- Left sidebar — sources -->
   <div class="sidebar-left">
     <div class="panel-header">Sources</div>
-    <div class="panel-body" id="sources-panel" style="max-height: 40%;">
-      <div class="empty-state">Loading sources…</div>
-    </div>
-    <div class="panel-header">Schema Tables</div>
-    <div class="panel-body" id="schema-panel" style="flex: 1;">
-      <div class="empty-state">Select a project to view schema</div>
+    <div class="panel-body" id="sources-panel">
+      <div class="empty-state">Loading sources&hellip;</div>
     </div>
   </div>
 
-  <!-- Center canvas -->
-  <div class="canvas-area" id="canvas-area">
-    <div class="canvas-placeholder" id="canvas-placeholder">
-      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-        <circle cx="6" cy="6" r="3"/><circle cx="18" cy="6" r="3"/>
-        <circle cx="12" cy="18" r="3"/><line x1="8.5" y1="7.5" x2="10" y2="16"/>
-        <line x1="15.5" y1="7.5" x2="14" y2="16"/>
-      </svg>
-      Select a project to visualize its mapping
+  <!-- Mapper container -->
+  <div class="mapper-container" id="mapper-container">
+    <!-- Source pane -->
+    <div class="mapper-source-pane" id="mapper-source-pane">
+      <div class="mapper-pane-header">Source Schema</div>
+      <svg class="pane-graph-svg" id="source-graph-svg"></svg>
+      <div id="source-cards">
+        <div class="empty-state">Select a project</div>
+      </div>
     </div>
-    <svg id="graph-svg" style="display:none;"></svg>
-    <div class="legend" id="legend" style="display:none;">
-      <div class="legend-item">
-        <div class="legend-dot" style="background:rgba(56,189,248,.15);border-color:#38bdf8"></div>
-        <span>Document collection</span>
+
+    <!-- Canvas with connector SVG -->
+    <div class="mapper-canvas" id="mapper-canvas">
+      <div class="mapper-placeholder" id="mapper-placeholder">
+        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" aria-hidden="true">
+          <circle cx="4" cy="6" r="2.5"/><circle cx="4" cy="18" r="2.5"/>
+          <circle cx="20" cy="8" r="2.5"/><circle cx="20" cy="16" r="2.5"/>
+          <path d="M6.5 6 L17.5 8" /><path d="M6.5 18 L17.5 16" />
+        </svg>
+        <div style="text-align:center">
+          Select a project to view mapping<br>
+          <span style="font-size:11px;color:var(--text-muted)">Once loaded, right-click any table, column, or edge for actions &middot; Press <kbd>?</kbd> for shortcuts</span>
+        </div>
       </div>
-      <div class="legend-item">
-        <div class="legend-dot" style="background:rgba(251,191,36,.15);border-color:#fbbf24"></div>
-        <span>Join table</span>
+      <svg id="connector-svg" style="display:none;"></svg>
+      <div class="mapper-legend" id="mapper-legend" style="display:none;"></div>
+      <div class="hint-bar" id="canvas-hint" style="display:none;">
+        Right-click anything for actions &middot; Press <kbd>?</kbd> for shortcuts
       </div>
-      <div class="legend-item">
-        <svg width="30" height="12"><line x1="0" y1="6" x2="24" y2="6" stroke="#38bdf8" stroke-width="1.5"/>
-        <polygon points="24,3 30,6 24,9" fill="#38bdf8"/></svg>
-        <span>Edge relationship</span>
+    </div>
+
+    <!-- Target pane -->
+    <div class="mapper-target-pane" id="mapper-target-pane">
+      <div class="mapper-pane-header">Target Graph Model</div>
+      <svg class="pane-graph-svg" id="target-graph-svg"></svg>
+      <div id="target-cards">
+        <div class="empty-state">Select a project</div>
       </div>
     </div>
   </div>
 
-  <!-- Right sidebar -->
+  <!-- Right sidebar — properties -->
   <div class="sidebar-right" id="sidebar-right">
     <div class="panel-header" id="props-header">Properties</div>
     <div class="props-body" id="props-body">
-      <div class="empty-state">Click a node or edge to inspect</div>
+      <div class="empty-state">Click a table, collection, or connector to inspect.<br><br>Right-click any entity for actions, or press <kbd>?</kbd> for shortcuts.</div>
     </div>
   </div>
 </div>
 
+<!-- Bottom timeline strip (Phase G) -->
+<div class="bottom-strip collapsed" id="bottom-strip" role="region" aria-label="Recent load history">
+  <div class="bs-header" id="bs-header" onclick="toggleBottomStrip()" role="button" tabindex="0" aria-label="Toggle recent loads strip">
+    <span class="bs-toggle">&#9660;</span>
+    <span>Recent loads</span>
+    <span class="bs-summary" id="bs-summary"></span>
+    <span style="margin-left:auto;color:var(--text-muted);font-weight:400;text-transform:none;letter-spacing:0">
+      Right-click a pill for actions &middot; <kbd>h</kbd> to toggle
+    </span>
+  </div>
+  <div class="bs-body" id="bs-body">
+    <div class="bs-empty">No loads recorded for this project</div>
+  </div>
+</div>
+
+<!-- Floating cards tray (Phase A4) -->
+<div class="fc-tray" id="fc-tray" role="complementary" aria-label="Minimized floating cards"></div>
+
+<!-- Context menu (Phase A1) -->
+<div class="ctx-menu" id="ctx-menu" role="menu" aria-label="Context menu"></div>
+
 <!-- Toast container -->
 <div class="toast-container" id="toast-container"></div>
+
+<!-- Expression editor modal -->
+<div class="expr-modal" id="expr-modal">
+  <div class="expr-modal-content">
+    <h3 id="expr-modal-title">Edit Mapping Function</h3>
+    <div class="subtitle" id="expr-modal-subtitle"></div>
+
+    <div class="expr-modal-row">
+      <div class="expr-modal-field-label">Engine</div>
+      <div class="expr-engines" id="expr-engines">
+        <div class="expr-engine-btn active" data-engine="aql">AQL</div>
+        <div class="expr-engine-btn" data-engine="ksql">KSQL</div>
+        <div class="expr-engine-btn" data-engine="python">Python</div>
+      </div>
+    </div>
+
+    <div class="expr-modal-row">
+      <div class="expr-modal-field-label">Source columns (fan-in)</div>
+      <div class="expr-sources" id="expr-sources"></div>
+      <div class="expr-hint">Click a column chip to toggle it as an input to this function. Reference columns inside the expression as <code>@col_name</code>.</div>
+    </div>
+
+    <div class="expr-modal-row">
+      <div class="expr-modal-field-label">Expression</div>
+      <textarea class="expr-textarea" id="expr-textarea" placeholder='e.g. CONCAT(@first_name, " ", @last_name)'></textarea>
+      <div class="expr-hint">Leave empty to pass the (single) source column through unchanged.</div>
+    </div>
+
+    <div class="expr-modal-row">
+      <div class="expr-modal-field-label">Description (optional)</div>
+      <input type="text" class="expr-desc-input" id="expr-desc-input" placeholder="Why this mapping exists">
+    </div>
+
+    <div class="expr-modal-actions">
+      <button class="btn btn-secondary" id="expr-btn-delete">Reset to Identity</button>
+      <button class="btn btn-secondary" id="expr-btn-cancel">Cancel</button>
+      <button class="btn btn-primary" id="expr-btn-save">Save</button>
+    </div>
+  </div>
+</div>
 
 <!-- Modals -->
 <div class="modal-overlay" id="modal-overlay">
@@ -394,11 +899,13 @@ const API = '';
 let currentProject = null;
 let currentSourceName = null;
 let graphDataCache = null;
-let simulation = null;
-let editState = { collections: {}, edges: [], typeOverrides: {}, keySeparator: '_', sourceSchema: 'public' };
-let selectedNode = null;
-let selectedLink = null;
+let editState = { collections: {}, edges: [], typeOverrides: {}, keySeparator: '_', sourceSchema: 'public', defaultWorkers: 1, defaultBatchSize: 10000 };
 let tablesInfo = [];
+let collapsedTables = new Set();
+let selectedConnector = null;
+let selectedCardKey = null;
+let dragState = null;
+let rafPending = false;
 
 // ── Helpers ──
 
@@ -438,9 +945,14 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 });
 
 function setActionButtons(enabled) {
-  ['btn-validate','btn-save','btn-diff','btn-export','btn-history'].forEach(id => {
-    document.getElementById(id).disabled = !enabled;
+  ['btn-validate','btn-save','btn-automap','btn-diff','btn-export','btn-history','btn-load'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !enabled;
   });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // ── YAML serializer ──
@@ -499,7 +1011,7 @@ async function loadSources() {
           <div class="source-name">${s.name}</div>
           <div class="source-type">${s.source_type || 'postgres'}</div>
         </div>
-        <button class="btn-sm" onclick="snapshotSource('${s.name}')">Snapshot</button>
+        <button class="btn-sm" onclick="snapshotSource('${s.name}')">Snap</button>
       </div>
     `).join('');
   } catch (e) {
@@ -510,7 +1022,7 @@ async function loadSources() {
 
 async function snapshotSource(name) {
   try {
-    toast('Snapshotting ' + name + '…', 'info');
+    toast('Snapshotting ' + name + '\u2026', 'info');
     await apiFetch(`/api/sources/${name}/snapshot`, { method: 'POST' });
     toast('Snapshot complete', 'success');
   } catch (e) {
@@ -524,7 +1036,7 @@ async function loadProjects() {
   try {
     const projects = await apiFetch('/api/projects');
     const sel = document.getElementById('project-select');
-    sel.innerHTML = '<option value="">Select a project…</option>';
+    sel.innerHTML = '<option value="">Select a project\u2026</option>';
     projects.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.name;
@@ -543,7 +1055,7 @@ document.getElementById('project-select').addEventListener('change', e => {
 async function selectProject(name) {
   currentProject = name;
   setActionButtons(true);
-  toast('Loading project ' + name + '…', 'info');
+  toast('Loading project ' + name + '\u2026', 'info');
   try {
     const data = await apiFetch(`/api/projects/${name}/graph-data`);
     graphDataCache = data;
@@ -554,48 +1066,1128 @@ async function selectProject(name) {
       collections: { ...data.config?.collections } || {},
       edges: data.config?.edges ? [...data.config.edges] : [],
       typeOverrides: { ...data.config?.typeOverrides } || {},
-      keySeparator: data.config?.keySeparator || '_'
+      keySeparator: data.config?.keySeparator || '_',
+      defaultWorkers: editState.defaultWorkers || 1,
+      defaultBatchSize: editState.defaultBatchSize || 10000
     };
 
     tablesInfo = data.tables || [];
-    renderSchemaPanel(tablesInfo);
-    renderGraph(data.graph || data);
+    collapsedTables = new Set();
+    renderMapper();
     clearSelection();
   } catch (e) {
     toast('Failed to load project: ' + e.message, 'error');
   }
 }
 
-// ── Schema panel ──
+// ── Mapper rendering ──
 
-function renderSchemaPanel(tables) {
-  const panel = document.getElementById('schema-panel');
-  if (!tables || !tables.length) {
-    panel.innerHTML = '<div class="empty-state">No tables found</div>';
+function renderMapper() {
+  const placeholder = document.getElementById('mapper-placeholder');
+  const svgEl = document.getElementById('connector-svg');
+  const legend = document.getElementById('mapper-legend');
+
+  if (!tablesInfo.length && !Object.keys(editState.collections).length) {
+    placeholder.style.display = 'flex';
+    svgEl.style.display = 'none';
+    legend.style.display = 'none';
     return;
   }
-  panel.innerHTML = tables.map(t => `
-    <div class="schema-table-item" data-table="${t.name}" onclick="onSchemaTableClick('${t.name}')">
-      <span>${t.name}</span>
-      <span class="table-col-count">${t.columns ? t.columns.length : '?'} cols</span>
+
+  placeholder.style.display = 'none';
+  svgEl.style.display = 'block';
+  legend.style.display = 'flex';
+
+  const srcPane = document.getElementById('mapper-source-pane');
+  const tgtPane = document.getElementById('mapper-target-pane');
+  const srcScroll = srcPane.scrollTop;
+  const tgtScroll = tgtPane.scrollTop;
+
+  renderSourcePane(tablesInfo);
+  renderTargetPane();
+
+  srcPane.scrollTop = srcScroll;
+  tgtPane.scrollTop = tgtScroll;
+
+  requestAnimationFrame(() => {
+    drawConnectors();
+    drawSourceGraphEdges();
+    drawTargetGraphEdges();
+  });
+}
+
+function renderSourcePane(tables) {
+  const container = document.getElementById('source-cards');
+  if (!tables || !tables.length) {
+    container.innerHTML = '<div class="empty-state">No source tables</div>';
+    return;
+  }
+  container.innerHTML = tables.map(t => {
+    const cols = t.columns || [];
+    const isCollapsed = collapsedTables.has(t.name);
+    const sourceTable = t.name;
+    const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === sourceTable);
+    const excluded = new Set(collEntry ? (collEntry[1].excludeFields || []) : []);
+
+    return `
+      <div class="source-card${selectedCardKey === 'src:'+t.name ? ' selected' : ''}" data-table="${t.name}">
+        <div class="source-card-header" onclick="onSourceCardClick('${t.name}')">
+          <span class="expand-icon ${isCollapsed ? '' : 'open'}">&#9654;</span>
+          <span class="table-name">${t.name}</span>
+          <span class="col-count">${cols.length}</span>
+          <div class="source-dot" data-table="${t.name}"></div>
+        </div>
+        <div class="source-card-body${isCollapsed ? ' collapsed' : ''}" id="src-body-${t.name}">
+          ${cols.map(c => `
+            <div class="source-col-row${excluded.has(c.name) ? ' excluded' : ''}" data-table="${t.name}" data-col="${c.name}">
+              ${c.isPk ? '<span class="field-badge pk">PK</span>' : ''}
+              ${c.isFk ? '<span class="field-badge fk">FK</span>' : ''}
+              <span class="col-name">${c.name}</span>
+              <span class="field-type">${c.type}</span>
+              <div class="source-col-dot" data-table="${t.name}" data-col="${c.name}"></div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  initSourceDragHandles();
+}
+
+function renderTargetPane() {
+  const container = document.getElementById('target-cards');
+  let html = '';
+
+  const docCollections = Object.entries(editState.collections).filter(
+    ([, c]) => c.collectionType !== 'edge'
+  );
+
+  if (docCollections.length) {
+    html += '<div class="target-section-label">Document Collections</div>';
+    for (const [key, coll] of docCollections) {
+      const targetName = coll.targetCollection || key;
+      const sourceTable = coll.sourceTable || key;
+      const tableInfo = tablesInfo.find(t => t.name === sourceTable);
+      const allFields = coll.allFields || (tableInfo ? tableInfo.columns.map(c => c.name) : []);
+      const excluded = new Set(coll.excludeFields || []);
+      const fieldMappings = coll.fieldMappings || {};
+
+      const props = [];
+      const pkCols = tableInfo ? tableInfo.columns.filter(c => c.isPk).map(c => c.name) : [];
+      props.push({ name: '_key', source: pkCols.join(', ') || 'PK', type: 'key' });
+      for (const f of allFields) {
+        if (excluded.has(f)) continue;
+        if (pkCols.includes(f)) continue;
+        const tgtName = fieldMappings[f] || f;
+        props.push({ name: tgtName, source: f, type: 'field' });
+      }
+
+      html += `
+        <div class="target-card${selectedCardKey === 'tgt:'+key ? ' selected' : ''}" data-collection="${targetName}" data-key="${key}">
+          <div class="target-card-header" onclick="onTargetCardClick('${key}')">
+            <div class="target-dot" data-collection="${targetName}"></div>
+            <span class="coll-name">${escHtml(targetName)}</span>
+            <span class="coll-count">${props.length}</span>
+          </div>
+          <div class="target-card-body">
+            ${props.map(p => `
+              <div class="target-prop-row" data-collection="${targetName}" data-prop="${p.name}" data-source="${p.source}">
+                <div class="target-prop-dot" data-collection="${targetName}" data-prop="${p.name}"></div>
+                <span class="prop-name">${escHtml(p.name)}</span>
+                <span class="field-type">${escHtml(p.source !== p.name ? '\u2190 ' + p.source : p.type)}</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  if (editState.edges.length) {
+    html += '<div class="target-section-label edge-section">Edge Collections</div>';
+    for (const edge of editState.edges) {
+      html += `
+        <div class="target-card edge-card${selectedCardKey === 'edge:'+edge.edgeCollection ? ' selected' : ''}" data-edge="${edge.edgeCollection}">
+          <div class="target-card-header" onclick="onEdgeCardClick('${edge.edgeCollection}')">
+            <div class="target-dot" data-edge="${edge.edgeCollection}"></div>
+            <span class="coll-name">${escHtml(edge.edgeCollection)}</span>
+          </div>
+          <div class="target-card-body">
+            <div class="target-prop-row" data-edge="${edge.edgeCollection}" data-prop="_from">
+              <div class="target-prop-dot" data-edge="${edge.edgeCollection}" data-prop="_from"></div>
+              <span class="prop-name">_from</span>
+              <span class="field-type">${escHtml(edge.fromCollection)}</span>
+            </div>
+            <div class="target-prop-row" data-edge="${edge.edgeCollection}" data-prop="_to">
+              <div class="target-prop-dot" data-edge="${edge.edgeCollection}" data-prop="_to"></div>
+              <span class="prop-name">_to</span>
+              <span class="field-type">${escHtml(edge.toCollection)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+  }
+
+  container.innerHTML = html || '<div class="empty-state">No target collections</div>';
+}
+
+// ── Connector drawing ──
+
+// FieldExpression helpers
+function getCollectionEntry(targetCollName) {
+  return Object.entries(editState.collections).find(
+    ([k, c]) => (c.targetCollection || k) === targetCollName
+  );
+}
+
+function findFieldExpression(coll, targetProp) {
+  if (!coll.fieldExpressions) return null;
+  return coll.fieldExpressions.find(fx => fx.target === targetProp) || null;
+}
+
+function ensureFieldExpression(collKey, targetProp, defaultSources) {
+  const coll = editState.collections[collKey];
+  if (!coll.fieldExpressions) coll.fieldExpressions = [];
+  let fx = coll.fieldExpressions.find(f => f.target === targetProp);
+  if (!fx) {
+    fx = { target: targetProp, sources: defaultSources || [], expression: '', engine: 'aql', description: '' };
+    coll.fieldExpressions.push(fx);
+  }
+  return fx;
+}
+
+function removeFieldExpression(collKey, targetProp) {
+  const coll = editState.collections[collKey];
+  if (!coll.fieldExpressions) return;
+  const idx = coll.fieldExpressions.findIndex(f => f.target === targetProp);
+  if (idx >= 0) coll.fieldExpressions.splice(idx, 1);
+}
+
+function drawConnectors() {
+  const svgEl = document.getElementById('connector-svg');
+  const canvasEl = document.getElementById('mapper-canvas');
+  if (!svgEl || !canvasEl) return;
+
+  const canvasRect = canvasEl.getBoundingClientRect();
+  svgEl.setAttribute('viewBox', `0 0 ${canvasRect.width} ${canvasRect.height}`);
+  svgEl.innerHTML = '';
+
+  for (const [key, coll] of Object.entries(editState.collections)) {
+    if (coll.collectionType === 'edge') continue;
+    const sourceTable = coll.sourceTable || key;
+    const targetColl = coll.targetCollection || key;
+
+    drawOneConnector(svgEl, canvasRect, `.source-dot[data-table="${sourceTable}"]`,
+      `.target-dot[data-collection="${targetColl}"]`, 'connector table-conn',
+      { type: 'table', sourceTable, targetCollection: targetColl });
+
+    const tableInfo = tablesInfo.find(t => t.name === sourceTable);
+    if (!tableInfo) continue;
+    const excluded = new Set(coll.excludeFields || []);
+    const fieldMappings = coll.fieldMappings || {};
+    const fieldExpressions = coll.fieldExpressions || [];
+    const pkCols = tableInfo.columns.filter(c => c.isPk).map(c => c.name);
+
+    // Build a set of target properties claimed by fieldExpressions (authoritative) so
+    // we don't also draw a pass-through for any column already referenced as a source.
+    const exprByTarget = new Map(fieldExpressions.map(fx => [fx.target, fx]));
+    const columnsClaimedByExpr = new Set();
+    for (const fx of fieldExpressions) (fx.sources || []).forEach(s => columnsClaimedByExpr.add(s));
+
+    // 1) Draw each fieldExpression: source col(s) -> function circle -> target prop dot
+    for (const fx of fieldExpressions) {
+      const sources = (fx.sources && fx.sources.length) ? fx.sources : [];
+      if (!sources.length) continue;
+      drawFunctionMapping(svgEl, canvasRect, {
+        collKey: key, sourceTable, targetCollection: targetColl,
+        targetProp: fx.target, sources, expression: fx.expression, engine: fx.engine,
+      });
+    }
+
+    // 2) Draw identity (pass-through) mappings for every non-excluded column that is
+    //    neither claimed as a fieldExpression source nor the exclusive subject of one.
+    for (const col of tableInfo.columns) {
+      if (excluded.has(col.name)) continue;
+      if (columnsClaimedByExpr.has(col.name)) continue;
+      const tgtProp = pkCols.includes(col.name) ? '_key' : (fieldMappings[col.name] || col.name);
+      if (exprByTarget.has(tgtProp)) continue; // already handled above
+      drawFunctionMapping(svgEl, canvasRect, {
+        collKey: key, sourceTable, targetCollection: targetColl,
+        targetProp: tgtProp, sources: [col.name], expression: '', engine: 'aql',
+      });
+    }
+  }
+
+  for (const edge of editState.edges) {
+    const fromEntry = Object.entries(editState.collections).find(
+      ([k, c]) => (c.targetCollection || k) === edge.fromCollection);
+    if (fromEntry) {
+      const srcTable = fromEntry[1].sourceTable || fromEntry[0];
+      const fromField = edge.fromField.split(',')[0].trim();
+      drawOneConnector(svgEl, canvasRect,
+        `.source-col-dot[data-table="${srcTable}"][data-col="${fromField}"]`,
+        `.target-prop-dot[data-edge="${edge.edgeCollection}"][data-prop="_from"]`,
+        'connector edge-conn',
+        { type: 'edge', edgeCollection: edge.edgeCollection, direction: 'from' });
+    }
+    const toEntry = Object.entries(editState.collections).find(
+      ([k, c]) => (c.targetCollection || k) === edge.toCollection);
+    if (toEntry) {
+      const srcTable = toEntry[1].sourceTable || toEntry[0];
+      const toField = edge.toField.split(',')[0].trim();
+      const pkCols = (tablesInfo.find(t => t.name === srcTable)?.columns || [])
+        .filter(c => c.isPk).map(c => c.name);
+      const col = pkCols[0] || toField;
+      drawOneConnector(svgEl, canvasRect,
+        `.source-col-dot[data-table="${srcTable}"][data-col="${col}"]`,
+        `.target-prop-dot[data-edge="${edge.edgeCollection}"][data-prop="_to"]`,
+        'connector edge-conn',
+        { type: 'edge', edgeCollection: edge.edgeCollection, direction: 'to' });
+    }
+  }
+}
+
+function drawOneConnector(svgEl, canvasRect, srcSel, tgtSel, cls, data) {
+  const srcDot = document.querySelector(srcSel);
+  const tgtDot = document.querySelector(tgtSel);
+  if (!srcDot || !tgtDot) return;
+
+  const sr = srcDot.getBoundingClientRect();
+  const tr = tgtDot.getBoundingClientRect();
+  const x1 = sr.left + sr.width / 2 - canvasRect.left;
+  const y1 = sr.top + sr.height / 2 - canvasRect.top;
+  const x2 = tr.left + tr.width / 2 - canvasRect.left;
+  const y2 = tr.top + tr.height / 2 - canvasRect.top;
+
+  if (y1 < -50 || y1 > canvasRect.height + 50 || y2 < -50 || y2 > canvasRect.height + 50) return;
+
+  const cx1 = x1 + (x2 - x1) * 0.4;
+  const cx2 = x1 + (x2 - x1) * 0.6;
+  const d = `M${x1},${y1} C${cx1},${y1} ${cx2},${y2} ${x2},${y2}`;
+
+  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  path.setAttribute('d', d);
+  path.setAttribute('class', cls);
+  for (const [k, v] of Object.entries(data)) path.dataset[k] = v;
+  path.addEventListener('click', e => { e.stopPropagation(); onConnectorClick(path); });
+  svgEl.appendChild(path);
+}
+
+// Draw a mapping-function node with N source connectors fanning-in to the function
+// circle, and one connector from the circle to the target property. `sources` is a
+// list of source column names; `expression` empty means identity pass-through.
+function drawFunctionMapping(svgEl, canvasRect, opts) {
+  const { collKey, sourceTable, targetCollection, targetProp, sources, expression, engine } = opts;
+  const tgtSel = `.target-prop-dot[data-collection="${targetCollection}"][data-prop="${targetProp}"]`;
+  const tgtDot = document.querySelector(tgtSel);
+  if (!tgtDot) return;
+  const tr = tgtDot.getBoundingClientRect();
+  const tx = tr.left + tr.width / 2 - canvasRect.left;
+  const ty = tr.top + tr.height / 2 - canvasRect.top;
+
+  // Gather source dot positions that exist on screen.
+  const srcPts = [];
+  for (const col of sources) {
+    const dot = document.querySelector(`.source-col-dot[data-table="${sourceTable}"][data-col="${col}"]`);
+    if (!dot) continue;
+    const sr = dot.getBoundingClientRect();
+    srcPts.push({
+      col,
+      x: sr.left + sr.width / 2 - canvasRect.left,
+      y: sr.top + sr.height / 2 - canvasRect.top,
+    });
+  }
+  if (!srcPts.length) return;
+
+  // Function circle position: x = 55% across canvas, y = weighted average of source y and target y.
+  const avgSrcY = srcPts.reduce((a, p) => a + p.y, 0) / srcPts.length;
+  const avgSrcX = srcPts.reduce((a, p) => a + p.x, 0) / srcPts.length;
+  const fx = avgSrcX + (tx - avgSrcX) * 0.55;
+  const fy = (avgSrcY + ty) / 2;
+
+  if (fy < -50 || fy > canvasRect.height + 50) return;
+
+  const isIdentity = (!expression || !expression.trim()) && srcPts.length === 1;
+  const pathClass = 'connector col-conn';
+
+  // Draw each source -> function circle
+  for (const p of srcPts) {
+    const cx1 = p.x + (fx - p.x) * 0.5;
+    const cx2 = p.x + (fx - p.x) * 0.7;
+    const d = `M${p.x},${p.y} C${cx1},${p.y} ${cx2},${fy} ${fx},${fy}`;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', pathClass);
+    path.dataset.type = 'column';
+    path.dataset.sourceTable = sourceTable;
+    path.dataset.sourceCol = p.col;
+    path.dataset.targetCollection = targetCollection;
+    path.dataset.targetProp = targetProp;
+    path.dataset.collKey = collKey;
+    path.addEventListener('click', e => { e.stopPropagation(); onConnectorClick(path); });
+    svgEl.appendChild(path);
+  }
+
+  // Draw function circle -> target
+  {
+    const cx1 = fx + (tx - fx) * 0.4;
+    const cx2 = fx + (tx - fx) * 0.7;
+    const d = `M${fx},${fy} C${cx1},${fy} ${cx2},${ty} ${tx},${ty}`;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', pathClass);
+    path.dataset.type = 'fn-output';
+    path.dataset.targetCollection = targetCollection;
+    path.dataset.targetProp = targetProp;
+    path.dataset.collKey = collKey;
+    path.addEventListener('click', e => { e.stopPropagation(); onConnectorClick(path); });
+    svgEl.appendChild(path);
+  }
+
+  // Draw function circle with label
+  const grp = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  const engineClass = (engine || 'aql').toLowerCase();
+  grp.setAttribute('class', 'func-circle ' + (isIdentity ? 'identity' : 'expr ' + engineClass));
+  grp.dataset.collKey = collKey;
+  grp.dataset.targetProp = targetProp;
+  grp.dataset.sourceTable = sourceTable;
+  grp.dataset.targetCollection = targetCollection;
+  grp.setAttribute('transform', `translate(${fx},${fy})`);
+
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', 0);
+  circle.setAttribute('cy', 0);
+  circle.setAttribute('r', isIdentity ? 4 : 7);
+  grp.appendChild(circle);
+
+  if (!isIdentity) {
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('class', 'fn-label');
+    label.setAttribute('y', -11);
+    label.textContent = targetProp;
+    grp.appendChild(label);
+
+    const engineBadge = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    engineBadge.setAttribute('class', 'fn-engine');
+    engineBadge.setAttribute('y', 2.5);
+    engineBadge.textContent = (engine || 'aql').toUpperCase().slice(0, 3);
+    grp.appendChild(engineBadge);
+  }
+
+  grp.addEventListener('click', e => {
+    e.stopPropagation();
+    openExpressionEditor(collKey, targetProp);
+  });
+
+  // Tooltip via title element
+  const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+  const sourcesLabel = srcPts.map(p => p.col).join(', ');
+  titleEl.textContent = isIdentity
+    ? `identity: ${sourcesLabel} \u2192 ${targetProp}`
+    : `${(engine || 'aql').toUpperCase()}: ${expression}\n  sources: ${sourcesLabel}\n  target: ${targetProp}\nClick to edit`;
+  grp.appendChild(titleEl);
+
+  svgEl.appendChild(grp);
+}
+
+// Draw FK edges between source table cards (mini ER graph in the left pane).
+function drawSourceGraphEdges() {
+  const pane = document.getElementById('mapper-source-pane');
+  const svgEl = document.getElementById('source-graph-svg');
+  if (!pane || !svgEl || !tablesInfo || !tablesInfo.length) {
+    if (svgEl) svgEl.innerHTML = '';
+    return;
+  }
+  const paneRect = pane.getBoundingClientRect();
+  svgEl.innerHTML = '';
+  svgEl.setAttribute('viewBox', `0 0 ${paneRect.width} ${pane.scrollHeight}`);
+  svgEl.setAttribute('width', paneRect.width);
+  svgEl.setAttribute('height', pane.scrollHeight);
+
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  defs.innerHTML =
+    '<marker id="src-arrow" viewBox="0 -4 8 8" refX="6" refY="0" markerWidth="6" markerHeight="6" orient="auto">' +
+    '<path d="M0,-4L8,0L0,4" fill="#fbbf24" opacity="0.8"/></marker>';
+  svgEl.appendChild(defs);
+
+  for (const tbl of tablesInfo) {
+    for (const fk of (tbl.foreignKeys || tbl.fks || [])) {
+      const targetTable = fk.foreign_table || fk.foreignTable;
+      if (!targetTable) continue;
+      const fromCard = pane.querySelector(`.source-card[data-table="${tbl.name}"] .source-card-header`);
+      const toCard = pane.querySelector(`.source-card[data-table="${targetTable}"] .source-card-header`);
+      if (!fromCard || !toCard) continue;
+      const fr = fromCard.getBoundingClientRect();
+      const tr = toCard.getBoundingClientRect();
+      const x1 = 6;
+      const y1 = fr.top + fr.height / 2 - paneRect.top + pane.scrollTop;
+      const x2 = 6;
+      const y2 = tr.top + tr.height / 2 - paneRect.top + pane.scrollTop;
+      if (Math.abs(y1 - y2) < 4) continue;
+      const curve = Math.max(14, Math.min(40, Math.abs(y1 - y2) * 0.25));
+      const d = `M${x1},${y1} C${x1 - curve},${y1} ${x2 - curve},${y2} ${x2},${y2}`;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('class', 'pane-edge fk-edge');
+      path.setAttribute('marker-end', 'url(#src-arrow)');
+      path.dataset.fromTable = tbl.name;
+      path.dataset.toTable = targetTable;
+      path.addEventListener('click', e => {
+        e.stopPropagation();
+        onSourceFkClick(tbl.name, targetTable, fk);
+      });
+      const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+      const cols = (fk.columns || [fk.column]).join(', ');
+      const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
+      titleEl.textContent = `FK: ${tbl.name}(${cols}) \u2192 ${targetTable}(${fcols})`;
+      path.appendChild(titleEl);
+      svgEl.appendChild(path);
+    }
+  }
+}
+
+// Draw arrows between target vertex-collection cards for each edge-collection definition.
+function drawTargetGraphEdges() {
+  const pane = document.getElementById('mapper-target-pane');
+  const svgEl = document.getElementById('target-graph-svg');
+  if (!pane || !svgEl || !editState || !editState.edges) {
+    if (svgEl) svgEl.innerHTML = '';
+    return;
+  }
+  const paneRect = pane.getBoundingClientRect();
+  svgEl.innerHTML = '';
+  svgEl.setAttribute('viewBox', `0 0 ${paneRect.width} ${pane.scrollHeight}`);
+  svgEl.setAttribute('width', paneRect.width);
+  svgEl.setAttribute('height', pane.scrollHeight);
+
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  defs.innerHTML =
+    '<marker id="tgt-arrow" viewBox="0 -4 8 8" refX="6" refY="0" markerWidth="6" markerHeight="6" orient="auto">' +
+    '<path d="M0,-4L8,0L0,4" fill="#f472b6" opacity="0.9"/></marker>';
+  svgEl.appendChild(defs);
+
+  for (const edge of editState.edges) {
+    const fromCard = pane.querySelector(`.target-card[data-collection="${edge.fromCollection}"] .target-card-header`);
+    const toCard = pane.querySelector(`.target-card[data-collection="${edge.toCollection}"] .target-card-header`);
+    if (!fromCard || !toCard) continue;
+    const fr = fromCard.getBoundingClientRect();
+    const tr = toCard.getBoundingClientRect();
+    const xRight = paneRect.width - 6;
+    const y1 = fr.top + fr.height / 2 - paneRect.top + pane.scrollTop;
+    const y2 = tr.top + tr.height / 2 - paneRect.top + pane.scrollTop;
+    if (Math.abs(y1 - y2) < 4) continue;
+    const curve = Math.max(16, Math.min(44, Math.abs(y1 - y2) * 0.28));
+    const d = `M${xRight},${y1} C${xRight + curve},${y1} ${xRight + curve},${y2} ${xRight},${y2}`;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', 'pane-edge coll-edge');
+    path.setAttribute('marker-end', 'url(#tgt-arrow)');
+    path.dataset.edgeCollection = edge.edgeCollection;
+    path.addEventListener('click', e => {
+      e.stopPropagation();
+      onEdgeCardClick(edge.edgeCollection);
+    });
+    const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    titleEl.textContent = `${edge.edgeCollection}: ${edge.fromCollection} \u2192 ${edge.toCollection}`;
+    path.appendChild(titleEl);
+    svgEl.appendChild(path);
+  }
+}
+
+function onSourceFkClick(fromTable, toTable, fk) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  header.textContent = 'FK Relationship';
+  const cols = (fk.columns || [fk.column]).join(', ');
+  const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
+  body.innerHTML = `
+    <div class="prop-group">
+      <div class="prop-group-title">Source foreign key</div>
+      <div class="prop-row"><span class="prop-label">From table</span><span class="prop-value" style="color:var(--accent)">${escHtml(fromTable)}</span></div>
+      <div class="prop-row"><span class="prop-label">Column(s)</span><span class="prop-value" style="color:var(--yellow)">${escHtml(cols)}</span></div>
+      <div class="prop-row"><span class="prop-label">References</span><span class="prop-value" style="color:var(--green)">${escHtml(toTable)}(${escHtml(fcols)})</span></div>
     </div>
+  `;
+}
+
+function scheduleRedraw() {
+  if (!rafPending) {
+    rafPending = true;
+    requestAnimationFrame(() => {
+      drawConnectors();
+      drawSourceGraphEdges();
+      drawTargetGraphEdges();
+      rafPending = false;
+    });
+  }
+}
+
+// ── Source card interactions ──
+
+function onSourceCardClick(tableName) {
+  if (collapsedTables.has(tableName)) {
+    collapsedTables.delete(tableName);
+  } else {
+    collapsedTables.add(tableName);
+  }
+  const body = document.getElementById('src-body-' + tableName);
+  if (body) body.classList.toggle('collapsed');
+  const icon = document.querySelector(`.source-card[data-table="${tableName}"] .expand-icon`);
+  if (icon) icon.classList.toggle('open');
+
+  selectedCardKey = 'src:' + tableName;
+  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
+  const card = document.querySelector(`.source-card[data-table="${tableName}"]`);
+  if (card) card.classList.add('selected');
+  showSourceProps(tableName);
+  deselectConnector();
+  scheduleRedraw();
+}
+
+function onTargetCardClick(collKey) {
+  selectedCardKey = 'tgt:' + collKey;
+  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
+  const coll = editState.collections[collKey];
+  const targetName = coll?.targetCollection || collKey;
+  const card = document.querySelector(`.target-card[data-collection="${targetName}"]`);
+  if (card) card.classList.add('selected');
+  showTargetProps(collKey);
+  deselectConnector();
+}
+
+function onEdgeCardClick(edgeColl) {
+  selectedCardKey = 'edge:' + edgeColl;
+  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
+  const card = document.querySelector(`.target-card[data-edge="${edgeColl}"]`);
+  if (card) card.classList.add('selected');
+  showEdgeProps(edgeColl);
+  deselectConnector();
+}
+
+function onConnectorClick(pathEl) {
+  deselectConnector();
+  selectedConnector = pathEl;
+  pathEl.classList.add('selected');
+  showConnectorProps(pathEl);
+}
+
+function deselectConnector() {
+  if (selectedConnector) {
+    selectedConnector.classList.remove('selected');
+    selectedConnector = null;
+  }
+}
+
+function clearSelection() {
+  deselectConnector();
+  selectedCardKey = null;
+  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
+  document.getElementById('props-header').textContent = 'Properties';
+  document.getElementById('props-body').innerHTML =
+    '<div class="empty-state">Click a table, collection, or connector to inspect.<br><br>Right-click any entity for actions, or press <kbd>?</kbd> for shortcuts.</div>';
+}
+
+// ── Properties panel ──
+
+function showSourceProps(tableName) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  header.textContent = 'Source: ' + tableName;
+
+  const tableInfo = tablesInfo.find(t => t.name === tableName);
+  if (!tableInfo) { body.innerHTML = '<div class="empty-state">Table not found</div>'; return; }
+
+  const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const collKey = collEntry ? collEntry[0] : null;
+  const coll = collEntry ? collEntry[1] : null;
+  const excluded = new Set(coll ? (coll.excludeFields || []) : []);
+  const targetName = coll ? (coll.targetCollection || collKey) : 'unmapped';
+
+  let html = `
+    <div class="prop-group">
+      <div class="prop-group-title">Mapping</div>
+      <div class="prop-row"><span class="prop-label">Target</span><span class="prop-value" style="color:var(--green)">${escHtml(targetName)}</span></div>
+      <div class="prop-row"><span class="prop-label">Columns</span><span class="prop-value">${tableInfo.columns.length}</span></div>
+      <div class="prop-row"><span class="prop-label">Primary Key</span><span class="prop-value">${(tableInfo.pk || []).join(', ') || '\u2013'}</span></div>
+    </div>`;
+
+  if (collKey) {
+    html += `
+    <div class="prop-group">
+      <div class="prop-group-title">Configuration</div>
+      <div class="prop-row">
+        <span class="prop-label">Target name</span>
+        <input class="prop-input" value="${escHtml(targetName)}"
+          onchange="editCollection('${collKey}', 'targetCollection', this.value); renderMapper();">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Join table</span>
+        <input type="checkbox" class="prop-checkbox" ${coll.isJoinTable ? 'checked' : ''}
+          onchange="editCollection('${collKey}', 'isJoinTable', this.checked)">
+      </div>
+    </div>`;
+  }
+
+  html += `<div class="prop-group"><div class="prop-group-title">Fields (click to toggle)</div><div class="field-list">`;
+  tableInfo.columns.forEach(c => {
+    const isExcl = excluded.has(c.name);
+    html += `
+      <div class="field-item ${isExcl ? 'excluded' : ''}"
+           onclick="toggleField('${collKey || tableName}', '${c.name}')">
+        ${c.isPk ? '<span class="field-badge pk">PK</span>' : ''}
+        ${c.isFk ? '<span class="field-badge fk">FK</span>' : ''}
+        <span>${c.name}</span>
+        <span class="field-type">${c.type}</span>
+      </div>`;
+  });
+  html += '</div></div>';
+
+  const srcName = currentSourceName || document.querySelector('.source-name')?.textContent;
+  if (srcName) {
+    html += `<div class="prop-group"><button class="btn" onclick="previewTable('${srcName}','${tableName}')">Preview Data</button></div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+function showTargetProps(collKey) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  const coll = editState.collections[collKey];
+  if (!coll) { body.innerHTML = '<div class="empty-state">Collection not found</div>'; return; }
+
+  const targetName = coll.targetCollection || collKey;
+  header.textContent = 'Collection: ' + targetName;
+
+  const fieldMappings = coll.fieldMappings || {};
+  const fmEntries = Object.entries(fieldMappings);
+
+  let html = `
+    <div class="prop-group">
+      <div class="prop-group-title">Configuration</div>
+      <div class="prop-row">
+        <span class="prop-label">Target name</span>
+        <input class="prop-input" value="${escHtml(targetName)}"
+          onchange="editCollection('${collKey}', 'targetCollection', this.value); renderMapper();">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Source table</span>
+        <span class="prop-value">${escHtml(coll.sourceTable || collKey)}</span>
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Join table</span>
+        <input type="checkbox" class="prop-checkbox" ${coll.isJoinTable ? 'checked' : ''}
+          onchange="editCollection('${collKey}', 'isJoinTable', this.checked)">
+      </div>
+    </div>`;
+
+  if (fmEntries.length) {
+    html += `<div class="prop-group"><div class="prop-group-title">Field Renames</div>`;
+    fmEntries.forEach(([src, tgt]) => {
+      html += `<div class="prop-row"><span class="prop-label">${escHtml(src)}</span><span class="prop-value" style="color:var(--green)">\u2192 ${escHtml(tgt)}</span></div>`;
+    });
+    html += '</div>';
+  }
+
+  body.innerHTML = html;
+}
+
+function showEdgeProps(edgeColl) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  const edgeIdx = editState.edges.findIndex(e => e.edgeCollection === edgeColl);
+  const edge = editState.edges[edgeIdx];
+  if (!edge) { body.innerHTML = '<div class="empty-state">Edge not found</div>'; return; }
+
+  header.textContent = 'Edge: ' + edgeColl;
+  body.innerHTML = `
+    <div class="prop-group">
+      <div class="prop-group-title">Edge Configuration</div>
+      <div class="prop-row">
+        <span class="prop-label">Edge collection</span>
+        <input class="prop-input" value="${escHtml(edge.edgeCollection)}"
+          onchange="editEdgeName(${edgeIdx}, this.value, '${escHtml(edge.edgeCollection)}'); renderMapper();">
+      </div>
+    </div>
+    <div class="prop-group">
+      <div class="prop-group-title">Relationship</div>
+      <div class="prop-row"><span class="prop-label">From</span><span class="prop-value" style="color:var(--accent)">${escHtml(edge.fromCollection)}</span></div>
+      <div class="prop-row"><span class="prop-label">To</span><span class="prop-value" style="color:var(--green)">${escHtml(edge.toCollection)}</span></div>
+      <div class="prop-row"><span class="prop-label">FK field</span><span class="prop-value" style="color:var(--yellow)">${escHtml(edge.fromField)}</span></div>
+      <div class="prop-row"><span class="prop-label">PK field</span><span class="prop-value">${escHtml(edge.toField)}</span></div>
+    </div>`;
+}
+
+function showConnectorProps(pathEl) {
+  const header = document.getElementById('props-header');
+  const body = document.getElementById('props-body');
+  const t = pathEl.dataset.type;
+
+  if (t === 'table') {
+    header.textContent = 'Table Mapping';
+    body.innerHTML = `
+      <div class="prop-group">
+        <div class="prop-group-title">Mapping</div>
+        <div class="prop-row"><span class="prop-label">Source table</span><span class="prop-value" style="color:var(--accent)">${escHtml(pathEl.dataset.sourceTable)}</span></div>
+        <div class="prop-row"><span class="prop-label">Target collection</span><span class="prop-value" style="color:var(--green)">${escHtml(pathEl.dataset.targetCollection)}</span></div>
+      </div>
+      <div class="prop-group"><div class="prop-group-title" style="color:var(--text-muted);font-size:11px">Press Delete to exclude this mapping</div></div>`;
+  } else if (t === 'column' || t === 'fn-output') {
+    header.textContent = 'Column Mapping';
+    const collKey = pathEl.dataset.collKey;
+    const targetProp = pathEl.dataset.targetProp;
+    const coll = collKey ? editState.collections[collKey] : null;
+    const fx = coll ? findFieldExpression(coll, targetProp) : null;
+    const exprSnippet = fx && fx.expression ? fx.expression : '<em style="color:var(--text-muted)">identity pass-through</em>';
+    const engine = fx ? (fx.engine || 'aql') : 'aql';
+    const sources = fx ? (fx.sources || []) : (pathEl.dataset.sourceCol ? [pathEl.dataset.sourceCol] : []);
+    body.innerHTML = `
+      <div class="prop-group">
+        <div class="prop-group-title">Field Mapping</div>
+        <div class="prop-row"><span class="prop-label">Target property</span><span class="prop-value" style="color:var(--green)">${escHtml(targetProp || '')}</span></div>
+        <div class="prop-row"><span class="prop-label">Target coll.</span><span class="prop-value">${escHtml(pathEl.dataset.targetCollection || '')}</span></div>
+        <div class="prop-row"><span class="prop-label">Engine</span><span class="prop-value" style="color:var(--accent2)">${escHtml(engine.toUpperCase())}</span></div>
+      </div>
+      <div class="prop-group">
+        <div class="prop-group-title">Source columns (${sources.length})</div>
+        <div>${sources.map(s => `<span class="field-chip" style="margin:2px 4px 2px 0; display:inline-block;">@${escHtml(s)}</span>`).join('') || '<em>none</em>'}</div>
+      </div>
+      <div class="prop-group">
+        <div class="prop-group-title">Expression</div>
+        <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; font-family:'SF Mono',monospace; font-size:11px; color:var(--green); white-space:pre-wrap; word-break:break-all;">${exprSnippet}</div>
+      </div>
+      ${collKey && targetProp ? `<div class="prop-group"><button class="btn btn-primary" onclick="openExpressionEditor('${collKey}', '${escHtml(targetProp)}')">Edit Function</button></div>` : ''}
+      <div class="prop-group"><div class="prop-group-title" style="color:var(--text-muted);font-size:11px">Press Delete to exclude this column</div></div>`;
+  } else if (t === 'edge') {
+    header.textContent = 'Edge Mapping';
+    body.innerHTML = `
+      <div class="prop-group">
+        <div class="prop-group-title">Edge</div>
+        <div class="prop-row"><span class="prop-label">Edge collection</span><span class="prop-value" style="color:var(--pink)">${escHtml(pathEl.dataset.edgeCollection)}</span></div>
+        <div class="prop-row"><span class="prop-label">Direction</span><span class="prop-value">${escHtml(pathEl.dataset.direction)}</span></div>
+      </div>`;
+  }
+}
+
+// ── Edit state mutations ──
+
+function editCollection(key, prop, value) {
+  if (!editState.collections[key]) editState.collections[key] = {};
+  editState.collections[key][prop] = value;
+}
+
+function toggleField(collKey, fieldName) {
+  if (!editState.collections[collKey]) editState.collections[collKey] = {};
+  if (!editState.collections[collKey].excludeFields) editState.collections[collKey].excludeFields = [];
+  const arr = editState.collections[collKey].excludeFields;
+  const idx = arr.indexOf(fieldName);
+  if (idx >= 0) arr.splice(idx, 1);
+  else arr.push(fieldName);
+  renderMapper();
+  if (selectedCardKey && selectedCardKey.startsWith('src:')) {
+    showSourceProps(selectedCardKey.slice(4));
+  }
+}
+
+function editEdgeName(idx, newName, oldName) {
+  if (idx >= 0 && editState.edges[idx]) {
+    editState.edges[idx].edgeCollection = newName;
+  }
+}
+
+// ── Drag-and-drop for creating field mappings ──
+
+function initSourceDragHandles() {
+  document.querySelectorAll('.source-col-dot').forEach(dot => {
+    dot.addEventListener('mousedown', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (dot.closest('.source-col-row').classList.contains('excluded')) return;
+
+      const table = dot.dataset.table;
+      const col = dot.dataset.col;
+      const canvasEl = document.getElementById('mapper-canvas');
+      const canvasRect = canvasEl.getBoundingClientRect();
+      const sr = dot.getBoundingClientRect();
+      const startX = sr.left + sr.width / 2 - canvasRect.left;
+      const startY = sr.top + sr.height / 2 - canvasRect.top;
+
+      dragState = { table, col, startX, startY };
+
+      const svgEl = document.getElementById('connector-svg');
+      const tempPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      tempPath.setAttribute('class', 'connector drag-temp');
+      tempPath.id = 'drag-temp-line';
+      svgEl.appendChild(tempPath);
+
+      function onMove(me) {
+        const mx = me.clientX - canvasRect.left;
+        const my = me.clientY - canvasRect.top;
+        const cx1 = startX + (mx - startX) * 0.4;
+        const cx2 = startX + (mx - startX) * 0.6;
+        tempPath.setAttribute('d', `M${startX},${startY} C${cx1},${startY} ${cx2},${my} ${mx},${my}`);
+
+        document.querySelectorAll('.func-circle.drop-hover').forEach(g => g.classList.remove('drop-hover'));
+        const under = document.elementFromPoint(me.clientX, me.clientY);
+        const fn = under && under.closest ? under.closest('.func-circle') : null;
+        if (fn) fn.classList.add('drop-hover');
+      }
+
+      function onUp(me) {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.querySelectorAll('.func-circle.drop-hover').forEach(g => g.classList.remove('drop-hover'));
+        const el = document.elementFromPoint(me.clientX, me.clientY);
+        const tempEl = document.getElementById('drag-temp-line');
+        if (tempEl) tempEl.remove();
+
+        // Drop on a function circle: fan-in — add dragged column as another source.
+        const funcGroup = el && el.closest ? el.closest('.func-circle') : null;
+        if (funcGroup && funcGroup.dataset.collKey && funcGroup.dataset.targetProp) {
+          handleDropOnFunction(dragState.table, dragState.col, funcGroup.dataset.collKey, funcGroup.dataset.targetProp);
+          dragState = null;
+          return;
+        }
+
+        if (el && el.classList.contains('target-prop-dot')) {
+          const targetColl = el.dataset.collection;
+          const targetProp = el.dataset.prop;
+          if (targetColl && targetProp) {
+            handleDropOnTarget(dragState.table, dragState.col, targetColl, targetProp);
+          }
+        }
+        dragState = null;
+      }
+
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+function handleDropOnTarget(sourceTable, sourceCol, targetCollName, targetProp) {
+  const collEntry = Object.entries(editState.collections).find(
+    ([k, c]) => (c.targetCollection || k) === targetCollName
+  );
+  if (!collEntry) { toast('No collection mapping for ' + targetCollName, 'error'); return; }
+
+  const [collKey, coll] = collEntry;
+  if ((coll.sourceTable || collKey) !== sourceTable) {
+    toast('Source table mismatch', 'error');
+    return;
+  }
+
+  if (!coll.fieldMappings) coll.fieldMappings = {};
+  if (targetProp === '_key') {
+    toast('Cannot remap _key', 'info');
+    return;
+  }
+  if (sourceCol !== targetProp) {
+    coll.fieldMappings[sourceCol] = targetProp;
+  }
+
+  const exIdx = (coll.excludeFields || []).indexOf(sourceCol);
+  if (exIdx >= 0) coll.excludeFields.splice(exIdx, 1);
+
+  renderMapper();
+  toast(`Mapped ${sourceTable}.${sourceCol} \u2192 ${targetCollName}.${targetProp}`, 'success');
+}
+
+// Fan-in: user dragged a source column onto an existing function circle.
+// Add the column as an additional input to that function.
+function handleDropOnFunction(sourceTable, sourceCol, collKey, targetProp) {
+  const coll = editState.collections[collKey];
+  if (!coll) { toast('Function has no collection', 'error'); return; }
+  if ((coll.sourceTable || collKey) !== sourceTable) {
+    toast('Fan-in requires same source table as the function', 'error');
+    return;
+  }
+  const fx = ensureFieldExpression(collKey, targetProp, []);
+  if (!fx.sources) fx.sources = [];
+  if (fx.sources.includes(sourceCol)) {
+    toast(`${sourceCol} is already an input to ${targetProp}`, 'info');
+    return;
+  }
+  // If the function was still a bare identity with a single legacy source, promote it
+  // to an expression by giving it a default CONCAT placeholder the user can edit.
+  if (fx.sources.length === 1 && (!fx.expression || !fx.expression.trim())) {
+    const existing = fx.sources[0];
+    fx.sources.push(sourceCol);
+    fx.expression = `CONCAT(@${existing}, " ", @${sourceCol})`;
+    fx.engine = fx.engine || 'aql';
+  } else {
+    fx.sources.push(sourceCol);
+    if (!fx.expression || !fx.expression.trim()) {
+      fx.expression = fx.sources.map(s => `@${s}`).join(' || " " || ');
+    }
+  }
+  // Remove the dragged column from excludeFields if present.
+  const exIdx = (coll.excludeFields || []).indexOf(sourceCol);
+  if (exIdx >= 0) coll.excludeFields.splice(exIdx, 1);
+
+  renderMapper();
+  toast(`Added ${sourceCol} as fan-in input to ${targetProp}`, 'success');
+  openExpressionEditor(collKey, targetProp);
+}
+
+// ── Expression editor modal ──
+let exprEditorState = null;
+
+function openExpressionEditor(collKey, targetProp) {
+  const coll = editState.collections[collKey];
+  if (!coll) return;
+  const sourceTable = coll.sourceTable || collKey;
+  const tableInfo = tablesInfo.find(t => t.name === sourceTable);
+  if (!tableInfo) { toast('Source table info missing', 'error'); return; }
+
+  // Ensure a FieldExpression exists; synthesize identity from the existing 1:1 mapping if needed.
+  let fx = findFieldExpression(coll, targetProp);
+  if (!fx) {
+    // Infer the identity source: reverse-lookup the fieldMappings dict for any
+    // source column that maps to targetProp, else the same-named column.
+    const invert = Object.entries(coll.fieldMappings || {}).find(([s, t]) => t === targetProp);
+    const defaultSrc = invert ? invert[0] : targetProp;
+    fx = { target: targetProp, sources: [defaultSrc], expression: '', engine: 'aql', description: '' };
+  }
+
+  exprEditorState = {
+    collKey,
+    targetProp,
+    sourceTable,
+    engine: fx.engine || 'aql',
+    sources: [...(fx.sources || [])],
+    expression: fx.expression || '',
+    description: fx.description || '',
+  };
+
+  const modal = document.getElementById('expr-modal');
+  document.getElementById('expr-modal-title').textContent = `Mapping function \u2192 ${targetProp}`;
+  document.getElementById('expr-modal-subtitle').textContent =
+    `Collection ${coll.targetCollection || collKey} (source table: ${sourceTable})`;
+  document.getElementById('expr-textarea').value = exprEditorState.expression;
+  document.getElementById('expr-desc-input').value = exprEditorState.description;
+
+  document.querySelectorAll('#expr-engines .expr-engine-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.engine === exprEditorState.engine);
+  });
+
+  renderExprSources();
+  modal.classList.add('visible');
+  setTimeout(() => document.getElementById('expr-textarea').focus(), 50);
+}
+
+function renderExprSources() {
+  const host = document.getElementById('expr-sources');
+  if (!host || !exprEditorState) return;
+  const tableInfo = tablesInfo.find(t => t.name === exprEditorState.sourceTable);
+  const cols = tableInfo ? tableInfo.columns : [];
+  const active = new Set(exprEditorState.sources);
+  host.innerHTML = cols.map(c => `
+    <span class="expr-source-chip${active.has(c.name) ? ' active' : ''}" data-col="${c.name}">@${c.name}</span>
   `).join('');
+  host.querySelectorAll('.expr-source-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const col = chip.dataset.col;
+      const idx = exprEditorState.sources.indexOf(col);
+      if (idx >= 0) exprEditorState.sources.splice(idx, 1);
+      else exprEditorState.sources.push(col);
+      chip.classList.toggle('active');
+    });
+  });
 }
 
-function onSchemaTableClick(tableName) {
-  document.querySelectorAll('.schema-table-item').forEach(el => el.classList.remove('active'));
-  const el = document.querySelector(`.schema-table-item[data-table="${tableName}"]`);
-  if (el) el.classList.add('active');
-
-  const srcName = detectSourceName();
-  if (srcName) previewTable(srcName, tableName);
+function closeExpressionEditor() {
+  document.getElementById('expr-modal').classList.remove('visible');
+  exprEditorState = null;
 }
 
-function detectSourceName() {
-  if (currentSourceName) return currentSourceName;
-  const src = document.querySelector('.source-name');
-  return src ? src.textContent : null;
+function saveExpressionEditor() {
+  if (!exprEditorState) return;
+  const { collKey, targetProp } = exprEditorState;
+  const coll = editState.collections[collKey];
+  if (!coll) { closeExpressionEditor(); return; }
+
+  const expression = document.getElementById('expr-textarea').value;
+  const description = document.getElementById('expr-desc-input').value;
+  const engine = exprEditorState.engine;
+  const sources = [...exprEditorState.sources];
+
+  if (!sources.length) {
+    toast('At least one source column is required', 'error');
+    return;
+  }
+
+  if (!coll.fieldExpressions) coll.fieldExpressions = [];
+  const existing = coll.fieldExpressions.find(f => f.target === targetProp);
+  const next = { target: targetProp, sources, expression, engine, description };
+  if (existing) {
+    existing.sources = next.sources;
+    existing.expression = next.expression;
+    existing.engine = next.engine;
+    existing.description = next.description;
+  } else {
+    coll.fieldExpressions.push(next);
+  }
+
+  closeExpressionEditor();
+  renderMapper();
+  toast(`Saved mapping function for ${targetProp}`, 'success');
 }
+
+function resetExpressionEditor() {
+  if (!exprEditorState) return;
+  const { collKey, targetProp } = exprEditorState;
+  removeFieldExpression(collKey, targetProp);
+  closeExpressionEditor();
+  renderMapper();
+  toast(`Reset ${targetProp} to identity`, 'info');
+}
+
+function initExpressionEditor() {
+  const modal = document.getElementById('expr-modal');
+  if (!modal) return;
+  document.getElementById('expr-btn-cancel').addEventListener('click', closeExpressionEditor);
+  document.getElementById('expr-btn-save').addEventListener('click', saveExpressionEditor);
+  document.getElementById('expr-btn-delete').addEventListener('click', resetExpressionEditor);
+  modal.addEventListener('click', e => {
+    if (e.target === modal) closeExpressionEditor();
+  });
+  document.querySelectorAll('#expr-engines .expr-engine-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (!exprEditorState) return;
+      exprEditorState.engine = btn.dataset.engine;
+      document.querySelectorAll('#expr-engines .expr-engine-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+}
+
+// ── Keyboard shortcuts ──
+
+document.addEventListener('keydown', e => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selectedConnector && !e.target.matches('input,textarea')) {
+    const t = selectedConnector.dataset.type;
+    if (t === 'column') {
+      const collKey = Object.keys(editState.collections).find(k => {
+        const c = editState.collections[k];
+        return (c.sourceTable || k) === selectedConnector.dataset.sourceTable;
+      });
+      if (collKey) {
+        if (!editState.collections[collKey].excludeFields) editState.collections[collKey].excludeFields = [];
+        editState.collections[collKey].excludeFields.push(selectedConnector.dataset.sourceCol);
+        toast(`Excluded ${selectedConnector.dataset.sourceCol}`, 'info');
+        selectedConnector = null;
+        renderMapper();
+        clearSelection();
+      }
+    }
+  }
+  if (e.key === 'Escape') {
+    clearSelection();
+  }
+});
 
 // ── Data preview ──
 
@@ -626,288 +2218,6 @@ async function previewTable(sourceName, tableName) {
   }
 }
 
-function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-
-// ── Graph rendering ──
-
-function renderGraph(gd) {
-  const container = document.getElementById('canvas-area');
-  const svgEl = document.getElementById('graph-svg');
-  document.getElementById('canvas-placeholder').style.display = 'none';
-  svgEl.style.display = 'block';
-  document.getElementById('legend').style.display = 'flex';
-
-  const svg = d3.select(svgEl);
-  svg.selectAll('*').remove();
-  if (simulation) simulation.stop();
-
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-  svg.attr('viewBox', [0, 0, width, height]);
-
-  const defs = svg.append('defs');
-  defs.append('marker')
-    .attr('id', 'arrowhead').attr('viewBox', '0 -5 10 10')
-    .attr('refX', 28).attr('refY', 0)
-    .attr('markerWidth', 8).attr('markerHeight', 8)
-    .attr('orient', 'auto')
-    .append('path').attr('d', 'M0,-4L10,0L0,4').attr('fill', '#38bdf8');
-
-  const g = svg.append('g');
-  const linkGroup = g.append('g');
-  const labelGroup = g.append('g');
-  const nodeGroup = g.append('g');
-
-  const zoom = d3.zoom().scaleExtent([0.2, 4]).on('zoom', e => {
-    g.attr('transform', e.transform);
-  });
-  svg.call(zoom);
-
-  svg.on('click', function(e) {
-    if (e.target === this || e.target === g.node()) clearSelection();
-  });
-
-  const nodes = (gd.nodes || []).map(n => ({ ...n }));
-  const links = (gd.links || []).map(l => ({ ...l }));
-
-  simulation = d3.forceSimulation(nodes)
-    .force('link', d3.forceLink(links).id(d => d.id).distance(200))
-    .force('charge', d3.forceManyBody().strength(-800))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide().radius(50));
-
-  const link = linkGroup.selectAll('path')
-    .data(links).join('path')
-    .attr('class', 'link')
-    .attr('stroke', '#38bdf8').attr('stroke-width', 1.5)
-    .attr('marker-end', 'url(#arrowhead)')
-    .style('cursor', 'pointer')
-    .on('click', (e, d) => { e.stopPropagation(); selectLink(d); });
-
-  const linkLabelBg = labelGroup.selectAll('rect')
-    .data(links).join('rect')
-    .attr('class', 'link-label-bg').attr('rx', 3);
-
-  const linkLabel = labelGroup.selectAll('text')
-    .data(links).join('text')
-    .attr('class', 'link-label')
-    .text(d => d.edgeCollection);
-
-  const node = nodeGroup.selectAll('g')
-    .data(nodes).join('g')
-    .attr('class', 'node')
-    .style('cursor', 'grab')
-    .call(d3.drag()
-      .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
-      .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
-    )
-    .on('click', (e, d) => { e.stopPropagation(); selectNode(d); });
-
-  node.append('circle')
-    .attr('r', d => 20 + (d.columns || 4) * 1.5)
-    .attr('fill', d => d.isJoinTable ? 'rgba(251,191,36,.15)' : 'rgba(56,189,248,.15)')
-    .attr('stroke', d => d.isJoinTable ? '#fbbf24' : '#38bdf8');
-
-  node.append('text').attr('dy', -2).text(d => d.id);
-  node.append('text').attr('class', 'col-count').attr('dy', 12)
-    .text(d => `${d.columns || '?'} cols`);
-
-  function arcPath(d) {
-    const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
-    const parallel = links.filter(l =>
-      ((l.source.id||l.source)===(d.source.id||d.source) && (l.target.id||l.target)===(d.target.id||d.target)) ||
-      ((l.source.id||l.source)===(d.target.id||d.target) && (l.target.id||l.target)===(d.source.id||d.source))
-    );
-    const idx = parallel.indexOf(d);
-    if (parallel.length <= 1) return `M${d.source.x},${d.source.y}L${d.target.x},${d.target.y}`;
-    const dr = Math.sqrt(dx*dx + dy*dy) * (0.8 + idx * 0.6);
-    return `M${d.source.x},${d.source.y}A${dr},${dr} 0 0,${idx % 2} ${d.target.x},${d.target.y}`;
-  }
-
-  simulation.on('tick', () => {
-    link.attr('d', arcPath);
-    node.attr('transform', d => `translate(${d.x},${d.y})`);
-    linkLabel.each(function(d) {
-      const mx = (d.source.x + d.target.x) / 2;
-      const my = (d.source.y + d.target.y) / 2;
-      d3.select(this).attr('x', mx).attr('y', my);
-    });
-    linkLabelBg.each(function(d, i) {
-      const textEl = linkLabel.nodes()[i];
-      if (!textEl) return;
-      const bbox = textEl.getBBox();
-      d3.select(this).attr('x', bbox.x - 3).attr('y', bbox.y - 1)
-        .attr('width', bbox.width + 6).attr('height', bbox.height + 2);
-    });
-  });
-
-  window._graphRefs = { svg, nodes, links, link, node, linkLabel, linkLabelBg, simulation };
-}
-
-// ── Selection ──
-
-function clearSelection() {
-  selectedNode = null;
-  selectedLink = null;
-  d3.selectAll('.node').classed('selected', false);
-  d3.selectAll('.link').classed('selected', false);
-  document.getElementById('props-header').textContent = 'Properties';
-  document.getElementById('props-body').innerHTML =
-    '<div class="empty-state">Click a node or edge to inspect</div>';
-}
-
-function selectNode(d) {
-  selectedNode = d;
-  selectedLink = null;
-  d3.selectAll('.node').classed('selected', false);
-  d3.selectAll('.link').classed('selected', false);
-  d3.selectAll('.node').filter(n => n.id === d.id).classed('selected', true);
-  updatePropertiesPanel(d);
-}
-
-function selectLink(d) {
-  selectedLink = d;
-  selectedNode = null;
-  d3.selectAll('.node').classed('selected', false);
-  d3.selectAll('.link').classed('selected', false);
-  d3.selectAll('.link').filter(l => l === d).classed('selected', true);
-  updateEdgePropertiesPanel(d);
-}
-
-function updatePropertiesPanel(d) {
-  const header = document.getElementById('props-header');
-  const body = document.getElementById('props-body');
-  header.textContent = 'Collection: ' + d.id;
-
-  const collCfg = editState.collections[d.sourceTable || d.id] || {};
-  const targetName = collCfg.targetCollection || d.id;
-  const isJoin = d.isJoinTable || false;
-
-  const tableInfo = tablesInfo.find(t => t.name === (d.sourceTable || d.id));
-  const columns = tableInfo ? tableInfo.columns : [];
-  const excluded = collCfg.excludeFields || [];
-
-  let html = `
-    <div class="prop-group">
-      <div class="prop-group-title">Configuration</div>
-      <div class="prop-row">
-        <span class="prop-label">Target collection</span>
-        <input class="prop-input" value="${escHtml(targetName)}"
-          onchange="editCollection('${d.sourceTable || d.id}', 'targetCollection', this.value)">
-      </div>
-      <div class="prop-row">
-        <span class="prop-label">Join table</span>
-        <input type="checkbox" class="prop-checkbox" ${isJoin ? 'checked' : ''}
-          onchange="editCollectionJoin('${d.sourceTable || d.id}', this.checked, '${d.id}')">
-      </div>
-    </div>
-    <div class="prop-group">
-      <div class="prop-group-title">Source</div>
-      <div class="prop-row"><span class="prop-label">Table</span><span class="prop-value">${d.sourceTable || d.id}</span></div>
-      <div class="prop-row"><span class="prop-label">Columns</span><span class="prop-value">${d.columns || '?'}</span></div>
-      <div class="prop-row"><span class="prop-label">Primary key</span><span class="prop-value">${(d.pk || []).join(', ') || '–'}</span></div>
-    </div>`;
-
-  if (columns.length) {
-    html += `<div class="prop-group"><div class="prop-group-title">Fields</div><div class="field-list">`;
-    columns.forEach(c => {
-      const isExcl = excluded.includes(c.name);
-      html += `
-        <div class="field-item ${isExcl ? 'excluded' : ''}"
-             onclick="toggleField('${d.sourceTable || d.id}', '${c.name}')">
-          ${c.isPk ? '<span class="field-badge pk">PK</span>' : ''}
-          ${c.isFk ? '<span class="field-badge fk">FK</span>' : ''}
-          <span>${c.name}</span>
-          <span class="field-type">${c.type}</span>
-        </div>`;
-    });
-    html += '</div></div>';
-  }
-
-  body.innerHTML = html;
-}
-
-function updateEdgePropertiesPanel(d) {
-  const header = document.getElementById('props-header');
-  const body = document.getElementById('props-body');
-  header.textContent = 'Edge: ' + d.edgeCollection;
-
-  const edgeIdx = editState.edges.findIndex(e =>
-    e.edgeCollection === d.edgeCollection ||
-    (e.fromCollection === (d.source.id || d.source) && e.toCollection === (d.target.id || d.target) && e.fromField === d.fromField)
-  );
-
-  body.innerHTML = `
-    <div class="prop-group">
-      <div class="prop-group-title">Edge Configuration</div>
-      <div class="prop-row">
-        <span class="prop-label">Edge collection</span>
-        <input class="prop-input" value="${escHtml(d.edgeCollection)}"
-          onchange="editEdgeName(${edgeIdx}, this.value, '${d.edgeCollection}')">
-      </div>
-    </div>
-    <div class="prop-group">
-      <div class="prop-group-title">Relationship</div>
-      <div class="prop-row"><span class="prop-label">From</span><span class="prop-value" style="color:var(--accent)">${d.source.id || d.source}</span></div>
-      <div class="prop-row"><span class="prop-label">To</span><span class="prop-value" style="color:var(--green)">${d.target.id || d.target}</span></div>
-      <div class="prop-row"><span class="prop-label">From field</span><span class="prop-value" style="color:var(--yellow)">${d.fromField}</span></div>
-      <div class="prop-row"><span class="prop-label">To field</span><span class="prop-value">${d.toField}</span></div>
-    </div>`;
-}
-
-// ── Edit state mutations ──
-
-function editCollection(sourceTable, key, value) {
-  if (!editState.collections[sourceTable]) {
-    editState.collections[sourceTable] = {};
-  }
-  editState.collections[sourceTable][key] = value;
-}
-
-function editCollectionJoin(sourceTable, checked, nodeId) {
-  if (!editState.collections[sourceTable]) {
-    editState.collections[sourceTable] = {};
-  }
-  editState.collections[sourceTable].isJoinTable = checked;
-  const nodeData = window._graphRefs?.nodes?.find(n => n.id === nodeId);
-  if (nodeData) {
-    nodeData.isJoinTable = checked;
-    d3.selectAll('.node').filter(n => n.id === nodeId).select('circle')
-      .attr('fill', checked ? 'rgba(251,191,36,.15)' : 'rgba(56,189,248,.15)')
-      .attr('stroke', checked ? '#fbbf24' : '#38bdf8');
-  }
-}
-
-function toggleField(sourceTable, fieldName) {
-  if (!editState.collections[sourceTable]) {
-    editState.collections[sourceTable] = {};
-  }
-  if (!editState.collections[sourceTable].excludeFields) {
-    editState.collections[sourceTable].excludeFields = [];
-  }
-  const arr = editState.collections[sourceTable].excludeFields;
-  const idx = arr.indexOf(fieldName);
-  if (idx >= 0) arr.splice(idx, 1);
-  else arr.push(fieldName);
-  if (selectedNode) updatePropertiesPanel(selectedNode);
-}
-
-function editEdgeName(idx, newName, oldName) {
-  if (idx >= 0 && editState.edges[idx]) {
-    editState.edges[idx].edgeCollection = newName;
-  }
-  if (window._graphRefs) {
-    const lnk = window._graphRefs.links.find(l => l.edgeCollection === oldName);
-    if (lnk) {
-      lnk.edgeCollection = newName;
-      window._graphRefs.linkLabel.text(d => d.edgeCollection);
-    }
-  }
-}
-
 // ── Toolbar actions ──
 
 async function validateMapping() {
@@ -933,16 +2243,69 @@ async function validateMapping() {
   }
 }
 
+// Convert the camelCase editState into the snake_case payload Pydantic expects.
+function buildMappingPayload() {
+  const collections = {};
+  for (const [key, c] of Object.entries(editState.collections || {})) {
+    const entry = {
+      source_table: c.sourceTable || key,
+      target_collection: c.targetCollection || key,
+      collection_type: c.collectionType || 'document',
+      is_join_table: !!c.isJoinTable,
+    };
+    if (c.fieldMappings && Object.keys(c.fieldMappings).length) entry.field_mappings = c.fieldMappings;
+    if (c.excludeFields && c.excludeFields.length) entry.exclude_fields = c.excludeFields;
+    if (c.includeFields) entry.include_fields = c.includeFields;
+    if (c.fieldExpressions && c.fieldExpressions.length) {
+      entry.field_expressions = c.fieldExpressions.map(fx => ({
+        target: fx.target,
+        sources: fx.sources || [],
+        expression: fx.expression || '',
+        engine: fx.engine || 'aql',
+        description: fx.description || '',
+      }));
+    }
+    collections[key] = entry;
+  }
+
+  const splitFields = (v) => {
+    if (Array.isArray(v)) return v.map(s => String(s).trim()).filter(Boolean);
+    if (v === undefined || v === null) return [];
+    const s = String(v);
+    if (s.indexOf(',') >= 0) return s.split(',').map(x => x.trim()).filter(Boolean);
+    return s.trim() ? [s.trim()] : [];
+  };
+  const edges = (editState.edges || []).map(e => {
+    const fromFields = splitFields(e.fromField);
+    const toFields = splitFields(e.toField);
+    const base = {
+      edge_collection: e.edgeCollection,
+      from_collection: e.fromCollection,
+      to_collection: e.toCollection,
+    };
+    if (fromFields.length > 1 || toFields.length > 1) {
+      base.from_fields = fromFields;
+      base.to_fields = toFields;
+    } else {
+      base.from_field = fromFields[0] || '';
+      base.to_field = toFields[0] || '';
+    }
+    return base;
+  });
+
+  return {
+    source_schema: editState.sourceSchema || 'public',
+    collections,
+    edges,
+    type_overrides: editState.typeOverrides || {},
+    key_separator: editState.keySeparator || '_',
+  };
+}
+
 async function saveMapping() {
   if (!currentProject) return;
   try {
-    const payload = {
-      source_schema: editState.sourceSchema,
-      collections: editState.collections,
-      edges: editState.edges,
-      type_overrides: editState.typeOverrides,
-      key_separator: editState.keySeparator
-    };
+    const payload = buildMappingPayload();
     await apiFetch(`/api/projects/${currentProject}/mapping`, {
       method: 'PUT',
       body: JSON.stringify(payload)
@@ -956,13 +2319,7 @@ async function saveMapping() {
 async function showDiff() {
   if (!currentProject) return;
   try {
-    const payload = {
-      source_schema: editState.sourceSchema,
-      collections: editState.collections,
-      edges: editState.edges,
-      type_overrides: editState.typeOverrides,
-      key_separator: editState.keySeparator
-    };
+    const payload = buildMappingPayload();
     const result = await apiFetch(`/api/projects/${currentProject}/diff`, {
       method: 'POST',
       body: JSON.stringify(payload)
@@ -1006,7 +2363,6 @@ function exportYaml() {
     key_separator: editState.keySeparator
   };
   const yamlStr = toYaml(yamlObj).trim();
-
   openModal('Export YAML', `<textarea class="yaml-area" id="yaml-output" readonly>${escHtml(yamlStr)}</textarea>`,
     `<button class="btn" onclick="copyYaml()">Copy</button>
      <button class="btn btn-primary" onclick="downloadYaml()">Download</button>`);
@@ -1031,28 +2387,75 @@ function downloadYaml() {
   toast('Download started', 'success');
 }
 
+function showLoadErrorDetail(idx) {
+  const rec = (window._historyCache || [])[idx];
+  if (!rec) return;
+  const when = rec.completed_at || rec.started_at || '';
+  const msg = rec.error_message || '(no error message recorded)';
+  const type = rec.error_type || 'Error';
+  let html = '<div class="prop-group">';
+  html += `<div class="prop-group-title">${escHtml(type)}</div>`;
+  html += `<div class="prop-row"><span class="prop-label">Load ID</span><code>${escHtml(rec.id)}</code></div>`;
+  html += `<div class="prop-row"><span class="prop-label">Type</span><span>${escHtml(rec.load_type || '')}</span></div>`;
+  html += `<div class="prop-row"><span class="prop-label">When</span><span>${escHtml(String(when))}</span></div>`;
+  html += '</div>';
+  html += '<div class="prop-group"><div class="prop-group-title">Error Message</div>';
+  html += `<pre style="white-space:pre-wrap;word-break:break-word;background:var(--panel);padding:12px;border-radius:6px;color:var(--red);font-size:12px;margin:0">${escHtml(msg)}</pre>`;
+  html += '</div>';
+  html += '<div class="prop-group"><div class="prop-group-title">Likely causes</div>';
+  html += '<ul style="margin:4px 0 0 18px;line-height:1.6;color:var(--text-muted);font-size:12px">';
+  if (/connect|refused|timeout|unreachable|within limit/i.test(msg)) {
+    html += '<li>Target ArangoDB is not reachable at the configured endpoint.</li>';
+    html += '<li>Verify the target endpoint / database / credentials in Settings.</li>';
+    html += '<li>If using Docker, ensure the container is running and the port is published.</li>';
+  } else if (/auth|401|403|password|credential/i.test(msg)) {
+    html += '<li>Target authentication failed — check username/password.</li>';
+  } else if (/schema|column|table|relation/i.test(msg)) {
+    html += '<li>Source schema drift — re-introspect the source and re-validate the mapping.</li>';
+  } else {
+    html += '<li>Check server logs for the full stack trace.</li>';
+  }
+  html += '</ul></div>';
+  openModal('Load Failure Details', html);
+}
+
 async function showHistory() {
   if (!currentProject) return;
   try {
     const history = await apiFetch(`/api/projects/${currentProject}/history`);
     const rows = Array.isArray(history) ? history : (history.runs || history.entries || []);
-
     if (!rows.length) {
       openModal('Ingestion History', '<div class="empty-state">No history entries</div>');
       return;
     }
-
-    const cols = ['id', 'type', 'status', 'rows', 'errors', 'started_at'];
+    window._historyCache = rows;
+    const cols = [
+      { key: 'id', label: 'ID' },
+      { key: 'load_type', label: 'TYPE' },
+      { key: 'status', label: 'STATUS' },
+      { key: 'rows_loaded', label: 'ROWS' },
+      { key: 'errors', label: 'ERRORS' },
+      { key: 'started_at', label: 'STARTED_AT' },
+      { key: 'error_message', label: 'ERROR' },
+    ];
     let html = '<table class="data-table"><thead><tr>';
-    cols.forEach(c => { html += `<th>${c}</th>`; });
+    cols.forEach(c => { html += `<th>${c.label}</th>`; });
     html += '</tr></thead><tbody>';
-    rows.forEach(r => {
-      html += '<tr>';
+    rows.forEach((r, idx) => {
+      const isFailed = r.status === 'failed';
+      html += `<tr${isFailed ? ' style="cursor:pointer" onclick="showLoadErrorDetail(' + idx + ')" title="Click for full error"' : ''}>`;
       cols.forEach(c => {
-        let v = r[c] ?? '';
-        if (c === 'status') {
+        let v = r[c.key];
+        if (v === undefined || v === null) v = '';
+        if (c.key === 'status') {
           const color = v === 'completed' || v === 'success' ? 'var(--green)' : v === 'failed' ? 'var(--red)' : 'var(--yellow)';
           html += `<td style="color:${color};font-weight:600">${escHtml(String(v))}</td>`;
+        } else if (c.key === 'error_message') {
+          const short = String(v).length > 80 ? String(v).slice(0, 80) + '\u2026' : String(v);
+          html += `<td style="color:var(--red);max-width:400px">${escHtml(short)}</td>`;
+        } else if (c.key === 'id') {
+          const short = String(v).length > 12 ? String(v).slice(0, 8) + '\u2026' : String(v);
+          html += `<td title="${escHtml(String(v))}"><code>${escHtml(short)}</code></td>`;
         } else {
           html += `<td>${escHtml(String(v))}</td>`;
         }
@@ -1066,11 +2469,1852 @@ async function showHistory() {
   }
 }
 
+// ── Load modal + progress ──
+
+function showLoadModal() {
+  if (!currentProject) return;
+  const html = `
+    <div class="prop-group">
+      <div class="prop-group-title">Ingestion Configuration</div>
+      <div class="prop-row">
+        <span class="prop-label">Workers</span>
+        <input class="prop-input" type="number" id="load-workers" value="${editState.defaultWorkers || 1}" min="1" max="16">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Batch size</span>
+        <input class="prop-input" type="number" id="load-batch" value="${editState.defaultBatchSize || 10000}" min="100">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">On duplicate</span>
+        <select class="prop-input" id="load-on-dup" style="width:150px">
+          <option value="replace">replace</option>
+          <option value="ignore">ignore</option>
+          <option value="update">update</option>
+        </select>
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Drop collections</span>
+        <input type="checkbox" class="prop-checkbox" id="load-drop">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Include tables</span>
+        <input class="prop-input" id="load-include" placeholder="comma-separated (optional)" style="width:200px">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Dry run</span>
+        <input type="checkbox" class="prop-checkbox" id="load-dry-run">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Graph name</span>
+        <input class="prop-input" id="load-graph-name" placeholder="optional">
+      </div>
+    </div>
+  `;
+  openModal('Load Data', html,
+    '<button class="btn" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-primary" onclick="executeLoad()">Run</button>');
+}
+
+async function executeLoad() {
+  const body = {
+    workers: parseInt(document.getElementById('load-workers').value) || 1,
+    batch_size: parseInt(document.getElementById('load-batch').value) || 10000,
+    on_duplicate: document.getElementById('load-on-dup').value,
+    drop_collections: document.getElementById('load-drop').checked,
+    dry_run: document.getElementById('load-dry-run').checked,
+    graph_name: document.getElementById('load-graph-name').value || null,
+  };
+  const includeTables = document.getElementById('load-include').value.trim();
+  if (includeTables) body.include_tables = includeTables.split(',').map(s => s.trim());
+  closeModal();
+
+  try {
+    const result = await apiFetch(`/api/projects/${currentProject}/load`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+    toast('Load started', 'success');
+    showProgressView(result.load_id);
+  } catch (e) {
+    let detail = e.message;
+    let parsed = null;
+    try { parsed = JSON.parse(e.message); } catch (_) {}
+    if (parsed && parsed.detail) {
+      if (typeof parsed.detail === 'string') {
+        detail = parsed.detail;
+      } else if (parsed.detail.validation_errors) {
+        const errs = parsed.detail.validation_errors;
+        const items = Array.isArray(errs) ? errs : [String(errs)];
+        let html = '<div class="prop-group"><div class="prop-group-title">Validation errors</div>';
+        html += '<ul style="margin:4px 0 0 18px;line-height:1.6;color:var(--red);font-size:12px">';
+        items.forEach(it => { html += `<li>${escHtml(typeof it === 'string' ? it : JSON.stringify(it))}</li>`; });
+        html += '</ul></div>';
+        html += '<div class="prop-group"><div class="prop-group-title">Next steps</div><div style="color:var(--text-muted);font-size:12px">Fix the mapping or re-introspect the source schema, then try again.</div></div>';
+        openModal('Cannot start load', html);
+        return;
+      } else {
+        detail = JSON.stringify(parsed.detail);
+      }
+    }
+    let html = '<div class="prop-group"><div class="prop-group-title">The load did not start</div>';
+    html += `<pre style="white-space:pre-wrap;word-break:break-word;color:var(--red);font-size:12px;margin:0">${escHtml(detail)}</pre></div>`;
+    openModal('Cannot start load', html);
+  }
+}
+
+// Legacy overlay-based progress view replaced by floating card (Phase D).
+// Thin shims keep external callers working.
+function showProgressView(loadId) { return showProgressViewFloating(loadId); }
+function closeProgressView() { closeFloatingCard('load-progress'); }
+
+// ── Auto-Map ──
+
+async function autoMap() {
+  if (!currentProject) return;
+  try {
+    toast('Generating default mapping\u2026', 'info');
+    const config = await apiFetch(`/api/projects/${currentProject}/auto-map`, { method: 'POST' });
+
+    const collections = {};
+    for (const [key, c] of Object.entries(config.collections || {})) {
+      const rawFx = c.field_expressions || c.fieldExpressions || [];
+      collections[key] = {
+        sourceTable: c.source_table || c.sourceTable || key,
+        targetCollection: c.target_collection || c.targetCollection || key,
+        collectionType: c.collection_type || c.collectionType || 'document',
+        isJoinTable: c.is_join_table || c.isJoinTable || false,
+        fieldMappings: c.field_mappings || c.fieldMappings || {},
+        excludeFields: c.exclude_fields || c.excludeFields || [],
+        includeFields: c.include_fields || c.includeFields || null,
+        fieldExpressions: rawFx.map(fx => ({
+          target: fx.target,
+          sources: fx.sources || [],
+          expression: fx.expression || '',
+          engine: fx.engine || 'aql',
+          description: fx.description || '',
+        })),
+        allFields: [],
+      };
+    }
+
+    for (const [key, coll] of Object.entries(collections)) {
+      const t = tablesInfo.find(t => t.name === (coll.sourceTable || key));
+      if (t) coll.allFields = t.columns.map(c => c.name);
+    }
+
+    editState.collections = collections;
+    editState.edges = (config.edges || []).map(e => ({
+      edgeCollection: e.edge_collection || e.edgeCollection || '',
+      fromCollection: e.from_collection || e.fromCollection || '',
+      toCollection: e.to_collection || e.toCollection || '',
+      fromField: e.from_field || (e.from_fields ? e.from_fields.join(', ') : (e.fromField || '')),
+      toField: e.to_field || (e.to_fields ? e.to_fields.join(', ') : (e.toField || '')),
+    }));
+    editState.typeOverrides = config.type_overrides || config.typeOverrides || {};
+    editState.keySeparator = config.key_separator || config.keySeparator || '_';
+    editState.sourceSchema = config.source_schema || config.sourceSchema || 'public';
+
+    renderMapper();
+    clearSelection();
+    toast('Default mapping generated', 'success');
+  } catch (e) {
+    toast('Auto-map failed: ' + e.message, 'error');
+  }
+}
+
+// ── Settings ──
+
+function showSettings() {
+  const html = `
+    <div class="prop-group">
+      <div class="prop-group-title">Default Ingestion Settings</div>
+      <div class="prop-row">
+        <span class="prop-label">Workers (parallel threads)</span>
+        <input class="prop-input" type="number" id="settings-workers" value="${editState.defaultWorkers || 1}" min="1" max="16">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Batch size</span>
+        <input class="prop-input" type="number" id="settings-batch" value="${editState.defaultBatchSize || 10000}" min="100">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Key separator</span>
+        <input class="prop-input" id="settings-keysep" value="${escHtml(editState.keySeparator || '_')}">
+      </div>
+      <div class="prop-row">
+        <span class="prop-label">Source schema</span>
+        <input class="prop-input" id="settings-schema" value="${escHtml(editState.sourceSchema || 'public')}">
+      </div>
+    </div>
+  `;
+  openModal('Settings', html, '<button class="btn btn-primary" onclick="saveSettings()">Save</button>');
+}
+
+function saveSettings() {
+  editState.defaultWorkers = parseInt(document.getElementById('settings-workers').value) || 1;
+  editState.defaultBatchSize = parseInt(document.getElementById('settings-batch').value) || 10000;
+  const keySepEl = document.getElementById('settings-keysep');
+  if (keySepEl) editState.keySeparator = keySepEl.value;
+  const schemaEl = document.getElementById('settings-schema');
+  if (schemaEl) editState.sourceSchema = schemaEl.value;
+  closeModal();
+  toast('Settings saved', 'success');
+}
+
+// ── Canvas click to clear ──
+
+document.getElementById('mapper-canvas').addEventListener('click', e => {
+  if (e.target === document.getElementById('mapper-canvas') || e.target === document.getElementById('connector-svg')) {
+    clearSelection();
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase A: Shared primitives (context menu, shortcuts, fc, help) ══
+// ════════════════════════════════════════════════════════════════════
+
+// ── Context menu ──
+let _ctxOpen = false;
+let _ctxItems = null;
+
+function openContextMenu(items, x, y, opts = {}) {
+  closeContextMenu();
+  if (!items || !items.length) return;
+  const el = document.getElementById('ctx-menu');
+  let html = '';
+  if (opts.header) {
+    html += `<div class="ctx-menu-header">${escHtml(opts.header)}</div>`;
+  }
+  items.forEach((it, idx) => {
+    if (it === '-' || it.separator) {
+      html += '<div class="ctx-separator"></div>';
+      return;
+    }
+    const icon = it.icon ? escHtml(it.icon) : '';
+    const sc = it.shortcut ? `<span class="ctx-item-shortcut">${escHtml(it.shortcut)}</span>` : '';
+    const arrow = it.submenu ? '<span class="ctx-item-arrow">&#9656;</span>' : '';
+    const cls = ['ctx-item'];
+    if (it.danger) cls.push('danger');
+    if (it.disabled) cls.push('disabled');
+    html += `<div class="${cls.join(' ')}" role="menuitem" data-idx="${idx}" tabindex="-1">
+      <span class="ctx-item-icon">${icon}</span>
+      <span class="ctx-item-label">${escHtml(it.label || '')}</span>
+      ${sc}${arrow}
+    </div>`;
+  });
+  el.innerHTML = html;
+  el.classList.add('open');
+  // Position with viewport clamp
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const pad = 6;
+  const rect = el.getBoundingClientRect();
+  // first set near requested point to measure
+  el.style.left = (x + 1) + 'px';
+  el.style.top = (y + 1) + 'px';
+  const m = el.getBoundingClientRect();
+  let px = x, py = y;
+  if (px + m.width + pad > vw) px = Math.max(pad, vw - m.width - pad);
+  if (py + m.height + pad > vh) py = Math.max(pad, vh - m.height - pad);
+  el.style.left = px + 'px';
+  el.style.top = py + 'px';
+
+  _ctxItems = items;
+  _ctxOpen = true;
+
+  el.querySelectorAll('.ctx-item').forEach(node => {
+    const idx = parseInt(node.dataset.idx);
+    const it = items[idx];
+    if (!it || it.disabled) return;
+    node.addEventListener('click', e => {
+      e.stopPropagation();
+      closeContextMenu();
+      if (it.submenu) {
+        const r = node.getBoundingClientRect();
+        openContextMenu(it.submenu, r.right - 4, r.top, { header: it.label });
+      } else if (typeof it.onClick === 'function') {
+        try { it.onClick(); } catch (err) { toast('Action failed: ' + err.message, 'error'); }
+      }
+    });
+  });
+}
+
+function closeContextMenu() {
+  const el = document.getElementById('ctx-menu');
+  if (el) { el.classList.remove('open'); el.innerHTML = ''; }
+  _ctxOpen = false;
+  _ctxItems = null;
+}
+
+document.addEventListener('click', e => {
+  if (_ctxOpen && !e.target.closest('#ctx-menu')) closeContextMenu();
+});
+document.addEventListener('scroll', closeContextMenu, true);
+window.addEventListener('resize', closeContextMenu);
+window.addEventListener('blur', closeContextMenu);
+
+// ── Keyboard shortcut registry ──
+const _shortcuts = []; // { combo, comboNorm, description, scope, handler }
+
+function _normalizeCombo(combo) {
+  // Order: ctrl, meta, alt, shift, key
+  const parts = combo.toLowerCase().split('+').map(s => s.trim());
+  const flags = { ctrl: false, meta: false, alt: false, shift: false, key: '' };
+  for (const p of parts) {
+    if (p === 'ctrl' || p === 'control') flags.ctrl = true;
+    else if (p === 'meta' || p === 'cmd' || p === 'command') flags.meta = true;
+    else if (p === 'alt' || p === 'option') flags.alt = true;
+    else if (p === 'shift') flags.shift = true;
+    else flags.key = p;
+  }
+  return flags;
+}
+
+function registerShortcut(combo, description, scope, handler) {
+  _shortcuts.push({
+    combo, description, scope, handler, comboNorm: _normalizeCombo(combo),
+  });
+}
+
+function _matchShortcut(e, scope) {
+  const targetIsInput = e.target.matches && e.target.matches('input, textarea, select, [contenteditable], [contenteditable="true"]');
+  for (const s of _shortcuts) {
+    if (s.scope === 'global' && targetIsInput) continue;
+    if (s.scope !== 'global' && s.scope !== scope) continue;
+    const c = s.comboNorm;
+    if (c.ctrl !== e.ctrlKey) continue;
+    if (c.meta !== e.metaKey) continue;
+    if (c.alt !== e.altKey) continue;
+    if (c.shift !== e.shiftKey) continue;
+    const key = (e.key || '').toLowerCase();
+    if (c.key === 'enter' && key !== 'enter') continue;
+    if (c.key === 'escape' && key !== 'escape') continue;
+    if (c.key !== 'enter' && c.key !== 'escape' && c.key !== key) continue;
+    return s;
+  }
+  return null;
+}
+
+// ── Help overlay ──
+function openHelpModal() {
+  const groups = { global: [], canvas: [], modal: [] };
+  _shortcuts.forEach(s => { (groups[s.scope] || groups.global).push(s); });
+  let html = '<p style="color:var(--text-muted);margin-bottom:12px;font-size:12px">' +
+    'Right-click any table, column, target collection, function circle, edge or the canvas itself for context actions. ' +
+    'Press <kbd>?</kbd> to reopen this overlay.</p>';
+  for (const [scope, list] of Object.entries(groups)) {
+    if (!list.length) continue;
+    html += `<div class="prop-group"><div class="prop-group-title">${scope} shortcuts</div>`;
+    html += '<table class="data-table"><tbody>';
+    list.forEach(s => {
+      const combo = s.combo.split('+').map(p => `<kbd>${escHtml(p.trim())}</kbd>`).join(' + ');
+      html += `<tr><td style="white-space:nowrap;width:160px">${combo}</td><td>${escHtml(s.description)}</td></tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+  openModal('Help & shortcuts', html, '<button class="btn btn-primary" onclick="closeModal()">Got it</button>');
+}
+
+// ── Floating card primitive ──
+const _floatingCards = new Map(); // id -> {el, dragOffset, minimized}
+
+function openFloatingCard({ id, title, body, position, minimized, status, actions }) {
+  let card = _floatingCards.get(id);
+  if (!card) {
+    const el = document.createElement('div');
+    el.className = 'floating-card';
+    el.dataset.fcId = id;
+    el.innerHTML = `
+      <div class="fc-header">
+        <span class="fc-title"></span>
+        <span class="fc-status" style="display:none"></span>
+        <button class="fc-btn" data-act="min" title="Minimize">&minus;</button>
+        <button class="fc-btn" data-act="close" title="Close">&times;</button>
+      </div>
+      <div class="fc-body"></div>
+      <div class="fc-actions" style="display:none"></div>
+    `;
+    document.body.appendChild(el);
+    card = { el, minimized: false };
+    _floatingCards.set(id, card);
+
+    // drag
+    const header = el.querySelector('.fc-header');
+    let drag = null;
+    header.addEventListener('mousedown', e => {
+      if (e.target.closest('.fc-btn')) return;
+      if (card.minimized) { restoreFloatingCard(id); return; }
+      const r = el.getBoundingClientRect();
+      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+      if (!drag) return;
+      el.style.left = (e.clientX - drag.dx) + 'px';
+      el.style.top = (e.clientY - drag.dy) + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', () => { drag = null; });
+
+    el.querySelector('[data-act=min]').addEventListener('click', e => {
+      e.stopPropagation(); minimizeFloatingCard(id);
+    });
+    el.querySelector('[data-act=close]').addEventListener('click', e => {
+      e.stopPropagation(); closeFloatingCard(id);
+    });
+  }
+  if (title !== undefined) card.el.querySelector('.fc-title').textContent = title;
+  if (body !== undefined) card.el.querySelector('.fc-body').innerHTML = body;
+  if (status !== undefined) {
+    const s = card.el.querySelector('.fc-status');
+    if (status === null || status === '') {
+      s.style.display = 'none';
+    } else {
+      s.style.display = '';
+      s.className = 'fc-status ' + (status.kind || '');
+      s.textContent = status.label || '';
+    }
+  }
+  if (actions !== undefined) {
+    const a = card.el.querySelector('.fc-actions');
+    if (!actions || !actions.length) { a.style.display = 'none'; a.innerHTML = ''; }
+    else {
+      a.style.display = '';
+      a.innerHTML = '';
+      actions.forEach(act => {
+        const b = document.createElement('button');
+        b.className = 'btn ' + (act.kind === 'primary' ? 'btn-primary' : (act.kind === 'danger' ? 'btn-danger' : ''));
+        b.textContent = act.label;
+        b.addEventListener('click', () => { try { act.onClick && act.onClick(); } catch(e){} });
+        a.appendChild(b);
+      });
+    }
+  }
+  // Position
+  if (position) {
+    if (position.right !== undefined) card.el.style.right = position.right + 'px';
+    if (position.bottom !== undefined) card.el.style.bottom = position.bottom + 'px';
+    if (position.left !== undefined) card.el.style.left = position.left + 'px';
+    if (position.top !== undefined) card.el.style.top = position.top + 'px';
+  } else if (!card.el.style.right && !card.el.style.left) {
+    card.el.style.right = '20px';
+    card.el.style.bottom = '100px';
+  }
+  if (minimized) minimizeFloatingCard(id);
+  else if (card.minimized) restoreFloatingCard(id);
+  return card;
+}
+
+function minimizeFloatingCard(id) {
+  const card = _floatingCards.get(id);
+  if (!card) return;
+  card.minimized = true;
+  card.el.classList.add('minimized');
+  // dock to tray (set its position to be relative to tray)
+  const tray = document.getElementById('fc-tray');
+  card.el.style.position = 'static';
+  tray.appendChild(card.el);
+}
+
+function restoreFloatingCard(id) {
+  const card = _floatingCards.get(id);
+  if (!card) return;
+  card.minimized = false;
+  card.el.classList.remove('minimized');
+  // put back as fixed positioned floating card
+  document.body.appendChild(card.el);
+  card.el.style.position = 'fixed';
+  card.el.style.right = '20px';
+  card.el.style.bottom = '100px';
+  card.el.style.left = '';
+  card.el.style.top = '';
+}
+
+function closeFloatingCard(id) {
+  const card = _floatingCards.get(id);
+  if (!card) return;
+  card.el.remove();
+  _floatingCards.delete(id);
+}
+
+function isFloatingCardOpen(id) {
+  return _floatingCards.has(id);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase B: Right-click context menus on every entity            ══
+// ════════════════════════════════════════════════════════════════════
+
+function _delegate(selector, handler) {
+  return function (e) {
+    const el = e.target.closest(selector);
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
+    handler(el, e);
+  };
+}
+
+// Source-table card menu
+function _menuSourceTable(tableName) {
+  const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const isMapped = !!collEntry;
+  return [
+    { label: isMapped ? 'Re-run auto-map for this table' : 'Auto-map this table', icon: '\u2728', onClick: () => autoMapTable(tableName) },
+    { label: collapsedTables.has(tableName) ? 'Expand columns' : 'Collapse columns', icon: collapsedTables.has(tableName) ? '\u25BE' : '\u25B8',
+      onClick: () => { onSourceCardClick(tableName); } },
+    '-',
+    { label: 'Inspect table', icon: '\u2139', onClick: () => onSourceCardClick(tableName) },
+    { label: 'Inspect FKs', icon: '\u29C9', onClick: () => showSourceFkSummary(tableName) },
+    { label: 'Preview data', icon: '\u26ED', onClick: () => previewTable(currentSourceName, tableName) },
+    '-',
+    { label: 'Copy table name', icon: '\u29C9', onClick: () => copyToClipboard(tableName) },
+    { label: 'Expand all tables', onClick: () => expandAllTables(true) },
+    { label: 'Collapse all tables', onClick: () => expandAllTables(false) },
+    '-',
+    isMapped
+      ? { label: 'Remove mapping', danger: true, icon: '\u2716', onClick: () => removeTableMapping(tableName) }
+      : { label: 'Add as document collection', icon: '\u2795', onClick: () => addTableMapping(tableName) },
+  ];
+}
+
+// Source column dot menu
+function _menuSourceColumn(tableName, colName) {
+  const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const collKey = collEntry ? collEntry[0] : null;
+  const coll = collEntry ? collEntry[1] : null;
+  const tableInfo = tablesInfo.find(t => t.name === tableName);
+  const colInfo = tableInfo ? tableInfo.columns.find(c => c.name === colName) : null;
+  const isExcluded = coll && (coll.excludeFields || []).includes(colName);
+  const targetColls = Object.entries(editState.collections)
+    .filter(([k, c]) => c.collectionType !== 'edge' && (c.sourceTable || k) === tableName)
+    .map(([k, c]) => ({ key: k, name: c.targetCollection || k }));
+  const mapToSubmenu = [];
+  if (targetColls.length === 0) {
+    mapToSubmenu.push({ label: '(no target collection for this table)', disabled: true });
+  } else {
+    for (const tc of targetColls) {
+      const props = (tableInfo ? tableInfo.columns.map(c => c.name) : []).filter(c => c !== colName);
+      mapToSubmenu.push({
+        label: '\u2192 ' + tc.name + '._key',
+        onClick: () => mapColumnToTargetProp(tableName, colName, tc.key, '_key'),
+      });
+      props.slice(0, 12).forEach(prop => {
+        mapToSubmenu.push({
+          label: '\u2192 ' + tc.name + '.' + prop,
+          onClick: () => mapColumnToTargetProp(tableName, colName, tc.key, prop),
+        });
+      });
+      mapToSubmenu.push({
+        label: 'Custom property name\u2026',
+        onClick: () => promptMapToProp(tableName, colName, tc.key),
+      });
+    }
+  }
+  return [
+    { label: 'Map to\u2026', icon: '\u2192', submenu: mapToSubmenu },
+    { label: isExcluded ? 'Include in mapping' : 'Exclude from mapping',
+      icon: isExcluded ? '\u2713' : '\u2716',
+      onClick: () => collKey && toggleField(collKey, colName) },
+    '-',
+    { label: 'Inspect type', icon: '\u2139', onClick: () => {
+      const t = colInfo ? colInfo.type : 'unknown';
+      const flags = [colInfo?.isPk && 'PK', colInfo?.isFk && 'FK'].filter(Boolean).join(', ') || 'regular';
+      toast(`${tableName}.${colName}: ${t} (${flags})`, 'info');
+    } },
+    { label: 'Copy column name', icon: '\u29C9', onClick: () => copyToClipboard(colName) },
+  ];
+}
+
+// Target collection card menu
+function _menuTargetCollection(collKey) {
+  const coll = editState.collections[collKey];
+  if (!coll) return [];
+  const targetName = coll.targetCollection || collKey;
+  const isEdge = coll.collectionType === 'edge';
+  return [
+    { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => promptRenameCollection(collKey) },
+    { label: isEdge ? 'Convert to document collection' : 'Convert to edge collection',
+      icon: '\u21C4', onClick: () => toggleCollectionType(collKey) },
+    '-',
+    { label: 'Add edge from this collection\u2026', icon: '\u2192', onClick: () => beginAddEdgeFrom(targetName) },
+    { label: 'Reveal source table', icon: '\u2139', onClick: () => revealSourceTable(coll.sourceTable || collKey) },
+    '-',
+    { label: 'Inspect', icon: '\u2139', onClick: () => onTargetCardClick(collKey) },
+    { label: 'Copy collection name', icon: '\u29C9', onClick: () => copyToClipboard(targetName) },
+    '-',
+    { label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => removeTargetMapping(collKey) },
+  ];
+}
+
+// Target property menu
+function _menuTargetProperty(collKey, prop) {
+  const coll = editState.collections[collKey];
+  return [
+    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop) },
+    { label: 'Mark as _key source', icon: '\u29B7', disabled: prop === '_key', onClick: () => markPropAsKey(collKey, prop) },
+    { label: 'Unmap', danger: true, icon: '\u2716', onClick: () => unmapTargetProp(collKey, prop) },
+    '-',
+    { label: 'Copy property name', icon: '\u29C9', onClick: () => copyToClipboard(prop) },
+  ];
+}
+
+// Function-circle menu
+function _menuFunctionCircle(collKey, prop) {
+  const coll = editState.collections[collKey];
+  const fx = coll ? findFieldExpression(coll, prop) : null;
+  return [
+    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop) },
+    { label: 'Change engine', icon: '\u2699', submenu: [
+      { label: 'AQL', onClick: () => setFxEngine(collKey, prop, 'aql') },
+      { label: 'KSQL', onClick: () => setFxEngine(collKey, prop, 'ksql') },
+      { label: 'Python', onClick: () => setFxEngine(collKey, prop, 'python') },
+    ]},
+    '-',
+    { label: 'Convert to identity', icon: '\u21BA',
+      disabled: !fx || !fx.expression,
+      onClick: () => { removeFieldExpression(collKey, prop); markDirty(); renderMapper(); } },
+    { label: 'Remove function', danger: true, icon: '\u2716',
+      onClick: () => { removeFieldExpression(collKey, prop); markDirty(); renderMapper(); } },
+  ];
+}
+
+// Connector menu
+function _menuConnector(pathEl) {
+  const t = pathEl.dataset.type;
+  const items = [{ label: 'Inspect', icon: '\u2139', onClick: () => onConnectorClick(pathEl) }];
+  if (t === 'column' || t === 'fn-output') {
+    const collKey = pathEl.dataset.collKey;
+    const prop = pathEl.dataset.targetProp;
+    if (collKey && prop) {
+      items.push({ label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop) });
+    }
+  }
+  items.push('-');
+  items.push({ label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => deleteConnector(pathEl) });
+  return items;
+}
+
+// Target edge arrow menu
+function _menuTargetEdge(edgeColl) {
+  return [
+    { label: 'Edit edge definition\u2026', icon: '\u270E', onClick: () => openEdgeEditor(edgeColl) },
+    { label: 'Reverse direction', icon: '\u21C4', onClick: () => reverseEdge(edgeColl) },
+    { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => renameEdgeCollection(edgeColl) },
+    '-',
+    { label: 'Inspect', icon: '\u2139', onClick: () => onEdgeCardClick(edgeColl) },
+    { label: 'Delete edge', danger: true, icon: '\u2716', onClick: () => deleteEdge(edgeColl) },
+  ];
+}
+
+// Source FK menu
+function _menuSourceFk(fromTable, toTable, fk) {
+  return [
+    { label: 'Inspect FK', icon: '\u2139', onClick: () => onSourceFkClick(fromTable, toTable, fk) },
+    { label: 'Promote to explicit edge collection', icon: '\u2192',
+      onClick: () => promoteFkToEdge(fromTable, toTable, fk) },
+  ];
+}
+
+// Empty canvas menu
+function _menuCanvas() {
+  return [
+    { label: 'Auto-map all', icon: '\u2728', shortcut: 'a', onClick: autoMap },
+    { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping },
+    { label: 'Save', icon: '\u2630', shortcut: '\u2318S', onClick: saveMapping },
+    { label: 'Load\u2026', icon: '\u25B6', shortcut: '\u2318\u23CE', onClick: showLoadModal },
+    '-',
+    { label: 'View as', icon: '\u25CD', submenu: [
+      { label: 'Topology' + (currentLens === 'topology' ? '  \u2713' : ''), shortcut: '1', onClick: () => setLens('topology') },
+      { label: 'Coverage' + (currentLens === 'coverage' ? '  \u2713' : ''), shortcut: '2', onClick: () => setLens('coverage') },
+      { label: 'Validation' + (currentLens === 'validation' ? '  \u2713' : ''), shortcut: '3', onClick: () => setLens('validation') },
+      { label: 'Diff' + (currentLens === 'diff' ? '  \u2713' : ''), shortcut: '4', onClick: () => setLens('diff') },
+    ]},
+    '-',
+    { label: 'Expand all tables', onClick: () => expandAllTables(true) },
+    { label: 'Collapse all tables', onClick: () => expandAllTables(false) },
+    { label: 'Show help', icon: '?', shortcut: '?', onClick: openHelpModal },
+  ];
+}
+
+// Source sidebar item menu
+function _menuSourcesItem(name, type) {
+  return [
+    { label: 'Re-introspect', icon: '\u21BA', onClick: () => snapshotSource(name) },
+    { label: 'Set as project source (manual)', icon: '\u2192', onClick: () => toast('Open the relevant project in the picker to switch source.', 'info') },
+    '-',
+    { label: 'Copy source name', icon: '\u29C9', onClick: () => copyToClipboard(name) },
+  ];
+}
+
+// History row menu — built on demand inside showHistory
+function _menuHistoryRow(rec) {
+  return [
+    { label: 'View error details', icon: '\u2139', disabled: rec.status !== 'failed', onClick: () => {
+      const idx = (window._historyCache || []).indexOf(rec);
+      if (idx >= 0) showLoadErrorDetail(idx);
+    }},
+    { label: 'Re-load with same settings', icon: '\u21BB', onClick: () => reloadWithSameSettings(rec) },
+    '-',
+    { label: 'Copy load ID', icon: '\u29C9', onClick: () => copyToClipboard(rec.id) },
+  ];
+}
+
+// Wire global contextmenu dispatcher (uses data-ctx markers and selectors)
+document.addEventListener('contextmenu', e => {
+  // Skip inputs / form fields — let the browser menu through there
+  if (e.target.matches && e.target.matches('input, textarea, select, [contenteditable]')) {
+    return;
+  }
+  // Dispatch by closest matching element
+  const dispatchers = [
+    ['.func-circle', el => {
+      const ck = el.dataset.collKey, tp = el.dataset.targetProp;
+      if (ck && tp) openContextMenu(_menuFunctionCircle(ck, tp), e.clientX, e.clientY, { header: 'Function \u2192 ' + tp });
+    }],
+    ['#connector-svg path.connector', el => {
+      openContextMenu(_menuConnector(el), e.clientX, e.clientY, { header: 'Connector' });
+    }],
+    ['#target-graph-svg path.coll-edge', el => {
+      const ec = el.dataset.edgeCollection;
+      if (ec) openContextMenu(_menuTargetEdge(ec), e.clientX, e.clientY, { header: 'Edge: ' + ec });
+    }],
+    ['#source-graph-svg path.fk-edge', el => {
+      const ft = el.dataset.fromTable, tt = el.dataset.toTable;
+      const tbl = tablesInfo.find(t => t.name === ft);
+      const fk = tbl ? (tbl.foreignKeys || tbl.fks || []).find(f => (f.foreign_table || f.foreignTable) === tt) : null;
+      openContextMenu(_menuSourceFk(ft, tt, fk || {}), e.clientX, e.clientY, { header: 'FK ' + ft + ' \u2192 ' + tt });
+    }],
+    ['.source-col-row .source-col-dot, .source-col-row', el => {
+      const row = el.closest('.source-col-row');
+      if (!row) return;
+      const t = row.dataset.table, c = row.dataset.col;
+      openContextMenu(_menuSourceColumn(t, c), e.clientX, e.clientY, { header: t + '.' + c });
+    }],
+    ['.source-card', el => {
+      const t = el.dataset.table;
+      openContextMenu(_menuSourceTable(t), e.clientX, e.clientY, { header: 'Table: ' + t });
+    }],
+    ['.target-card.edge-card .target-prop-row', el => {
+      const ec = el.closest('.target-card.edge-card')?.dataset.edge;
+      if (ec) openContextMenu(_menuTargetEdge(ec), e.clientX, e.clientY, { header: 'Edge endpoint: ' + el.dataset.prop });
+    }],
+    ['.target-card.edge-card', el => {
+      const ec = el.dataset.edge;
+      if (ec) openContextMenu(_menuTargetEdge(ec), e.clientX, e.clientY, { header: 'Edge: ' + ec });
+    }],
+    ['.target-card .target-prop-row', el => {
+      const ck = el.closest('.target-card')?.dataset.key;
+      const prop = el.dataset.prop;
+      if (ck && prop) openContextMenu(_menuTargetProperty(ck, prop), e.clientX, e.clientY, { header: 'Property: ' + prop });
+    }],
+    ['.target-card', el => {
+      const ck = el.dataset.key;
+      if (ck) openContextMenu(_menuTargetCollection(ck), e.clientX, e.clientY, { header: 'Collection: ' + (editState.collections[ck]?.targetCollection || ck) });
+    }],
+    ['.source-item', el => {
+      const name = el.querySelector('.source-name')?.textContent;
+      const type = el.querySelector('.source-type')?.textContent;
+      if (name) openContextMenu(_menuSourcesItem(name, type), e.clientX, e.clientY, { header: 'Source: ' + name });
+    }],
+    ['.mapper-canvas', () => {
+      openContextMenu(_menuCanvas(), e.clientX, e.clientY, { header: 'Canvas' });
+    }],
+  ];
+  for (const [sel, fn] of dispatchers) {
+    const m = e.target.closest(sel);
+    if (m) { e.preventDefault(); fn(m); return; }
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Helper actions invoked by context menus                       ══
+// ════════════════════════════════════════════════════════════════════
+
+function copyToClipboard(text) {
+  if (!text) return;
+  navigator.clipboard.writeText(String(text)).then(
+    () => toast('Copied: ' + text, 'success'),
+    () => toast('Copy failed', 'error')
+  );
+}
+
+function expandAllTables(open) {
+  if (open) collapsedTables.clear();
+  else (tablesInfo || []).forEach(t => collapsedTables.add(t.name));
+  renderMapper();
+}
+
+function showSourceFkSummary(tableName) {
+  const t = tablesInfo.find(x => x.name === tableName);
+  if (!t) return;
+  const fks = t.foreignKeys || t.fks || [];
+  if (!fks.length) { toast('No FKs from ' + tableName, 'info'); return; }
+  let html = '<table class="data-table"><thead><tr><th>From column(s)</th><th>References</th></tr></thead><tbody>';
+  fks.forEach(fk => {
+    const cols = (fk.columns || [fk.column]).join(', ');
+    const ft = fk.foreign_table || fk.foreignTable;
+    const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
+    html += `<tr><td>${escHtml(cols)}</td><td>${escHtml(ft)}(${escHtml(fcols)})</td></tr>`;
+  });
+  html += '</tbody></table>';
+  openModal('Foreign keys from ' + tableName, html);
+}
+
+function autoMapTable(tableName) {
+  // Lightweight: use existing field structure if a coll already exists, else create one.
+  const tbl = tablesInfo.find(t => t.name === tableName);
+  if (!tbl) { toast('Table not found', 'error'); return; }
+  const existingEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  if (existingEntry) {
+    const [k, c] = existingEntry;
+    c.fieldExpressions = [];
+    c.fieldMappings = {};
+    c.excludeFields = [];
+    c.allFields = tbl.columns.map(col => col.name);
+    markDirty(); renderMapper();
+    toast('Reset and auto-mapped ' + tableName, 'success');
+  } else {
+    addTableMapping(tableName);
+  }
+}
+
+function addTableMapping(tableName) {
+  if (editState.collections[tableName]) {
+    toast('Collection ' + tableName + ' already exists', 'info'); return;
+  }
+  const tbl = tablesInfo.find(t => t.name === tableName);
+  editState.collections[tableName] = {
+    sourceTable: tableName,
+    targetCollection: tableName,
+    collectionType: 'document',
+    isJoinTable: false,
+    fieldMappings: {},
+    excludeFields: [],
+    fieldExpressions: [],
+    allFields: tbl ? tbl.columns.map(c => c.name) : [],
+  };
+  markDirty(); renderMapper();
+  toast('Added document collection ' + tableName, 'success');
+}
+
+function removeTableMapping(tableName) {
+  const entry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  if (!entry) return;
+  delete editState.collections[entry[0]];
+  markDirty(); renderMapper();
+  toast('Removed mapping for ' + tableName, 'info');
+}
+
+function removeTargetMapping(collKey) {
+  if (!editState.collections[collKey]) return;
+  delete editState.collections[collKey];
+  markDirty(); renderMapper();
+  toast('Removed collection ' + collKey, 'info');
+}
+
+function promptRenameCollection(collKey) {
+  const coll = editState.collections[collKey];
+  if (!coll) return;
+  const curr = coll.targetCollection || collKey;
+  const next = window.prompt('Rename collection', curr);
+  if (!next || next === curr) return;
+  coll.targetCollection = next;
+  markDirty(); renderMapper();
+  toast('Renamed to ' + next, 'success');
+}
+
+function toggleCollectionType(collKey) {
+  const coll = editState.collections[collKey];
+  if (!coll) return;
+  coll.collectionType = coll.collectionType === 'edge' ? 'document' : 'edge';
+  markDirty(); renderMapper();
+  toast('Type: ' + coll.collectionType, 'info');
+}
+
+function revealSourceTable(tableName) {
+  if (!tableName) return;
+  collapsedTables.delete(tableName);
+  renderMapper();
+  setTimeout(() => {
+    const card = document.querySelector(`.source-card[data-table="${tableName}"]`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.add('selected');
+      selectedCardKey = 'src:' + tableName;
+    }
+  }, 50);
+}
+
+function mapColumnToTargetProp(sourceTable, sourceCol, collKey, prop) {
+  handleDropOnTarget(sourceTable, sourceCol, editState.collections[collKey].targetCollection || collKey, prop);
+  markDirty();
+}
+
+function promptMapToProp(sourceTable, sourceCol, collKey) {
+  const next = window.prompt('Target property name', sourceCol);
+  if (!next) return;
+  mapColumnToTargetProp(sourceTable, sourceCol, collKey, next);
+}
+
+function setFxEngine(collKey, prop, engine) {
+  const coll = editState.collections[collKey];
+  if (!coll) return;
+  const fx = ensureFieldExpression(collKey, prop, []);
+  fx.engine = engine;
+  markDirty(); renderMapper();
+}
+
+function markPropAsKey(collKey, prop) {
+  // Re-route source col -> _key by inserting into fieldMappings inverse.
+  // Simplest model: mark current _key field-mapping origin to use this prop's source.
+  const coll = editState.collections[collKey];
+  if (!coll) return;
+  // Find the source column that currently maps to `prop`
+  const fm = coll.fieldMappings || {};
+  const srcCol = Object.entries(fm).find(([s, t]) => t === prop)?.[0] || prop;
+  // Remove any existing _key mapping override
+  for (const [s, t] of Object.entries(fm)) if (t === '_key') delete fm[s];
+  // Map srcCol -> _key
+  fm[srcCol] = '_key';
+  coll.fieldMappings = fm;
+  markDirty(); renderMapper();
+  toast('Marked ' + srcCol + ' as _key source', 'success');
+}
+
+function unmapTargetProp(collKey, prop) {
+  const coll = editState.collections[collKey];
+  if (!coll || prop === '_key') { toast('Cannot unmap _key', 'info'); return; }
+  // Remove from fieldMappings
+  if (coll.fieldMappings) {
+    for (const [s, t] of Object.entries(coll.fieldMappings)) {
+      if (t === prop) delete coll.fieldMappings[s];
+    }
+  }
+  removeFieldExpression(collKey, prop);
+  // Add the source column to excludeFields (if any single source maps here)
+  markDirty(); renderMapper();
+  toast('Unmapped ' + prop, 'info');
+}
+
+function deleteConnector(pathEl) {
+  const t = pathEl.dataset.type;
+  if (t === 'column' || t === 'fn-output') {
+    const collKey = pathEl.dataset.collKey;
+    const prop = pathEl.dataset.targetProp;
+    if (collKey && prop) unmapTargetProp(collKey, prop);
+  } else if (t === 'edge') {
+    deleteEdge(pathEl.dataset.edgeCollection);
+  } else if (t === 'table') {
+    const tn = pathEl.dataset.sourceTable;
+    if (tn) removeTableMapping(tn);
+  }
+}
+
+function reloadWithSameSettings(rec) {
+  // Open the load modal pre-filled. If we don't have the original settings stored,
+  // simply open the standard modal so the user can confirm.
+  closeModal();
+  showLoadModal();
+  toast('Confirm settings to re-run', 'info');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase C: First-class edges (floating editor + DnD + promote)  ══
+// ════════════════════════════════════════════════════════════════════
+
+let _edgeEditState = null;
+
+function openEdgeEditor(edgeColl, draftDefaults = null) {
+  // Find existing edge by name; else accept a draft (newly being created)
+  const idx = editState.edges.findIndex(e => e.edgeCollection === edgeColl);
+  let edge = draftDefaults ? { ...draftDefaults } : (idx >= 0 ? { ...editState.edges[idx] } : null);
+  if (!edge) { toast('Edge not found', 'error'); return; }
+  _edgeEditState = { edgeColl, idx, edge, isNew: idx < 0 };
+
+  const docColls = Object.entries(editState.collections)
+    .filter(([k, c]) => c.collectionType !== 'edge')
+    .map(([k, c]) => c.targetCollection || k);
+  const opts = (sel) => docColls.map(c => `<option value="${escHtml(c)}"${c === sel ? ' selected' : ''}>${escHtml(c)}</option>`).join('');
+
+  const body = `
+    <div class="prop-row"><span class="prop-label">Edge collection</span>
+      <input class="prop-input" id="edge-name" value="${escHtml(edge.edgeCollection || '')}"></div>
+    <div class="prop-row"><span class="prop-label">From collection</span>
+      <select class="prop-input" id="edge-from">${opts(edge.fromCollection)}</select></div>
+    <div class="prop-row"><span class="prop-label">To collection</span>
+      <select class="prop-input" id="edge-to">${opts(edge.toCollection)}</select></div>
+    <div class="prop-row"><span class="prop-label">From field (FK in source)</span>
+      <input class="prop-input" id="edge-from-field" value="${escHtml(edge.fromField || '')}"></div>
+    <div class="prop-row"><span class="prop-label">To field (PK in target)</span>
+      <input class="prop-input" id="edge-to-field" value="${escHtml(edge.toField || '')}"></div>
+    <div class="prop-row"><span class="prop-label">Promoted from join table</span>
+      <input type="checkbox" class="prop-checkbox" id="edge-is-join" ${edge.isJoinEdge ? 'checked' : ''}></div>
+  `;
+  openFloatingCard({
+    id: 'edge-editor',
+    title: 'Edit edge: ' + (edge.edgeCollection || '(new)'),
+    body,
+    position: { right: 20, top: 80 },
+    actions: [
+      { label: 'Reverse', onClick: () => {
+        const e = _edgeEditState.edge;
+        [e.fromCollection, e.toCollection] = [e.toCollection, e.fromCollection];
+        [e.fromField, e.toField] = [e.toField, e.fromField];
+        openEdgeEditor(_edgeEditState.edgeColl, e);
+      }},
+      _edgeEditState.isNew ? null : { label: 'Delete', kind: 'danger', onClick: () => {
+        deleteEdge(_edgeEditState.edgeColl);
+        closeFloatingCard('edge-editor');
+      }},
+      { label: 'Cancel', onClick: () => closeFloatingCard('edge-editor') },
+      { label: 'Save', kind: 'primary', onClick: saveEdgeEditor },
+    ].filter(Boolean),
+  });
+}
+
+function saveEdgeEditor() {
+  if (!_edgeEditState) return;
+  const get = (id) => document.getElementById(id);
+  const name = get('edge-name').value.trim();
+  if (!name) { toast('Edge name is required', 'error'); return; }
+  const next = {
+    edgeCollection: name,
+    fromCollection: get('edge-from').value,
+    toCollection: get('edge-to').value,
+    fromField: get('edge-from-field').value,
+    toField: get('edge-to-field').value,
+    isJoinEdge: get('edge-is-join').checked,
+  };
+  if (_edgeEditState.isNew) {
+    editState.edges.push(next);
+  } else {
+    editState.edges[_edgeEditState.idx] = next;
+  }
+  closeFloatingCard('edge-editor');
+  _edgeEditState = null;
+  markDirty(); renderMapper();
+  toast('Saved edge ' + name, 'success');
+}
+
+function deleteEdge(edgeColl) {
+  const idx = editState.edges.findIndex(e => e.edgeCollection === edgeColl);
+  if (idx < 0) return;
+  editState.edges.splice(idx, 1);
+  markDirty(); renderMapper();
+  toast('Deleted edge ' + edgeColl, 'info');
+}
+
+function reverseEdge(edgeColl) {
+  const e = editState.edges.find(x => x.edgeCollection === edgeColl);
+  if (!e) return;
+  [e.fromCollection, e.toCollection] = [e.toCollection, e.fromCollection];
+  [e.fromField, e.toField] = [e.toField, e.fromField];
+  markDirty(); renderMapper();
+  toast('Reversed ' + edgeColl, 'success');
+}
+
+function renameEdgeCollection(edgeColl) {
+  const e = editState.edges.find(x => x.edgeCollection === edgeColl);
+  if (!e) return;
+  const next = window.prompt('Rename edge collection', edgeColl);
+  if (!next || next === edgeColl) return;
+  e.edgeCollection = next;
+  markDirty(); renderMapper();
+}
+
+function beginAddEdgeFrom(fromCollName) {
+  // Open the editor with `from` pre-filled.
+  const docColls = Object.entries(editState.collections)
+    .filter(([k, c]) => c.collectionType !== 'edge')
+    .map(([k, c]) => c.targetCollection || k);
+  const toName = docColls.find(c => c !== fromCollName) || docColls[0] || '';
+  openEdgeEditor('__draft__', {
+    edgeCollection: 'edge_' + fromCollName + '_' + (toName || 'target'),
+    fromCollection: fromCollName,
+    toCollection: toName,
+    fromField: '',
+    toField: '',
+    isJoinEdge: false,
+  });
+}
+
+function promoteFkToEdge(fromTable, toTable, fk) {
+  // Convert FK into an explicit edge collection in the mapping.
+  const fromCollEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === fromTable);
+  const toCollEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === toTable);
+  if (!fromCollEntry || !toCollEntry) {
+    toast('Both tables must be mapped to collections first', 'error'); return;
+  }
+  const fromName = fromCollEntry[1].targetCollection || fromCollEntry[0];
+  const toName = toCollEntry[1].targetCollection || toCollEntry[0];
+  const fromField = (fk.columns || [fk.column])[0] || '';
+  const toField = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column])[0] || '';
+  const edgeName = 'rel_' + fromTable + '_' + toTable;
+  if (editState.edges.some(e => e.edgeCollection === edgeName)) {
+    toast('Edge ' + edgeName + ' already exists', 'info'); return;
+  }
+  editState.edges.push({
+    edgeCollection: edgeName,
+    fromCollection: fromName,
+    toCollection: toName,
+    fromField, toField,
+    isJoinEdge: false,
+  });
+  markDirty(); renderMapper();
+  toast('Promoted FK to edge ' + edgeName, 'success');
+  openEdgeEditor(edgeName);
+}
+
+// Drag-to-add edge between target vertex cards
+function _wireTargetCardEdgeDrag() {
+  document.querySelectorAll('.target-card:not(.edge-card) .target-card-header').forEach(header => {
+    if (header._edgeDragWired) return;
+    header._edgeDragWired = true;
+    header.addEventListener('mousedown', e => {
+      // Only if Shift or Alt is held (avoid breaking normal click)
+      if (!(e.shiftKey || e.altKey)) return;
+      e.preventDefault();
+      const card = header.closest('.target-card');
+      const fromName = card.dataset.collection;
+      const onMove = me => {};
+      const onUp = me => {
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        const el = document.elementFromPoint(me.clientX, me.clientY);
+        const targetCard = el && el.closest && el.closest('.target-card:not(.edge-card)');
+        if (!targetCard) return;
+        const toName = targetCard.dataset.collection;
+        if (!toName || toName === fromName) return;
+        openEdgeEditor('__draft__', {
+          edgeCollection: 'edge_' + fromName + '_' + toName,
+          fromCollection: fromName, toCollection: toName,
+          fromField: '', toField: '', isJoinEdge: false,
+        });
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase D: Floating progress card (replaces canvas overlay)     ══
+// ════════════════════════════════════════════════════════════════════
+
+let _progressState = null;
+
+function showProgressViewFloating(loadId) {
+  const collectionProgress = {};
+  let elapsedTimer;
+  const startTime = Date.now();
+  _progressState = { loadId, collectionProgress, startTime, totalRows: 0, errors: 0, finalStatus: 'running' };
+
+  openFloatingCard({
+    id: 'load-progress',
+    title: 'Ingestion progress',
+    body: _renderProgressCardBody(),
+    status: { kind: 'running', label: 'Running' },
+    position: { right: 20, bottom: 100 },
+    actions: [
+      { label: 'View History', onClick: showHistory },
+      { label: 'Close', onClick: () => closeFloatingCard('load-progress') },
+    ],
+  });
+
+  elapsedTimer = setInterval(() => {
+    if (!_progressState) { clearInterval(elapsedTimer); return; }
+    _refreshProgressCardStats();
+  }, 500);
+
+  let source;
+  try {
+    source = new EventSource(`${API}/api/projects/${currentProject}/load/${loadId}/stream`);
+    source.onmessage = (e) => {
+      if (e.data.startsWith(':')) return;
+      const evt = JSON.parse(e.data);
+      _handleProgressEventFloating(evt);
+      if (evt.event === 'complete' || evt.event === 'error') {
+        source.close(); clearInterval(elapsedTimer);
+        _refreshProgressCardStats();
+        loadBottomTimeline();
+      }
+    };
+    source.onerror = () => {
+      source.close();
+      _pollProgressFloating(loadId, elapsedTimer);
+    };
+  } catch (e) {
+    _pollProgressFloating(loadId, elapsedTimer);
+  }
+}
+
+function _renderProgressCardBody() {
+  if (!_progressState) return '';
+  const { collectionProgress, totalRows, errors, errorBanner } = _progressState;
+  const elapsedSec = Math.floor((Date.now() - _progressState.startTime) / 1000);
+  const elapsedTxt = elapsedSec >= 60 ? `${Math.floor(elapsedSec/60)}m ${elapsedSec%60}s` : `${elapsedSec}s`;
+  const cps = Object.entries(collectionProgress);
+  let bars = '';
+  if (cps.length) {
+    bars = '<div class="progress-bars-mini">' + cps.map(([name, info]) => {
+      const pct = info.estimated > 0 ? Math.min(100, (info.rows / info.estimated) * 100) : (info.status === 'done' ? 100 : 50);
+      const cls = info.type === 'edge' ? 'edge' : 'document';
+      const icon = info.status === 'done' ? '\u2713' : '\u22EF';
+      return `<div class="progress-bar-wrap" style="padding:6px 10px">
+        <span class="progress-bar-label" style="min-width:120px;font-size:11px">${icon} ${escHtml(name)}</span>
+        <div class="progress-bar-track"><div class="progress-bar-fill ${cls}" style="width:${pct}%"></div></div>
+        <span class="progress-bar-count" style="min-width:60px;font-size:10px">${info.rows.toLocaleString()}</span>
+      </div>`;
+    }).join('') + '</div>';
+  } else {
+    bars = '<div class="empty-state">Waiting for first event\u2026</div>';
+  }
+  const stats = `
+    <div style="display:flex;gap:14px;margin-bottom:10px;font-size:11px">
+      <span><strong style="color:var(--text)">${totalRows.toLocaleString()}</strong> rows</span>
+      <span><strong style="color:var(--text)">${cps.length}</strong> colls</span>
+      <span style="color:${errors > 0 ? 'var(--red)' : 'var(--green)'}"><strong>${errors}</strong> errors</span>
+      <span style="color:var(--text-muted)">${elapsedTxt}</span>
+    </div>`;
+  return (errorBanner || '') + stats + bars;
+}
+
+function _refreshProgressCardStats() {
+  const card = _floatingCards.get('load-progress');
+  if (!card || !_progressState) return;
+  const body = card.el.querySelector('.fc-body');
+  if (body) body.innerHTML = _renderProgressCardBody();
+  // Also refresh minimized title to show count
+  if (card.minimized) {
+    card.el.querySelector('.fc-title').textContent =
+      `Loading: ${_progressState.totalRows.toLocaleString()} rows`;
+  }
+}
+
+function _setProgressStatus(kind, label) {
+  if (!_progressState) return;
+  _progressState.finalStatus = kind;
+  const card = _floatingCards.get('load-progress');
+  if (!card) return;
+  const s = card.el.querySelector('.fc-status');
+  s.style.display = '';
+  s.className = 'fc-status ' + kind;
+  s.textContent = label;
+}
+
+function _handleProgressEventFloating(evt) {
+  if (!_progressState) return;
+  const cp = _progressState.collectionProgress;
+  if (evt.event === 'start') {
+    cp[evt.collection] = { rows: 0, estimated: evt.estimated_rows || 0, type: evt.type || 'document', status: 'running' };
+  } else if (evt.event === 'progress') {
+    if (cp[evt.collection]) cp[evt.collection].rows = evt.rows;
+  } else if (evt.event === 'done') {
+    if (cp[evt.collection]) { cp[evt.collection].rows = evt.rows; cp[evt.collection].status = 'done'; }
+  } else if (evt.event === 'complete') {
+    _setProgressStatus('completed', 'Completed');
+    if (evt.total_rows !== undefined) _progressState.totalRows = evt.total_rows;
+    if (evt.errors !== undefined) _progressState.errors = evt.errors;
+  } else if (evt.event === 'error') {
+    _setProgressStatus('failed', 'Failed');
+    const errType = evt.error_type || 'Error';
+    const errMsg = evt.error || '(no error message)';
+    const tb = evt.traceback || '';
+    const tbBlock = tb
+      ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--text-muted);font-size:11px">Stack trace</summary><pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg);padding:6px;border-radius:4px;font-size:10px;color:var(--text-muted);margin:4px 0 0">${escHtml(tb)}</pre></details>`
+      : '';
+    _progressState.errorBanner = `
+      <div style="border:1px solid var(--red);background:rgba(239,68,68,.08);border-radius:6px;padding:8px;margin-bottom:8px">
+        <div style="color:var(--red);font-weight:600;margin-bottom:4px;font-size:11px">\u26A0 ${escHtml(errType)}</div>
+        <pre style="white-space:pre-wrap;word-break:break-word;color:var(--red);font-size:11px;margin:0">${escHtml(errMsg)}</pre>
+        ${tbBlock}
+      </div>`;
+  }
+  _progressState.totalRows = Object.values(cp).reduce((a, c) => a + c.rows, 0);
+  _refreshProgressCardStats();
+}
+
+async function _pollProgressFloating(loadId, timer) {
+  const poll = async () => {
+    if (!_progressState) return;
+    try {
+      const result = await apiFetch(`/api/projects/${currentProject}/load/${loadId}/status`);
+      if (result.events) result.events.forEach(evt => _handleProgressEventFloating(evt));
+      if (result.status === 'completed' || result.status === 'failed') {
+        clearInterval(timer);
+        _setProgressStatus(result.status === 'completed' ? 'completed' : 'failed',
+                           result.status === 'completed' ? 'Completed' : 'Failed');
+        loadBottomTimeline();
+        return;
+      }
+      setTimeout(poll, 1000);
+    } catch (e) { setTimeout(poll, 2000); }
+  };
+  poll();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase E1: Comprehensive legend                                ══
+// ════════════════════════════════════════════════════════════════════
+
+function renderLegend() {
+  const el = document.getElementById('mapper-legend');
+  if (!el) return;
+  const lensLabel = currentLens.charAt(0).toUpperCase() + currentLens.slice(1);
+  el.innerHTML = `
+    <div class="legend-header" onclick="toggleLegend()">
+      <span>Legend</span> &middot;
+      <span class="legend-lens-name" id="legend-lens-name">${lensLabel}</span>
+      <span class="legend-toggle">&#9656;</span>
+    </div>
+    <div class="legend-body">
+      <div class="legend-section">
+        <div class="legend-section-title">Source nodes (left pane)</div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span class="field-badge pk" style="font-size:9px">PK</span></span>
+          <span class="legend-text">Primary-key column</span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span class="field-badge fk" style="font-size:9px">FK</span></span>
+          <span class="legend-text">Foreign-key column</span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span style="opacity:.4;text-decoration:line-through;font-size:11px">col</span></span>
+          <span class="legend-text">Excluded column <small>(right-click \u2192 Include)</small></span>
+        </div>
+      </div>
+      <div class="legend-section">
+        <div class="legend-section-title">Target nodes (right pane)</div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span style="color:var(--green);font-weight:700;font-size:11px">DOC</span></span>
+          <span class="legend-text">Document collection</span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span style="color:var(--pink);font-weight:700;font-size:11px">EDGE</span></span>
+          <span class="legend-text">Edge collection</span>
+        </div>
+      </div>
+      <div class="legend-section">
+        <div class="legend-section-title">Connectors</div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="#38bdf8" stroke-width="2.5" opacity=".7"/></svg>
+          <span class="legend-text">Table mapping</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="#38bdf8" stroke-width="1" opacity=".4"/></svg>
+          <span class="legend-text">Column mapping</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="#f472b6" stroke-width="1.5" stroke-dasharray="4 3" opacity=".7"/></svg>
+          <span class="legend-text">Edge mapping (FK \u2192 PK)</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="10"><line x1="0" y1="5" x2="28" y2="5" stroke="#fbbf24" stroke-width="1" stroke-dasharray="3 3" opacity=".7"/></svg>
+          <span class="legend-text">Source FK (child \u2192 parent)</span>
+        </div>
+      </div>
+      <div class="legend-section">
+        <div class="legend-section-title">Function nodes</div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="14"><circle cx="14" cy="7" r="3" fill="transparent" stroke="#38bdf8" stroke-width="1.3" opacity=".7"/></svg>
+          <span class="legend-text">Identity (pass-through)</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="14"><circle cx="14" cy="7" r="6" fill="#818cf8" stroke="#000" stroke-width="1"/></svg>
+          <span class="legend-text"><span class="legend-pill" style="background:#818cf8;color:#000">AQL</span>Expression</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="14"><circle cx="14" cy="7" r="6" fill="#f472b6" stroke="#000" stroke-width="1"/></svg>
+          <span class="legend-text"><span class="legend-pill" style="background:#f472b6;color:#000">KSQL</span>Stream expr</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="14"><circle cx="14" cy="7" r="6" fill="#34d399" stroke="#000" stroke-width="1"/></svg>
+          <span class="legend-text"><span class="legend-pill" style="background:#34d399;color:#000">PY</span>Python</span>
+        </div>
+      </div>
+      <div class="legend-section">
+        <div class="legend-section-title">Validation</div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span class="vbadge" style="position:static"></span></span>
+          <span class="legend-text">Has issue (hover for detail)</span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span class="vbadge warn" style="position:static"></span></span>
+          <span class="legend-text">Warning</span>
+        </div>
+      </div>
+    </div>`;
+  // Restore collapsed state
+  if (window._legendCollapsed) el.classList.add('collapsed');
+}
+
+function toggleLegend() {
+  const el = document.getElementById('mapper-legend');
+  el.classList.toggle('collapsed');
+  window._legendCollapsed = el.classList.contains('collapsed');
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase E2/E3: Lens infrastructure                              ══
+// ════════════════════════════════════════════════════════════════════
+
+let currentLens = 'topology';
+
+function setLens(name) {
+  currentLens = name;
+  document.body.classList.remove('lens-topology', 'lens-coverage', 'lens-validation', 'lens-diff');
+  document.body.classList.add('lens-' + name);
+  const chip = document.getElementById('lens-chip');
+  if (chip) {
+    chip.textContent = name.charAt(0).toUpperCase() + name.slice(1);
+    chip.classList.toggle('active-lens', name !== 'topology');
+  }
+  const ln = document.getElementById('legend-lens-name');
+  if (ln) ln.textContent = name.charAt(0).toUpperCase() + name.slice(1);
+  applyLens();
+}
+
+function applyLens() {
+  // Paint-only: no relayout. Mutate classes on existing DOM.
+  // First clear paint-only attributes from all relevant nodes
+  document.querySelectorAll('.source-col-row, .target-prop-row').forEach(el => {
+    el.classList.remove('mapped', 'unmapped');
+  });
+  document.querySelectorAll('.source-card, .target-card').forEach(el => {
+    el.classList.remove('diff-added', 'diff-changed', 'diff-removed');
+  });
+  document.querySelectorAll('.source-card-header .col-count, .target-card-header .coll-count').forEach(el => {
+    el.classList.remove('coverage');
+    if (el.dataset.origText) el.textContent = el.dataset.origText;
+  });
+
+  if (currentLens === 'topology') return;
+
+  if (currentLens === 'coverage') _applyCoverageLens();
+  else if (currentLens === 'validation') _applyValidationLens();
+  else if (currentLens === 'diff') _applyDiffLens();
+}
+
+function _applyCoverageLens() {
+  // Compute per-table mapped vs total columns; per-target mapped properties
+  for (const t of (tablesInfo || [])) {
+    const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === t.name);
+    const coll = collEntry ? collEntry[1] : null;
+    const excluded = new Set(coll ? (coll.excludeFields || []) : []);
+    const total = (t.columns || []).length;
+    let mapped = 0;
+    (t.columns || []).forEach(col => {
+      const row = document.querySelector(`.source-col-row[data-table="${t.name}"][data-col="${col.name}"]`);
+      if (!row) return;
+      const isExc = excluded.has(col.name);
+      if (isExc) {
+        row.classList.add('unmapped');
+      } else {
+        row.classList.add('mapped'); mapped++;
+      }
+    });
+    const cnt = document.querySelector(`.source-card[data-table="${t.name}"] .source-card-header .col-count`);
+    if (cnt) {
+      if (!cnt.dataset.origText) cnt.dataset.origText = cnt.textContent;
+      cnt.textContent = mapped + '/' + total;
+      cnt.classList.add('coverage');
+    }
+  }
+  // For target props, count mapped (everything currently rendered as a row is mapped at present)
+  document.querySelectorAll('.target-card .target-prop-row').forEach(r => r.classList.add('mapped'));
+}
+
+function _applyValidationLens() {
+  // Validation-lens uses _validationState — paint already handled by .has-issue + CSS rule
+  // Nothing more to do for paint, but trigger validation if not yet computed
+  if (!_validationState || !_validationState.lastRunAt) {
+    requestValidation();
+  }
+}
+
+let _diffCache = null;
+
+async function _applyDiffLens() {
+  // Compute fresh diff from server, then paint cards
+  if (!currentProject) return;
+  try {
+    const payload = buildMappingPayload();
+    const result = await apiFetch(`/api/projects/${currentProject}/diff`, {
+      method: 'POST', body: JSON.stringify(payload),
+    });
+    _diffCache = result;
+    const changes = result.changes || result.diffs || [];
+    changes.forEach(c => {
+      const target = c.name || c.collection || c.target || '';
+      const action = c.action || c.type || '';
+      if (!target) return;
+      const cards = document.querySelectorAll(`.target-card[data-collection="${target}"], .target-card[data-key="${target}"]`);
+      cards.forEach(card => {
+        if (action === 'add') card.classList.add('diff-added');
+        else if (action === 'remove') card.classList.add('diff-removed');
+        else card.classList.add('diff-changed');
+      });
+    });
+  } catch (e) {
+    toast('Diff lens unavailable: ' + e.message, 'error');
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase F: Inline validation                                    ══
+// ════════════════════════════════════════════════════════════════════
+
+let _validationState = { issuesByEntity: {}, lastRunAt: 0 };
+let _validateTimer = null;
+let _isDirty = false;
+
+function markDirty() {
+  _isDirty = true;
+  const chip = document.getElementById('dirty-chip');
+  if (chip) chip.style.display = '';
+  scheduleValidation();
+}
+
+function clearDirty() {
+  _isDirty = false;
+  const chip = document.getElementById('dirty-chip');
+  if (chip) chip.style.display = 'none';
+}
+
+function scheduleValidation() {
+  if (_validateTimer) clearTimeout(_validateTimer);
+  _validateTimer = setTimeout(requestValidation, 600);
+}
+
+async function requestValidation() {
+  if (!currentProject) return;
+  try {
+    const payload = buildMappingPayload();
+    let result;
+    try {
+      result = await apiFetch(`/api/projects/${currentProject}/validate-draft`, {
+        method: 'POST', body: JSON.stringify(payload),
+      });
+    } catch (_) {
+      // Fallback to saved-state validation if draft endpoint not present
+      result = await apiFetch(`/api/projects/${currentProject}/validate`, { method: 'POST' });
+    }
+    const issues = result.issues || result.errors || [];
+    _validationState.issuesByEntity = _bucketIssues(issues);
+    _validationState.lastRunAt = Date.now();
+    paintValidationBadges();
+  } catch (e) {
+    // Silent fail — validation is best-effort
+  }
+}
+
+function _bucketIssues(issues) {
+  const buckets = {};
+  issues.forEach(it => {
+    const text = typeof it === 'string' ? it : (it.message || JSON.stringify(it));
+    // Extract entity hints from common message patterns: "collection X.field Y", "table X", "edge X"
+    const tokens = [];
+    const collMatch = text.match(/collection[\s'"]+([A-Za-z0-9_]+)/i);
+    if (collMatch) tokens.push('coll:' + collMatch[1]);
+    const tblMatch = text.match(/table[\s'"]+([A-Za-z0-9_]+)/i);
+    if (tblMatch) tokens.push('tbl:' + tblMatch[1]);
+    const edgeMatch = text.match(/edge[\s'"]+([A-Za-z0-9_]+)/i);
+    if (edgeMatch) tokens.push('edge:' + edgeMatch[1]);
+    if (tokens.length === 0) tokens.push('global');
+    tokens.forEach(tk => {
+      if (!buckets[tk]) buckets[tk] = [];
+      buckets[tk].push(text);
+    });
+  });
+  return buckets;
+}
+
+function paintValidationBadges() {
+  // Clear all
+  document.querySelectorAll('.vbadge[data-auto]').forEach(b => b.remove());
+  document.querySelectorAll('.has-issue').forEach(el => el.classList.remove('has-issue'));
+  const buckets = _validationState.issuesByEntity || {};
+  for (const [key, msgs] of Object.entries(buckets)) {
+    if (key === 'global') continue;
+    const [kind, name] = key.split(':');
+    let nodes = [];
+    if (kind === 'tbl') {
+      nodes = document.querySelectorAll(`.source-card[data-table="${name}"] .source-card-header`);
+    } else if (kind === 'coll') {
+      nodes = document.querySelectorAll(`.target-card[data-collection="${name}"] .target-card-header,
+                                          .target-card[data-key="${name}"] .target-card-header`);
+    } else if (kind === 'edge') {
+      nodes = document.querySelectorAll(`.target-card[data-edge="${name}"] .target-card-header`);
+    }
+    nodes.forEach(n => {
+      const card = n.closest('.source-card, .target-card');
+      if (card) card.classList.add('has-issue');
+      const badge = document.createElement('span');
+      badge.className = 'vbadge';
+      badge.dataset.auto = '1';
+      badge.title = msgs.join('\n');
+      n.appendChild(badge);
+    });
+  }
+  // Apply lens repaint if validation lens active
+  if (currentLens === 'validation') applyLens();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Phase G: Bottom timeline strip                                ══
+// ════════════════════════════════════════════════════════════════════
+
+function toggleBottomStrip() {
+  const el = document.getElementById('bottom-strip');
+  el.classList.toggle('collapsed');
+  if (!el.classList.contains('collapsed')) loadBottomTimeline();
+  scheduleRedraw();
+}
+
+async function loadBottomTimeline() {
+  if (!currentProject) {
+    document.getElementById('bs-body').innerHTML = '<div class="bs-empty">Select a project</div>';
+    document.getElementById('bs-summary').textContent = '';
+    return;
+  }
+  try {
+    const history = await apiFetch(`/api/projects/${currentProject}/history?limit=10`);
+    const rows = Array.isArray(history) ? history : (history.runs || history.entries || []);
+    window._historyCache = rows;
+    const body = document.getElementById('bs-body');
+    const summary = document.getElementById('bs-summary');
+    if (!rows.length) {
+      body.innerHTML = '<div class="bs-empty">No loads recorded yet for this project</div>';
+      summary.textContent = '';
+      return;
+    }
+    const failed = rows.filter(r => r.status === 'failed').length;
+    const ok = rows.filter(r => r.status === 'completed' || r.status === 'success').length;
+    summary.textContent = `${rows.length} recent (${ok} ok, ${failed} failed)`;
+    body.innerHTML = rows.map((r, idx) => {
+      const status = r.status || 'running';
+      const cls = status === 'completed' || status === 'success' ? 'completed'
+                : status === 'failed' ? 'failed' : 'running';
+      const t = r.completed_at || r.started_at || '';
+      const tShort = String(t).slice(11, 16) || String(t).slice(0, 16);
+      return `<div class="bs-pill ${cls}" data-idx="${idx}" title="${escHtml(r.id)} \u2014 ${escHtml(r.load_type || '')} \u2014 ${escHtml(String(t))}">
+        <span class="bs-pill-status">${escHtml(status)}</span>
+        <span class="bs-pill-time">${escHtml(tShort)}</span>
+      </div>`;
+    }).join('');
+    body.querySelectorAll('.bs-pill').forEach(pill => {
+      const idx = parseInt(pill.dataset.idx);
+      pill.addEventListener('click', () => {
+        if (rows[idx].status === 'failed') showLoadErrorDetail(idx);
+        else openModal('Load ' + rows[idx].id, _renderHistoryDetail(rows[idx]));
+      });
+      pill.addEventListener('contextmenu', e => {
+        e.preventDefault(); e.stopPropagation();
+        openContextMenu(_menuHistoryRow(rows[idx]), e.clientX, e.clientY, { header: 'Load ' + rows[idx].id.slice(0, 8) });
+      });
+    });
+  } catch (e) {
+    document.getElementById('bs-body').innerHTML = '<div class="bs-empty">Could not load history</div>';
+  }
+}
+
+function _renderHistoryDetail(r) {
+  let html = '<div class="prop-group">';
+  ['id', 'load_type', 'status', 'rows_loaded', 'errors', 'started_at', 'completed_at'].forEach(k => {
+    if (r[k] === undefined || r[k] === null) return;
+    html += `<div class="prop-row"><span class="prop-label">${k}</span><span class="prop-value">${escHtml(String(r[k]))}</span></div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
+// ════════════════════════════════════════════════════════════════════
+// ══ Wiring: keyboard shortcuts + post-render hooks                ══
+// ════════════════════════════════════════════════════════════════════
+
+// Register all standard shortcuts
+registerShortcut('?', 'Show help & shortcuts', 'global', () => openHelpModal());
+registerShortcut('shift+?', 'Show help & shortcuts', 'global', () => openHelpModal());
+registerShortcut('escape', 'Close topmost overlay / clear selection', 'global', () => {
+  if (_ctxOpen) return closeContextMenu();
+  // Close topmost floating card (last opened)
+  const ids = Array.from(_floatingCards.keys());
+  if (ids.length) return closeFloatingCard(ids[ids.length - 1]);
+  // Close modal if open
+  const overlay = document.getElementById('modal-overlay');
+  if (overlay && overlay.classList.contains('open')) return closeModal();
+  // Else clear selection
+  clearSelection();
+});
+registerShortcut('meta+s', 'Save mapping', 'global', e => { saveMapping(); });
+registerShortcut('ctrl+s', 'Save mapping', 'global', e => { saveMapping(); });
+registerShortcut('meta+shift+v', 'Validate mapping', 'global', () => validateMapping());
+registerShortcut('ctrl+shift+v', 'Validate mapping', 'global', () => validateMapping());
+registerShortcut('meta+d', 'Show diff', 'global', () => showDiff());
+registerShortcut('ctrl+d', 'Show diff', 'global', () => showDiff());
+registerShortcut('meta+enter', 'Open load dialog', 'global', () => showLoadModal());
+registerShortcut('ctrl+enter', 'Open load dialog', 'global', () => showLoadModal());
+registerShortcut('a', 'Auto-map all', 'global', () => autoMap());
+registerShortcut('1', 'View: Topology', 'global', () => setLens('topology'));
+registerShortcut('2', 'View: Coverage', 'global', () => setLens('coverage'));
+registerShortcut('3', 'View: Validation', 'global', () => setLens('validation'));
+registerShortcut('4', 'View: Diff', 'global', () => setLens('diff'));
+registerShortcut('h', 'Toggle history strip', 'global', () => toggleBottomStrip());
+
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented) return;
+  const s = _matchShortcut(e, 'global');
+  if (!s) return;
+  if (e.target.matches && e.target.matches('input, textarea, select, [contenteditable]')) {
+    const c = s.comboNorm;
+    if (!(c.ctrl || c.meta)) return;
+  }
+  e.preventDefault();
+  e.stopImmediatePropagation();
+  try { s.handler(e); } catch (_) {}
+}, true);
+
+// Toolbar lens chip cycles topology -> coverage -> validation -> diff -> topology
+document.getElementById('lens-chip').addEventListener('click', () => {
+  const order = ['topology', 'coverage', 'validation', 'diff'];
+  const i = order.indexOf(currentLens);
+  setLens(order[(i + 1) % order.length]);
+});
+
+// Patch existing functions to also markDirty / refresh badges
+const _origToggleField = toggleField;
+toggleField = function (collKey, fieldName) {
+  _origToggleField(collKey, fieldName);
+  markDirty();
+};
+const _origEditCollection = editCollection;
+editCollection = function (key, prop, value) {
+  _origEditCollection(key, prop, value);
+  markDirty();
+};
+const _origEditEdgeName = editEdgeName;
+editEdgeName = function (idx, newName, oldName) {
+  _origEditEdgeName(idx, newName, oldName);
+  markDirty();
+};
+const _origSaveExpr = saveExpressionEditor;
+saveExpressionEditor = function () {
+  _origSaveExpr();
+  markDirty();
+};
+const _origResetExpr = resetExpressionEditor;
+resetExpressionEditor = function () {
+  _origResetExpr();
+  markDirty();
+};
+const _origRenderMapper = renderMapper;
+renderMapper = function () {
+  _origRenderMapper();
+  // Re-apply paint-only lens after layout refresh
+  applyLens();
+  paintValidationBadges();
+  _wireTargetCardEdgeDrag();
+};
+
+// Replace executeLoad's progress view with the floating one
+const _origExecuteLoad = executeLoad;
+executeLoad = async function () {
+  const body = {
+    workers: parseInt(document.getElementById('load-workers').value) || 1,
+    batch_size: parseInt(document.getElementById('load-batch').value) || 10000,
+    on_duplicate: document.getElementById('load-on-dup').value,
+    drop_collections: document.getElementById('load-drop').checked,
+    dry_run: document.getElementById('load-dry-run').checked,
+    graph_name: document.getElementById('load-graph-name').value || null,
+  };
+  const includeTables = document.getElementById('load-include').value.trim();
+  if (includeTables) body.include_tables = includeTables.split(',').map(s => s.trim());
+  closeModal();
+  try {
+    const result = await apiFetch(`/api/projects/${currentProject}/load`, {
+      method: 'POST', body: JSON.stringify(body),
+    });
+    toast('Load started', 'success');
+    showProgressViewFloating(result.load_id);
+  } catch (e) {
+    let detail = e.message;
+    let parsed = null;
+    try { parsed = JSON.parse(e.message); } catch (_) {}
+    if (parsed && parsed.detail) {
+      if (typeof parsed.detail === 'string') detail = parsed.detail;
+      else if (parsed.detail.validation_errors) {
+        const errs = parsed.detail.validation_errors;
+        const items = Array.isArray(errs) ? errs : [String(errs)];
+        let html = '<div class="prop-group"><div class="prop-group-title">Validation errors</div>';
+        html += '<ul style="margin:4px 0 0 18px;line-height:1.6;color:var(--red);font-size:12px">';
+        items.forEach(it => { html += `<li>${escHtml(typeof it === 'string' ? it : JSON.stringify(it))}</li>`; });
+        html += '</ul></div>';
+        html += '<div class="prop-group"><div class="prop-group-title">Next steps</div><div style="color:var(--text-muted);font-size:12px">Fix the mapping or re-introspect the source schema, then try again.</div></div>';
+        openModal('Cannot start load', html);
+        return;
+      } else detail = JSON.stringify(parsed.detail);
+    }
+    let html = '<div class="prop-group"><div class="prop-group-title">The load did not start</div>';
+    html += `<pre style="white-space:pre-wrap;word-break:break-word;color:var(--red);font-size:12px;margin:0">${escHtml(detail)}</pre></div>`;
+    openModal('Cannot start load', html);
+  }
+};
+
+// Patch saveMapping to clearDirty on success
+const _origSaveMapping = saveMapping;
+saveMapping = async function () {
+  if (!currentProject) return;
+  try {
+    const payload = buildMappingPayload();
+    await apiFetch(`/api/projects/${currentProject}/mapping`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    });
+    toast('Mapping saved successfully', 'success');
+    clearDirty();
+    requestValidation();
+  } catch (e) {
+    // Replace toast-only failure with floating-card failure (Phase H polish)
+    openFloatingCard({
+      id: 'save-failed',
+      title: 'Save failed',
+      body: `<div style="color:var(--red);font-size:12px"><strong>${escHtml(e.message || 'Unknown error')}</strong></div>
+             <div style="margin-top:8px;color:var(--text-muted);font-size:11px">Check the project name, schema snapshot, and server logs.</div>`,
+      status: { kind: 'failed', label: 'Error' },
+      position: { right: 20, bottom: 100 },
+      actions: [
+        { label: 'Retry', kind: 'primary', onClick: () => { closeFloatingCard('save-failed'); saveMapping(); } },
+        { label: 'Dismiss', onClick: () => closeFloatingCard('save-failed') },
+      ],
+    });
+  }
+};
+
+// Patch selectProject to refresh bottom strip and validation
+const _origSelectProject = selectProject;
+selectProject = async function (name) {
+  await _origSelectProject(name);
+  clearDirty();
+  loadBottomTimeline();
+  setLens(currentLens);
+  requestValidation();
+};
+
 // ── Init ──
 
 document.addEventListener('DOMContentLoaded', () => {
   loadSources();
   loadProjects();
+  initExpressionEditor();
+  renderLegend();
+  setLens('topology');
+
+  document.getElementById('mapper-source-pane').addEventListener('scroll', scheduleRedraw);
+  document.getElementById('mapper-target-pane').addEventListener('scroll', scheduleRedraw);
+  window.addEventListener('resize', scheduleRedraw);
+
+  // Show the canvas hint until the user dismisses it implicitly via interaction
+  const hint = document.getElementById('canvas-hint');
+  if (hint) hint.style.display = '';
 });
 </script>
 </body>

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 
@@ -96,10 +96,42 @@ class EdgeDefinition(BaseModel):
     def _accept_singular(cls, data: Any) -> Any:
         if isinstance(data, dict):
             if "from_field" in data and "from_fields" not in data:
-                data["from_fields"] = [data.pop("from_field")]
+                data["from_fields"] = cls._split_field_spec(data.pop("from_field"))
             if "to_field" in data and "to_fields" not in data:
-                data["to_fields"] = [data.pop("to_field")]
+                data["to_fields"] = cls._split_field_spec(data.pop("to_field"))
+            # Also normalize pre-existing list forms in case a caller passed
+            # ``from_fields=["a, b"]`` (a single comma-joined entry) rather
+            # than a proper list.
+            for plural in ("from_fields", "to_fields"):
+                if plural in data and isinstance(data[plural], list):
+                    flat: list[str] = []
+                    for item in data[plural]:
+                        flat.extend(cls._split_field_spec(item))
+                    data[plural] = flat
         return data
+
+    @staticmethod
+    def _split_field_spec(value: Any) -> list[str]:
+        """Accept a single column name or a comma-separated list and return
+        a clean list of column names.
+
+        The UI represents composite FKs as ``"order_id, product_id"`` in a
+        single string field; normalize that here so validation and loading
+        treat each column individually.
+        """
+        if value is None:
+            return []
+        if isinstance(value, list):
+            out: list[str] = []
+            for v in value:
+                out.extend(EdgeDefinition._split_field_spec(v))
+            return out
+        s = str(value).strip()
+        if not s:
+            return []
+        if "," in s:
+            return [part.strip() for part in s.split(",") if part.strip()]
+        return [s]
 
     @property
     def from_field(self) -> str:
@@ -120,13 +152,34 @@ class EdgeDefinition(BaseModel):
             "from_collection": self.from_collection,
             "to_collection": self.to_collection,
         }
-        if len(self.from_fields) == 1:
-            d["from_field"] = self.from_fields[0]
-            d["to_field"] = self.to_fields[0]
+        if len(self.from_fields) <= 1 and len(self.to_fields) <= 1:
+            d["from_field"] = self.from_fields[0] if self.from_fields else ""
+            d["to_field"] = self.to_fields[0] if self.to_fields else ""
         else:
             d["from_fields"] = self.from_fields
             d["to_fields"] = self.to_fields
         return d
+
+
+class FieldExpression(BaseModel):
+    """A mapping function that computes a target property from one or more source columns.
+
+    The default (identity) mapping has ``expression=""`` and ``sources=[target]`` (or a single
+    rename when ``sources`` is set to a different column). Non-identity mappings carry an
+    expression string in the selected engine. Multiple entries in ``sources`` represent
+    fan-in: several source columns feed a single target property.
+    """
+
+    target: str
+    sources: List[str] = Field(default_factory=list)
+    expression: str = ""
+    engine: Literal["aql", "ksql", "python"] = "aql"
+    description: str = ""
+
+    @property
+    def is_identity(self) -> bool:
+        """True when this mapping is a pure pass-through (no expression, single source)."""
+        return self.expression.strip() == "" and len(self.sources) <= 1
 
 
 class CollectionMapping(BaseModel):
@@ -138,12 +191,21 @@ class CollectionMapping(BaseModel):
     field_mappings: Dict[str, str] = Field(default_factory=dict)
     exclude_fields: List[str] = Field(default_factory=list)
     include_fields: Optional[List[str]] = None
+    field_expressions: List[FieldExpression] = Field(default_factory=list)
 
 
 class TypeMapping(BaseModel):
     """PostgreSQL to JSON type coercion rules."""
     pg_type: str
     json_type: str  # "string", "integer", "float", "boolean", "array", "object"
+
+
+class TargetGraphSchema(BaseModel):
+    """Schema of an ArangoDB target database, obtained via introspection."""
+
+    document_collections: list[dict[str, Any]] = Field(default_factory=list)
+    edge_collections: list[dict[str, Any]] = Field(default_factory=list)
+    graphs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class MappingConfig(BaseModel):

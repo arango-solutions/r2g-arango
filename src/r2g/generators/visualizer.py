@@ -104,10 +104,19 @@ class MappingVisualizer:
                 })
 
             mapping = self.config.collections.get(table_name)
+            fks_out = []
+            for fk in table.foreign_keys:
+                fks_out.append({
+                    "columns": list(fk.columns),
+                    "foreign_table": fk.foreign_table,
+                    "foreign_columns": list(fk.foreign_columns),
+                    "constraint_name": fk.constraint_name or "",
+                })
             tables.append({
                 "name": table_name,
                 "columns": cols,
                 "pk": table.primary_key,
+                "foreignKeys": fks_out,
                 "targetCollection": mapping.target_collection if mapping else table_name,
                 "isJoinTable": mapping.is_join_table if mapping else False,
             })
@@ -139,6 +148,16 @@ class MappingVisualizer:
                 "excludeFields": cm.exclude_fields,
                 "includeFields": cm.include_fields,
                 "allFields": all_fields,
+                "fieldExpressions": [
+                    {
+                        "target": fx.target,
+                        "sources": list(fx.sources),
+                        "expression": fx.expression,
+                        "engine": fx.engine,
+                        "description": fx.description,
+                    }
+                    for fx in cm.field_expressions
+                ],
             }
         edges = [
             {

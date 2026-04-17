@@ -1570,6 +1570,35 @@ def ui_cmd(
     uvicorn.run(app_instance, host=host, port=port, log_level="info")
 
 
+@app.command("mcp")
+def mcp_cmd(
+    transport: str = typer.Option("stdio", "--transport", "-t", help="Transport: stdio or sse"),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address (SSE only)"),
+    port: int = typer.Option(8502, "--port", help="Port (SSE only)"),
+) -> None:
+    """Start the R2G MCP server for AI agent integration.
+
+    The MCP server exposes R2G capabilities (schema introspection, mapping
+    generation, data loading, validation) as tools that AI agents can call.
+
+    Use stdio transport for Cursor / Claude Desktop integration.
+    Use SSE transport for remote or multi-client access.
+    """
+    try:
+        from r2g.mcp_server import mcp as mcp_app
+    except ImportError:
+        console.print(
+            "[red]MCP SDK not installed.[/red] Install with: [bold]pip install 'r2g[mcp]'[/bold]"
+        )
+        raise typer.Exit(code=1)
+
+    if transport == "sse":
+        console.print(f"[green]R2G MCP Server[/green] (SSE) starting at http://{host}:{port}/sse")
+        mcp_app.run(transport="sse", host=host, port=port)
+    else:
+        mcp_app.run(transport="stdio")
+
+
 # ── Source commands ───────────────────────────────────────────────────
 
 

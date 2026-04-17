@@ -2,11 +2,35 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from r2g.log import get_logger
 from r2g.types import Schema
+
+logger = get_logger(__name__)
+
+
+class DependencyError(Exception):
+    """Raised when a source cannot be removed due to dependent resources."""
+
+    def __init__(
+        self,
+        source_name: str,
+        projects: list[str],
+        snapshots: list[str],
+        load_records: int,
+    ) -> None:
+        self.source_name = source_name
+        self.projects = projects
+        self.snapshots = snapshots
+        self.load_records = load_records
+        super().__init__(
+            f"Cannot remove source '{source_name}': {len(projects)} projects, "
+            f"{len(snapshots)} snapshots, {load_records} load records depend on it"
+        )
 
 
 class SourceConfig(BaseModel):
@@ -15,6 +39,18 @@ class SourceConfig(BaseModel):
     connection_string: str
     description: str = ""
     owner: str = ""
+    source_params: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+
+class TargetConfig(BaseModel):
+    name: str
+    endpoint: str = "http://localhost:8529"
+    database: str = "_system"
+    username: str = "root"
+    password: str = ""
+    description: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -34,6 +70,7 @@ class Project(BaseModel):
     mapping_config_path: str
     arango_endpoint: str = "http://localhost:8529"
     arango_database: str = "_system"
+    target_name: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -49,6 +86,8 @@ class LoadRecord(BaseModel):
     errors: int = 0
     mapping_hash: str = ""
     status: str = "running"
+    error_message: str = ""
+    error_type: str = ""
 
 
 class Catalog(BaseModel):
@@ -56,6 +95,7 @@ class Catalog(BaseModel):
     snapshots: dict[str, SchemaSnapshot] = Field(default_factory=dict)
     projects: dict[str, Project] = Field(default_factory=dict)
     load_history: list[LoadRecord] = Field(default_factory=list)
+    targets: dict[str, TargetConfig] = Field(default_factory=dict)
 
 
 def _now() -> datetime:
@@ -88,6 +128,7 @@ class CatalogManager:
         connection_string: str,
         description: str = "",
         owner: str = "",
+        source_params: dict[str, Any] | None = None,
     ) -> SourceConfig:
         catalog = self._load()
         if name in catalog.sources:
@@ -99,11 +140,13 @@ class CatalogManager:
             connection_string=connection_string,
             description=description,
             owner=owner,
+            source_params=source_params or {},
             created_at=now,
             updated_at=now,
         )
         catalog.sources[name] = source
         self._save(catalog)
+        logger.info("source_added", name=name, source_type=source_type)
         return source
 
     def list_sources(self) -> list[SourceConfig]:
@@ -112,12 +155,57 @@ class CatalogManager:
     def get_source(self, name: str) -> SourceConfig | None:
         return self._load().sources.get(name)
 
-    def remove_source(self, name: str) -> bool:
+    def update_source(self, name: str, **kwargs: Any) -> SourceConfig:
+        """Update fields on an existing source. Accepts any SourceConfig field."""
+        catalog = self._load()
+        if name not in catalog.sources:
+            raise ValueError(f"Source '{name}' not found")
+        source = catalog.sources[name]
+        update_data = source.model_dump()
+        update_data.update(kwargs)
+        update_data["updated_at"] = _now()
+        catalog.sources[name] = SourceConfig.model_validate(update_data)
+        self._save(catalog)
+        logger.info("source_updated", name=name, fields=list(kwargs.keys()))
+        return catalog.sources[name]
+
+    def remove_source(self, name: str, *, cascade: bool = False) -> bool:
         catalog = self._load()
         if name not in catalog.sources:
             return False
+
+        dep_projects = [p.name for p in catalog.projects.values() if p.source_name == name]
+        dep_snapshots = [s.id for s in catalog.snapshots.values() if s.source_name == name]
+        dep_load_records = [r for r in catalog.load_history if r.project_name in dep_projects]
+
+        has_deps = dep_projects or dep_snapshots or dep_load_records
+
+        if has_deps and not cascade:
+            raise DependencyError(
+                source_name=name,
+                projects=dep_projects,
+                snapshots=dep_snapshots,
+                load_records=len(dep_load_records),
+            )
+
+        if has_deps:
+            for pid in dep_projects:
+                del catalog.projects[pid]
+            for sid in dep_snapshots:
+                del catalog.snapshots[sid]
+            dep_project_set = set(dep_projects)
+            catalog.load_history = [r for r in catalog.load_history if r.project_name not in dep_project_set]
+            logger.info(
+                "cascade_delete",
+                source=name,
+                projects=len(dep_projects),
+                snapshots=len(dep_snapshots),
+                load_records=len(dep_load_records),
+            )
+
         del catalog.sources[name]
         self._save(catalog)
+        logger.info("source_removed", name=name, cascade=cascade)
         return True
 
     # ── Snapshots ────────────────────────────────────────────────────
@@ -207,6 +295,8 @@ class CatalogManager:
         errors: int,
         collections_loaded: list[str],
         status: str = "completed",
+        error_message: str = "",
+        error_type: str = "",
     ) -> LoadRecord:
         catalog = self._load()
         for record in catalog.load_history:
@@ -216,6 +306,10 @@ class CatalogManager:
                 record.errors = errors
                 record.collections_loaded = collections_loaded
                 record.status = status
+                if error_message:
+                    record.error_message = error_message
+                if error_type:
+                    record.error_type = error_type
                 self._save(catalog)
                 return record
         raise ValueError(f"Load record '{load_id}' not found")
@@ -226,3 +320,62 @@ class CatalogManager:
         if project_name:
             records = [r for r in records if r.project_name == project_name]
         return sorted(records, key=lambda r: r.started_at, reverse=True)[:limit]
+
+    # ── Target CRUD ──────────────────────────────────────────────────
+
+    def add_target(
+        self,
+        name: str,
+        endpoint: str = "http://localhost:8529",
+        database: str = "_system",
+        username: str = "root",
+        password: str = "",
+        description: str = "",
+    ) -> TargetConfig:
+        catalog = self._load()
+        if name in catalog.targets:
+            raise ValueError(f"Target '{name}' already exists")
+        now = _now()
+        target = TargetConfig(
+            name=name,
+            endpoint=endpoint,
+            database=database,
+            username=username,
+            password=password,
+            description=description,
+            created_at=now,
+            updated_at=now,
+        )
+        catalog.targets[name] = target
+        self._save(catalog)
+        logger.info("target_added", name=name, endpoint=endpoint, database=database)
+        return target
+
+    def list_targets(self) -> list[TargetConfig]:
+        return list(self._load().targets.values())
+
+    def get_target(self, name: str) -> TargetConfig | None:
+        return self._load().targets.get(name)
+
+    def update_target(self, name: str, **kwargs: Any) -> TargetConfig:
+        """Update fields on an existing target. Accepts any TargetConfig field."""
+        catalog = self._load()
+        if name not in catalog.targets:
+            raise ValueError(f"Target '{name}' not found")
+        target = catalog.targets[name]
+        update_data = target.model_dump()
+        update_data.update(kwargs)
+        update_data["updated_at"] = _now()
+        catalog.targets[name] = TargetConfig.model_validate(update_data)
+        self._save(catalog)
+        logger.info("target_updated", name=name, fields=list(kwargs.keys()))
+        return catalog.targets[name]
+
+    def remove_target(self, name: str) -> bool:
+        catalog = self._load()
+        if name not in catalog.targets:
+            return False
+        del catalog.targets[name]
+        self._save(catalog)
+        logger.info("target_removed", name=name)
+        return True

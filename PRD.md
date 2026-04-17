@@ -201,6 +201,145 @@ Snowflake is a common data warehouse among R2G users. This phase adds Snowflake 
 - **Authentication.** Snowflake supports multiple auth methods (user/password, key-pair, SSO/OAuth, external browser). The connector should accept standard Snowflake connection parameters: `account`, `user`, `password`, `warehouse`, `database`, `schema`, `role`. These should be loadable from env vars (`SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, etc.) and `.env` files.
 - **Cost implications.** Every query against Snowflake consumes warehouse credits. The schema reader and streaming pipeline should minimize the number of queries. `--dry-run` should clearly report query cost implications.
 
+### Phase 5b: Visual Graph Data Mapper & Ingestion Engine -- Planned
+
+The existing Mapping Studio UI (`r2g ui`) provides basic project selection, graph visualization, and YAML export. Phase 5b evolves it into a full-featured visual mapping and ingestion tool, inspired by TigerGraph GraphStudio. This phase is defined by three epics: Data Catalog, Visual Mapping Interface, and Ingestion & Execution Engine.
+
+#### Target personas
+
+- **Data Engineer:** Needs to set up reliable, high-throughput pipelines from relational/flat sources to the graph database.
+- **Graph Architect / Data Modeler:** Needs to ensure that the source data correctly maps to the target ontology (vertices, edges, properties) without writing complex scripts.
+
+#### Product principles
+
+- **Object-centricity:** Users interact with visual representations of data structures (tables, streams, vertices, edges) rather than text lists or code.
+- **Intelligent automation:** The system does the heavy lifting where possible -- introspecting schemas upon connection and generating intelligent default mappings.
+- **Referential integrity:** The system maintains strict internal consistency. Deleting a foundational object (like a source connection) cleanly cascades to dependent objects (mappings, projects, load history).
+
+#### Epic 1: Data Catalog Interface
+
+The Data Catalog is the central repository for all incoming data sources and target database connections.
+
+| ID | Requirement | Description | Pre-requisite | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **P5b.1.1** | **Data source CRUD** | Users can Create, Read, Update, and Delete data sources. Supported source types: CSV directory, RDBMS (PostgreSQL; MySQL, Oracle planned), Kafka topics. | -- | Partial (CLI + API exist for PostgreSQL; CSV/Kafka sources not yet registrable) |
+| **P5b.1.2** | **Automated schema introspection** | Upon saving a new data source, the system automatically introspects the source. CSV: parse headers and infer types. RDBMS: extract tables, columns, PKs, FKs. Kafka: extract schema from Schema Registry or parse sample payload. Display as hierarchical tree or entity cards. | P5b.1.1 | Partial (PostgreSQL introspection implemented; CSV/Kafka introspection not yet) |
+| **P5b.1.3** | **Target graph definition** | Users define connections to target graph databases. System introspects the target graph to fetch existing vertex types, edge types, and their properties. | -- | Not started |
+| **P5b.1.4** | **Referential integrity & cascading deletes** | Deleting a data source warns the user of dependent mappings/projects. Upon confirmation, all associated mappings and load history are deleted. | P5b.1.1 | Not started |
+
+#### Epic 2: Visual Mapping Interface
+
+The core workspace where users define how source data populates the graph.
+
+| ID | Requirement | Description | Pre-requisite | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **P5b.2.1** | **Split-screen object-centric UI** | Left pane: introspected source schema (table cards with columns). Right pane: visual graph schema of the target database (vertices and edges). | P5b.1.2 | Partial (current Mapping Studio has left sidebar + center graph + right properties panel) |
+| **P5b.2.2** | **Mapping management (CRUD)** | Users can create, read, update, and delete "Map Objects" that save the state of source-to-target connections. Maps have metadata: name, description, source ID, target ID, last modified. | P5b.2.1 | Partial (save/load mapping exists; no metadata, no multi-map management) |
+| **P5b.2.3** | **Parallel connection configuration** | Within the mapping interface, users can specify ingestion parallelism: number of parallel connections/threads for reading from the source (`fetch_size`, partition strategies for RDBMS, consumer group concurrency for Kafka). | P5b.2.1 | Not started |
+| **P5b.2.4** | **Automated default mapping** | When source and target are selected, generate a default mapping via heuristics (column name matching to vertex/edge property names, PK → Vertex ID). Render as visual connectors. | P5b.1.2 | Partial (CLI `generate-config` does this; not yet integrated into UI flow) |
+| **P5b.2.5** | **Mapping customization** | Users can drag-and-drop to draw new connections between source columns and target properties. Select existing mapping lines to delete or edit. Map a single source table to multiple vertex types or edge types. | P5b.2.4 | Partial (click-to-edit in properties panel exists; drag-and-drop mapping creation not yet) |
+
+#### Epic 3: Ingestion & Execution Engine
+
+The mechanics of moving data based on the accepted map.
+
+| ID | Requirement | Description | Pre-requisite | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **P5b.3.1** | **Execution trigger ("Load" button)** | Once a mapping is saved, a "Load" / "Run" button provisions the ingestion job based on parallel connection settings and the active map. | P5b.2.2 | Not started |
+| **P5b.3.2** | **Job monitoring** | Status indicator (Pending, Running, Success, Failed). Metrics: rows processed, vertices created, edges created, error count. | P5b.3.1 | Partial (load history endpoint exists; no real-time progress streaming) |
+| **P5b.3.3** | **Error handling** | Records that fail mapping constraints (missing Vertex IDs, type mismatch) are routed to a dead-letter queue or error log without stopping the ingestion job. | P5b.3.1 | Partial (streaming pipeline already logs per-document errors; DLQ not yet) |
+
+#### Non-functional requirements (Phase 5b)
+
+| Category | Requirement |
+| :--- | :--- |
+| **Performance** | UI must render schemas with up to 500 tables/vertices without noticeable lag. Ingestion must support parallel data streams for TB-scale data. |
+| **Scalability** | Backend ingestion engine should be decoupled from the UI, ideally supporting distributed workers (e.g., Kubernetes). |
+| **Security** | Passwords and tokens for data sources and target graphs must be encrypted at rest (AES-256 or OS keychain). |
+
+#### Out of scope (V1 of Phase 5b)
+
+- **Bi-directional sync:** Strictly source-to-graph ingestion, not graph-to-relational export.
+- **Scheduling:** Cron jobs for recurring loads are out of scope; all ingestion is manually triggered via the "Load" button.
+
+### Phase 5c: Expression Mapping & Graph-of-Graphs UI -- Planned
+
+Phase 5b delivers a card-based split-screen mapper with 1:1 pass-through mappings. Phase 5c evolves the mapper into a **three-graph workspace** (source graph, mapping graph, target graph) and introduces a first-class **expression engine** so users can transform values during ingestion, not just rename them.
+
+#### Conceptual model
+
+Every target property is produced by a **mapping function** that takes one or more source properties as inputs and emits a single value. The function body is an expression string in a supported engine (AQL inline expressions for bulk load; KSQL or equivalent streaming SQL for streaming loads). The default function is identity (pass-through of a single source property). Fan-in is supported natively (multiple source columns flowing into one function).
+
+```
+source.first_name ─┐
+                   ├─► function: CONCAT(@first_name, " ", @last_name) ─► Person.fullName
+source.last_name  ─┘
+```
+
+#### Visual workspace
+
+Three vertically-aligned graphs, left to right:
+
+- **Source graph (left):** Force-laid-out entity-relationship diagram of the source tables. Tables are rectangular nodes; foreign-key relationships are directed edges between tables. Each table expands on click to reveal its columns with connector ports.
+- **Mapping graph (center):** Mapping function nodes rendered as circles on the connector lines. Each function node shows its target-property name; clicking it opens an expression editor.
+- **Target graph (right):** Force-laid-out graph model of the ArangoDB target. Vertex collections are nodes; edge collections are labeled, directed edges between vertex nodes. Each vertex collection expands to show its property list with connector ports.
+
+#### Expression engines
+
+| Load path | Engine | Execution | Notes |
+| :--- | :--- | :--- | :--- |
+| `arangoimport` bulk | **AQL inline expressions** | Per-row `LET` expressions evaluated via `arangoimport --auto-upgrade` + `--overwrite` with a transform query; or pre-transformed in-memory before writing JSONL. | Expression references source columns as `@col_name`. Supports most AQL string/number/date/array functions. |
+| Streaming pipeline | **AQL via transform step** | Python-side evaluation using a minimal AQL subset (CONCAT, SUBSTRING, UPPER/LOWER, arithmetic) or delegation to ArangoDB via a per-batch `RETURN` query. | Same expression language surface as bulk for portability. |
+| Kafka / CDC streaming | **KSQL (or ksqlDB-compatible SQL)** | Applied in the Kafka pipeline before write, supporting time-windowed joins and stateful transforms. | Deferred to later revision of P5c. Placeholder grammar-compatible with AQL where possible. |
+
+#### Epic 1: Expression-aware data model
+
+| ID | Requirement | Description | Pre-requisite | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **P5c.1.1** | **FieldExpression model** | New Pydantic `FieldExpression` type with fields: `target` (str), `sources` (list[str], fan-in), `expression` (str; empty = identity on `sources[0]`), `engine` ("aql" \| "ksql" \| "python"), `description` (str). | -- | Done |
+| **P5c.1.2** | **CollectionMapping.field_expressions** | `CollectionMapping` gains an optional `field_expressions: list[FieldExpression]`. When non-empty it takes precedence over the legacy `field_mappings` dict for any target property it owns; otherwise `field_mappings` fallback applies. | P5c.1.1 | Done |
+| **P5c.1.3** | **Serialization** | `FieldExpression` round-trips through YAML and JSON using standard Pydantic v2 serializers. Legacy mapping configs (no `field_expressions`) load without change. | P5c.1.2 | Done |
+| **P5c.1.4** | **Expression evaluator (AQL subset)** | A Python-side evaluator that executes a safe subset of AQL string/number/date/array functions (`CONCAT`, `UPPER`, `LOWER`, `SUBSTRING`, `LENGTH`, `LTRIM`, `RTRIM`, `TO_STRING`, arithmetic, comparison, `NULL` handling) used by the streaming pipeline. Unsupported expressions fall back to delegation. | P5c.1.1 | Not started |
+| **P5c.1.5** | **AQL delegation for complex expressions** | For expressions outside the Python evaluator's subset, the streaming pipeline submits a per-batch AQL `FOR doc IN @@batch LET ... RETURN doc` query to ArangoDB and uses the rewritten result as the ingestion payload. | P5c.1.4 | Not started |
+| **P5c.1.6** | **arangoimport pre-transformation** | For bulk load, the JSONL generator applies expressions in-memory (reusing the Python evaluator + AQL delegation path) so `arangoimport` only sees the final document shape. No changes to `arangoimport` invocation required. | P5c.1.4 | Not started |
+| **P5c.1.7** | **KSQL translation layer** | For Kafka/streaming loads, a translator that rewrites the canonical AQL-flavoured expressions into KSQL (ksqlDB-compatible) `SELECT` projections. Initial scope: arithmetic, string concat, CASE. | P5c.1.3 | Not started |
+
+#### Epic 2: Graph-of-Graphs UI
+
+| ID | Requirement | Description | Pre-requisite | Status |
+| :--- | :--- | :--- | :--- | :--- |
+| **P5c.2.1** | **Source ER-graph visualization** | Left pane renders source tables as graph nodes with FK relationships drawn as directed edges between tables. Click to expand a table inline, exposing its columns with connector ports on the right edge. | P5b.2.1 | Partial (split-screen exists; inter-table FK edges in-pane added) |
+| **P5c.2.2** | **Target graph-model visualization** | Right pane renders target vertex collections as graph nodes and edge collections as labeled directed edges between them. Click to expand a vertex to show its properties with connector ports on the left edge. | P5b.2.1 | Partial (split-screen exists; inter-collection edges in-pane added) |
+| **P5c.2.3** | **Mapping function nodes** | Each connector line carries a circular function node in the center canvas. The node labels its target property; hovering shows the expression preview; clicking opens an expression editor modal. Default (identity) functions render as small hollow circles; non-identity as filled circles in a distinct colour. | P5c.1.1 | Done |
+| **P5c.2.4** | **Fan-in via drag-and-drop** | Users drag a source column connector dot onto an existing function circle to add that column as another input (multi-input fan-in). The function's `sources` list is updated in the mapping config. | P5c.2.3 | Done |
+| **P5c.2.5** | **Expression editor** | Modal editor with engine selector (AQL / KSQL), syntax-highlighted textarea, available-sources picker (columns already bound to this function), optional description field, and a live preview button that evaluates the expression against one source row. | P5c.2.3 | Partial (editor modal + engine selector + live textarea implemented; syntax highlighting and server-side preview deferred) |
+| **P5c.2.6** | **Graph-of-graphs consistency** | All three graphs (source, mapping, target) stay aligned during scroll, window resize, and layout simulation ticks. Connectors reroute when either source or target nodes move. | P5c.2.1, P5c.2.2, P5c.2.3 | Done |
+| **P5c.2.7** | **Expression validation feedback** | When a user closes the editor, the mapping is validated: source references must exist, the expression must parse under the selected engine, and the target property must not conflict with another mapping. Errors shown inline in the properties panel. | P5c.2.5 | Not started |
+
+#### Out of scope (V1 of Phase 5c)
+
+- **User-defined functions (UDFs):** Custom AQL functions registered on the server are not exposed to the expression editor in V1.
+- **Expression autocomplete:** The editor is a plain textarea in V1; autocomplete with function signatures is deferred.
+- **Full KSQL feature parity:** V1 supports a minimal KSQL subset (string, numeric, date, CASE); windowed joins and stateful aggregations are deferred.
+
+### Phase 5d: ArangoDB-backed data catalog -- Planned
+
+The catalog currently persists to `~/.r2g/catalog.json` and mapping configs to YAML files. Phase 5d migrates all catalog state (sources, snapshots, targets, projects, mapping configs, mapping expressions, load history) into an ArangoDB database so the catalog itself is a graph and can be queried, versioned, and shared across users.
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P5d.1** | **Catalog schema** | ArangoDB collections: `r2g_sources`, `r2g_targets`, `r2g_snapshots`, `r2g_projects`, `r2g_mappings`, `r2g_loads`. Edge collections: `r2g_snapshot_of` (snapshot -> source), `r2g_project_uses` (project -> source/target/snapshot/mapping), `r2g_load_of` (load record -> project). A named graph `r2g_catalog` ties it all together. | P5b.1.1 |
+| **P5d.2** | **CatalogManager backend swap** | `CatalogManager` gains a pluggable persistence layer: `FileCatalogBackend` (current behaviour) and `ArangoCatalogBackend` (new). Selectable via `R2G_CATALOG_BACKEND=arango` env var or `r2g catalog use arango --endpoint ... --database r2g_meta`. Identical Python API so the UI and CLI are unchanged. | P5d.1 |
+| **P5d.3** | **Catalog initialization** | `r2g catalog init` creates the catalog database, collections, indexes, and graph. Idempotent. Supports a migration path from `~/.r2g/catalog.json`: `r2g catalog migrate --from-file ~/.r2g/catalog.json`. | P5d.2 |
+| **P5d.4** | **Catalog introspection UI** | Mapping Studio gains a "Catalog" view (read-only) rendering the catalog graph itself (sources, projects, mappings) using the same graph visualization primitives as the source and target panes. | P5d.2 |
+| **P5d.5** | **Multi-user concurrency** | Optimistic concurrency via `_rev`: mapping save compares the cached revision and rejects on mismatch with a merge prompt in the UI. | P5d.2 |
+
+#### Phase 5d non-functional notes
+
+- The catalog database is a separate ArangoDB instance (or database within an instance) from the data target; they must not be conflated.
+- Connection strings and credentials stored in the catalog are encrypted at rest using either the OS keychain (via `keyring`) or an AES-256-GCM key material bound to the user account.
+- A lightweight "zero-config" mode continues to use the filesystem backend for single-user local development.
+
 ---
 
 ## 6. Future considerations (Phase 7+) -- Exploratory
@@ -233,5 +372,8 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **CDC Listener** | **April 2026** | Phase 3 P3.1 + P3.3: `PGReplicationListener` manages logical replication slots, polls via `pg_logical_slot_get_changes`. Output plugin parsers for `test_decoding` and `wal2json`. Continuous polling loop with graceful shutdown. CLI commands: `cdc-setup`, `cdc-teardown`, `cdc-status`, `cdc-start`. 453 tests. |
 | **Conflict Resolution** | **April 2026** | Phase 3 complete (P3.4): Configurable conflict policies (`source_wins`, `last_write_wins`, `log_and_skip`, `fail`). `ConflictResolver` wraps writes with error classification and policy-based resolution. `ConflictLog` for session conflict tracking. `--conflict-policy` CLI option on `cdc-start`. LWW uses `_r2g_lsn` field for per-document LSN tracking. 468 tests. |
 | **Kafka Integration** | **April 2026** | Phase 4 complete: DebeziumParser for Debezium JSON envelope, FlatJsonParser for custom producers, KafkaConsumer wraps confluent-kafka with batch polling and at-least-once offset commits, graceful shutdown. kafka-start CLI command. Optional dependency. 502 tests. |
+
+| **Visual Mapper PRD** | **April 2026** | Phase 5b added: Visual Graph Data Mapper & Ingestion Engine. Three epics (Data Catalog Interface, Visual Mapping Interface, Ingestion & Execution Engine) incorporating TigerGraph-inspired split-screen mapping UI, automated introspection, parallel ingestion, job monitoring, and cascading referential integrity. Mapped against existing implementation (catalog, mapping diff, selective reload, Mapping Studio UI). |
+| **Expression + Graph-of-Graphs** | **April 2026** | Phase 5c added: Expression Mapping & Graph-of-Graphs UI. Introduces `FieldExpression` first-class data model (fan-in of 1..N source properties into a single target property via AQL / KSQL / Python expressions, identity default), mapping function nodes rendered as circles on connector lines with an inline expression editor, fan-in via drag-and-drop, and mini ER/graph-model visualizations within the source and target panes (FK edges in-pane on the left, edge-collection arrows in-pane on the right). Phase 5d added: ArangoDB-backed data catalog (sources, targets, snapshots, projects, mappings, loads as a named graph). |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
