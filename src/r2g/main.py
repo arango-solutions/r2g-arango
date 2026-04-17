@@ -1819,5 +1819,86 @@ def history_cmd(
     console.print(table)
 
 
+secrets_app = typer.Typer(help="Manage the R2G catalog secret key.")
+app.add_typer(secrets_app, name="secrets")
+
+
+@secrets_app.command("init")
+def secrets_init(
+    force: bool = typer.Option(False, "--force", help="Overwrite any existing key file"),
+) -> None:
+    """Initialize (or replace) the on-disk catalog secret key.
+
+    Respects ``R2G_SECRET_KEY`` when set: if the env var is present the
+    on-disk key file is not touched and this command is a no-op.
+    """
+    import os
+    from pathlib import Path
+
+    from cryptography.fernet import Fernet
+
+    from r2g.security import SECRET_ENV, SECRET_FILENAME
+
+    if os.environ.get(SECRET_ENV):
+        console.print(f"[yellow]{SECRET_ENV} is set; on-disk key is ignored while it is present.[/yellow]")
+        return
+
+    path = Path.home() / ".r2g" / SECRET_FILENAME
+    if path.exists() and not force:
+        console.print(f"[yellow]Secret key already exists at {path} (use --force to replace).[/yellow]")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, Fernet.generate_key())
+    finally:
+        os.close(fd)
+    os.chmod(path, 0o600)
+    console.print(f"[green]New secret key written to {path} (0600).[/green]")
+    console.print(
+        "[dim]Tip: back up this file. Losing it makes the encrypted catalog values unrecoverable.[/dim]"
+    )
+
+
+@secrets_app.command("migrate")
+def secrets_migrate() -> None:
+    """Force-encrypt every secret in the catalog with the active key.
+
+    Reads the catalog, re-writes it with the active key. Any already-encrypted
+    values are left alone; plaintext values are encrypted in place. Useful
+    after upgrading from a version that predates at-rest encryption.
+    """
+    mgr = _get_catalog()
+    catalog = mgr._load()
+    plaintext_sources = [s.name for s in catalog.sources.values() if s.connection_string]
+    plaintext_targets = [t.name for t in catalog.targets.values() if t.password]
+    mgr._save(catalog)
+    console.print(
+        f"[green]Re-encrypted {len(plaintext_sources)} sources and {len(plaintext_targets)} targets.[/green]"
+    )
+
+
+@secrets_app.command("status")
+def secrets_status() -> None:
+    """Show where the active secret key is coming from."""
+    import os
+    from pathlib import Path
+
+    from r2g.security import SECRET_ENV, SECRET_FILENAME
+
+    if os.environ.get(SECRET_ENV):
+        console.print(f"[green]Using {SECRET_ENV} environment variable.[/green]")
+        return
+    path = Path.home() / ".r2g" / SECRET_FILENAME
+    if path.exists():
+        console.print(f"[green]Using key file {path}.[/green]")
+    else:
+        console.print(
+            f"[yellow]No key file at {path}. It will be created the next time the catalog is opened.[/yellow]"
+        )
+
+
 if __name__ == "__main__":
     app()

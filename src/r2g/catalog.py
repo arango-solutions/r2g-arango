@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from r2g.log import get_logger
+from r2g.security import CredentialCipher, load_secret_key
 from r2g.types import Schema
 
 logger = get_logger(__name__)
@@ -110,14 +112,31 @@ class CatalogManager:
             self._dir = Path(catalog_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / "catalog.json"
+        self._cipher = CredentialCipher(load_secret_key(self._dir))
 
     def _load(self) -> Catalog:
         if not self._path.exists():
             return Catalog()
-        return Catalog.model_validate_json(self._path.read_text(encoding="utf-8"))
+        catalog = Catalog.model_validate_json(self._path.read_text(encoding="utf-8"))
+        for src in catalog.sources.values():
+            if self._cipher.is_encrypted(src.connection_string):
+                src.connection_string = self._cipher.decrypt(src.connection_string)
+        for tgt in catalog.targets.values():
+            if self._cipher.is_encrypted(tgt.password):
+                tgt.password = self._cipher.decrypt(tgt.password)
+        return catalog
 
     def _save(self, catalog: Catalog) -> None:
-        self._path.write_text(catalog.model_dump_json(indent=2), encoding="utf-8")
+        payload = catalog.model_dump(mode="json")
+        for src in payload.get("sources", {}).values():
+            cs = src.get("connection_string", "")
+            if cs and not self._cipher.is_encrypted(cs):
+                src["connection_string"] = self._cipher.encrypt(cs)
+        for tgt in payload.get("targets", {}).values():
+            pw = tgt.get("password", "")
+            if pw and not self._cipher.is_encrypted(pw):
+                tgt["password"] = self._cipher.encrypt(pw)
+        self._path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
 
     # ── Source CRUD ───────────────────────────────────────────────────
 

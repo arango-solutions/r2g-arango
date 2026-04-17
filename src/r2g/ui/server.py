@@ -18,8 +18,24 @@ from r2g.catalog import CatalogManager
 from r2g.config import ConfigManager, validate_config
 from r2g.connectors.arango_writer import ArangoWriter
 from r2g.log import get_logger
+from r2g.security import redact_connection_string, redact_for_display
 from r2g.streaming.pipeline import StreamingPipeline
 from r2g.types import MappingConfig
+
+
+def _redact_source(dump: dict[str, Any]) -> dict[str, Any]:
+    """Mask the connection string in a ``SourceConfig`` dict for API display."""
+    out = dict(dump)
+    cs = out.get("connection_string") or ""
+    out["connection_string"] = redact_connection_string(cs)
+    return out
+
+
+def _redact_target(dump: dict[str, Any]) -> dict[str, Any]:
+    """Mask the password in a ``TargetConfig`` dict for API display."""
+    out = dict(dump)
+    out["password"] = redact_for_display(out.get("password") or "")
+    return out
 
 logger = get_logger(__name__)
 
@@ -97,7 +113,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
     @app.get("/api/sources")
     async def list_sources():
         sources = catalog.list_sources()
-        return [s.model_dump() for s in sources]
+        return [_redact_source(s.model_dump()) for s in sources]
 
     @app.post("/api/sources", status_code=201)
     async def add_source(body: SourceCreateRequest):
@@ -109,7 +125,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 description=body.description,
                 owner=body.owner,
             )
-            return source.model_dump()
+            return _redact_source(source.model_dump())
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
 
@@ -492,7 +508,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
     async def list_targets():
         if not hasattr(catalog, "list_targets"):
             return []
-        return [t.model_dump() for t in catalog.list_targets()]
+        return [_redact_target(t.model_dump()) for t in catalog.list_targets()]
 
     @app.post("/api/targets", status_code=201)
     async def add_target(body: TargetCreateRequest):
@@ -507,7 +523,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 password=body.password,
                 description=body.description,
             )
-            return target.model_dump()
+            return _redact_target(target.model_dump())
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
 

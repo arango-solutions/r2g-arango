@@ -190,6 +190,38 @@ class TestHistoryEndpoint:
         assert resp.json() == []
 
 
+class TestSecretRedaction:
+    def test_source_connection_string_is_redacted(self, client):
+        resp = client.post("/api/sources", json={
+            "name": "pg",
+            "source_type": "postgresql",
+            "connection_string": "postgresql://u:hunter2@db.example.com:5432/app",
+        })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "hunter2" not in body["connection_string"]
+        assert "u:***@db.example.com:5432/app" in body["connection_string"]
+
+        lst = client.get("/api/sources").json()
+        assert "hunter2" not in lst[0]["connection_string"]
+
+    def test_target_password_is_redacted(self, client):
+        resp = client.post("/api/targets", json={
+            "name": "arango",
+            "endpoint": "http://localhost:8529",
+            "database": "_system",
+            "username": "root",
+            "password": "VERY-SECRET-VALUE",
+        })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert "VERY-SECRET-VALUE" not in body["password"]
+        assert body["password"].startswith("***")
+
+        lst = client.get("/api/targets").json()
+        assert "VERY-SECRET-VALUE" not in lst[0]["password"]
+
+
 class TestExpressionEndpoints:
     def test_list_functions_advertises_subset(self, client):
         resp = client.get("/api/expressions/functions")

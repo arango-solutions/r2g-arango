@@ -387,7 +387,7 @@ The following components from Workstreams A–C already exist and form the found
 | **P5b.3.1 — Load button** | No "Load" / "Run" button; no `/api/projects/{name}/load` endpoint | **Critical** | **Done** — `POST /api/projects/{name}/load` runs `StreamingPipeline` in a background thread; toolbar "Load" action + confirmation modal; shortcut Ctrl/Cmd+Enter; tests in `tests/test_load_engine.py` |
 | **P5b.3.2 — Real-time job monitoring** | Load history exists; no SSE/WebSocket progress streaming | High | **Done** — `GET /api/projects/{name}/load/{load_id}/status` + SSE `/stream`; `progress_callback` in `StreamingPipeline`; floating progress card in the UI; bottom timeline strip for completed runs |
 | **P5b.3.3 — Dead-letter queue** | Streaming pipeline logs errors but no structured DLQ | Medium | **Done** — `src/r2g/dlq.py` `DeadLetterQueue` writes `~/.r2g/dlq/{load_id}.jsonl`; `GET /api/projects/{name}/load/{load_id}/errors` exposes entries; tests in `tests/test_dlq.py` |
-| **Security — Credential encryption** | Connection strings stored in plaintext in `catalog.json` | Medium | Open (env var references supported; full encryption deferred) |
+| **Security — Credential encryption** | Connection strings stored in plaintext in `catalog.json` | Medium | Done (Fernet envelope with tagged `enc:v1:` ciphertexts; key from `R2G_SECRET_KEY` or `~/.r2g/secret.key` 0600; API responses redacted; `r2g secrets` CLI ships) |
 
 ---
 
@@ -445,15 +445,16 @@ The following components from Workstreams A–C already exist and form the found
 
 **Tests:** `tests/test_catalog.py` — cascading delete scenarios.
 
-#### D4: Credential security
-**File:** `src/r2g/catalog.py`
+#### D4: Credential security — Done
 
-- Add `encrypt_field()` / `decrypt_field()` using `cryptography.fernet` (add `cryptography` to optional `[ui]` deps).
-- Key derived from a user-set master password or OS keychain via `keyring` library.
-- Connection strings encrypted before writing to `catalog.json`, decrypted on read.
-- Alternatively, support env var references (`$PG_CONN`) and resolve at runtime — this is already partially done.
+- `src/r2g/security.py` ships a `CredentialCipher` wrapping `cryptography.fernet` plus a `load_secret_key(catalog_dir)` that looks at `R2G_SECRET_KEY` first and falls back to `<catalog_dir>/secret.key` (0600, auto-generated on first use).
+- `cryptography>=42` is now a core dependency — the catalog is unusable without it, so a core dep is the honest choice.
+- `CatalogManager._load` / `_save` transparently encrypt-on-write and decrypt-on-read, tagging values with `enc:v1:` so legacy plaintext catalogs are still readable. Empty passwords stay empty.
+- `src/r2g/ui/server.py` redacts secrets in API responses via `redact_connection_string` and `redact_for_display` so the browser only ever receives masked forms (`u:***@host:5432/db`, `***VAL`).
+- `r2g secrets init|status|migrate` (in `src/r2g/main.py`) manages the key, reports its active source, and force-upgrades existing catalogs.
+- Tests: `tests/test_security.py` (26 cases) covers round-trip, idempotent encrypt, mismatched-key failure, env-var-over-file precedence, file permission bits, legacy plaintext read, upgrade-on-save, and every redaction branch. `tests/test_ui_api.py` covers API-level redaction for both sources and targets.
 
-**Priority:** Lower than D1–D3. Can ship V1 with env var references and add encryption later.
+**Deferred:** OS-keychain (`keyring`) integration and a key-rotation command that re-encrypts existing ciphertexts with a new active key.
 
 ---
 
