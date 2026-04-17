@@ -87,6 +87,55 @@
   }
   .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
 
+  .sidebar-section {
+    display: flex; flex-direction: column; flex: 1 1 50%;
+    min-height: 0; overflow: hidden;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-section:last-child { border-bottom: none; }
+  .panel-add-btn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--text-muted); width: 20px; height: 20px;
+    border-radius: 4px; font-size: 15px; line-height: 1;
+    cursor: pointer; font-family: inherit;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0;
+  }
+  .panel-add-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .empty-state-cta {
+    padding: 12px 14px; font-size: 12px; color: var(--text-muted);
+    text-align: center; line-height: 1.5;
+  }
+  .empty-state-cta a, .empty-state-cta button {
+    color: var(--accent); background: transparent; border: 0;
+    font: inherit; cursor: pointer; padding: 0; text-decoration: underline;
+  }
+
+  /* Floating-card form layout */
+  .fc-form { display: flex; flex-direction: column; gap: 10px; }
+  .fc-form label {
+    display: flex; flex-direction: column; gap: 3px;
+    font-size: 11px; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: .4px; font-weight: 600;
+  }
+  .fc-form input, .fc-form select, .fc-form textarea {
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-size: 13px; font-family: inherit;
+    text-transform: none; letter-spacing: normal;
+  }
+  .fc-form input:focus, .fc-form select:focus, .fc-form textarea:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .fc-form .hint {
+    font-size: 11px; color: var(--text-muted); text-transform: none;
+    letter-spacing: normal; font-weight: 400;
+  }
+  .fc-form .err {
+    font-size: 12px; color: var(--red); text-transform: none;
+    letter-spacing: normal; font-weight: 400;
+  }
+
   .empty-state {
     padding: 20px 14px; text-align: center; font-size: 11px;
     color: var(--text-muted); font-style: italic;
@@ -739,6 +788,7 @@
   <div class="toolbar-center">
     <label>Project</label>
     <select id="project-select"><option value="">Select a project&hellip;</option></select>
+    <button class="btn-sm" id="btn-new-project" title="New project" aria-label="Create a new mapping project" onclick="openNewProjectForm()">+ New</button>
     <span class="toolbar-status">
       <span class="lens-chip" id="lens-chip" title="Active view (right-click canvas to switch, or press 1-4)">Topology</span>
       <span class="lens-chip" id="dirty-chip" style="display:none;color:var(--yellow);border-color:var(--yellow)">Unsaved</span>
@@ -760,11 +810,25 @@
 <!-- Main layout -->
 <div class="main">
 
-  <!-- Left sidebar — sources -->
+  <!-- Left sidebar — sources + targets -->
   <div class="sidebar-left">
-    <div class="panel-header">Sources</div>
-    <div class="panel-body" id="sources-panel">
-      <div class="empty-state">Loading sources&hellip;</div>
+    <div class="sidebar-section">
+      <div class="panel-header">
+        <span>Sources</span>
+        <button class="panel-add-btn" id="btn-new-source" title="New source" aria-label="Create a new data source" onclick="openNewSourceForm()">+</button>
+      </div>
+      <div class="panel-body" id="sources-panel">
+        <div class="empty-state">Loading sources&hellip;</div>
+      </div>
+    </div>
+    <div class="sidebar-section">
+      <div class="panel-header">
+        <span>Targets</span>
+        <button class="panel-add-btn" id="btn-new-target" title="New target" aria-label="Create a new target graph database" onclick="openNewTargetForm()">+</button>
+      </div>
+      <div class="panel-body" id="targets-panel">
+        <div class="empty-state">Loading targets&hellip;</div>
+      </div>
     </div>
   </div>
 
@@ -997,21 +1061,26 @@ function toYaml(obj, indent = 0) {
 
 // ── Sources ──
 
+function _htmlEscape(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 async function loadSources() {
   try {
     const sources = await apiFetch('/api/sources');
+    window._sourcesCache = sources;
     const panel = document.getElementById('sources-panel');
     if (!sources.length) {
-      panel.innerHTML = '<div class="empty-state">No sources configured</div>';
+      panel.innerHTML = '<div class="empty-state-cta">No sources yet.<br><button type="button" onclick="openNewSourceForm()">+ Add your first source</button><br><span style="font-size:11px">or right-click here</span></div>';
       return;
     }
     panel.innerHTML = sources.map(s => `
-      <div class="source-item">
+      <div class="source-item" data-source="${_htmlEscape(s.name)}">
         <div>
-          <div class="source-name">${s.name}</div>
-          <div class="source-type">${s.source_type || 'postgres'}</div>
+          <div class="source-name">${_htmlEscape(s.name)}</div>
+          <div class="source-type">${_htmlEscape(s.source_type || 'postgres')}</div>
         </div>
-        <button class="btn-sm" onclick="snapshotSource('${s.name}')">Snap</button>
+        <button class="btn-sm" onclick="snapshotSource('${_htmlEscape(s.name)}')" title="Re-introspect schema">Snap</button>
       </div>
     `).join('');
   } catch (e) {
@@ -1020,13 +1089,333 @@ async function loadSources() {
   }
 }
 
+async function loadTargets() {
+  try {
+    const targets = await apiFetch('/api/targets');
+    window._targetsCache = targets;
+    const panel = document.getElementById('targets-panel');
+    if (!targets.length) {
+      panel.innerHTML = '<div class="empty-state-cta">No targets yet.<br><button type="button" onclick="openNewTargetForm()">+ Add a graph target</button><br><span style="font-size:11px">or right-click here</span></div>';
+      return;
+    }
+    panel.innerHTML = targets.map(t => `
+      <div class="source-item" data-target="${_htmlEscape(t.name)}" title="${_htmlEscape(t.endpoint)} / ${_htmlEscape(t.database)}">
+        <div>
+          <div class="source-name">${_htmlEscape(t.name)}</div>
+          <div class="source-type">${_htmlEscape(t.database || '_system')}</div>
+        </div>
+        <button class="btn-sm" onclick="introspectTarget('${_htmlEscape(t.name)}')" title="Introspect target graph">Intro</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('targets-panel').innerHTML =
+      '<div class="empty-state">Could not load targets</div>';
+  }
+}
+
 async function snapshotSource(name) {
   try {
     toast('Snapshotting ' + name + '\u2026', 'info');
-    await apiFetch(`/api/sources/${name}/snapshot`, { method: 'POST' });
+    await apiFetch(`/api/sources/${encodeURIComponent(name)}/snapshot`, { method: 'POST' });
     toast('Snapshot complete', 'success');
   } catch (e) {
     toast('Snapshot failed: ' + e.message, 'error');
+  }
+}
+
+async function introspectTarget(name) {
+  try {
+    toast('Introspecting ' + name + '\u2026', 'info');
+    const result = await apiFetch(`/api/targets/${encodeURIComponent(name)}/introspect`, { method: 'POST' });
+    const vcount = (result.vertex_collections || result.vertexCollections || []).length;
+    const ecount = (result.edge_collections || result.edgeCollections || []).length;
+    toast(`Target introspected: ${vcount} vertex, ${ecount} edge collections`, 'success');
+  } catch (e) {
+    toast('Introspection failed: ' + e.message, 'error');
+  }
+}
+
+// ── Catalog creation forms (Phase 5e.8) ──
+
+function openNewSourceForm() {
+  const html = `
+    <div class="fc-form">
+      <label>Name
+        <input id="ns-name" placeholder="prod_pg" autocomplete="off" />
+      </label>
+      <label>Type
+        <select id="ns-type">
+          <option value="postgresql">PostgreSQL</option>
+        </select>
+        <span class="hint">CSV and Kafka source types coming later.</span>
+      </label>
+      <label>Connection string
+        <input id="ns-conn" placeholder="postgresql://user:pass@host:5432/db" autocomplete="off" />
+        <span class="hint">Use <code>$ENV_VAR</code> to reference an environment variable.</span>
+      </label>
+      <label>Description (optional)
+        <input id="ns-desc" placeholder="Production database" autocomplete="off" />
+      </label>
+      <div class="fc-form-error err" id="ns-err" style="display:none"></div>
+    </div>
+  `;
+  openFloatingCard({
+    id: 'new-source',
+    title: 'New source',
+    body: html,
+    position: { right: 40, top: 80 },
+    actions: [
+      { label: 'Cancel', onClick: () => closeFloatingCard('new-source') },
+      { label: 'Create & snapshot', kind: 'primary', onClick: async () => {
+        const name = document.getElementById('ns-name').value.trim();
+        const conn = document.getElementById('ns-conn').value.trim();
+        const errEl = document.getElementById('ns-err');
+        errEl.style.display = 'none';
+        if (!name || !conn) {
+          errEl.textContent = 'Name and connection string are required.';
+          errEl.style.display = '';
+          return;
+        }
+        try {
+          await apiFetch('/api/sources', {
+            method: 'POST',
+            body: JSON.stringify({
+              name,
+              source_type: document.getElementById('ns-type').value,
+              connection_string: conn,
+              description: document.getElementById('ns-desc').value.trim(),
+            }),
+          });
+        } catch (e) {
+          errEl.textContent = 'Create failed: ' + e.message;
+          errEl.style.display = '';
+          return;
+        }
+        toast('Source created. Snapshotting schema\u2026', 'info');
+        closeFloatingCard('new-source');
+        await loadSources();
+        try {
+          const snap = await apiFetch(`/api/sources/${encodeURIComponent(name)}/snapshot`, { method: 'POST' });
+          toast(`Snapshot captured (${snap.tables || 0} tables)`, 'success');
+        } catch (e) {
+          toast('Source saved but snapshot failed: ' + e.message, 'error');
+        }
+      }},
+    ],
+  });
+  setTimeout(() => document.getElementById('ns-name')?.focus(), 50);
+}
+
+function openNewTargetForm() {
+  const html = `
+    <div class="fc-form">
+      <label>Name
+        <input id="nt-name" placeholder="arango_local" autocomplete="off" />
+      </label>
+      <label>Endpoint
+        <input id="nt-endpoint" value="http://localhost:8529" autocomplete="off" />
+      </label>
+      <label>Database
+        <input id="nt-database" value="_system" autocomplete="off" />
+      </label>
+      <label>Username
+        <input id="nt-user" value="root" autocomplete="off" />
+      </label>
+      <label>Password
+        <input id="nt-pass" type="password" value="" autocomplete="new-password" />
+        <span class="hint">Password is stored in the local catalog; rotate if shared.</span>
+      </label>
+      <label>Description (optional)
+        <input id="nt-desc" placeholder="Local dev Arango" autocomplete="off" />
+      </label>
+      <div class="err" id="nt-err" style="display:none"></div>
+    </div>
+  `;
+  openFloatingCard({
+    id: 'new-target',
+    title: 'New target',
+    body: html,
+    position: { right: 40, top: 80 },
+    actions: [
+      { label: 'Cancel', onClick: () => closeFloatingCard('new-target') },
+      { label: 'Create & introspect', kind: 'primary', onClick: async () => {
+        const name = document.getElementById('nt-name').value.trim();
+        const endpoint = document.getElementById('nt-endpoint').value.trim();
+        const database = document.getElementById('nt-database').value.trim();
+        const errEl = document.getElementById('nt-err');
+        errEl.style.display = 'none';
+        if (!name || !endpoint || !database) {
+          errEl.textContent = 'Name, endpoint and database are required.';
+          errEl.style.display = '';
+          return;
+        }
+        try {
+          await apiFetch('/api/targets', {
+            method: 'POST',
+            body: JSON.stringify({
+              name, endpoint, database,
+              username: document.getElementById('nt-user').value.trim(),
+              password: document.getElementById('nt-pass').value,
+              description: document.getElementById('nt-desc').value.trim(),
+            }),
+          });
+        } catch (e) {
+          errEl.textContent = 'Create failed: ' + e.message;
+          errEl.style.display = '';
+          return;
+        }
+        toast('Target created. Introspecting\u2026', 'info');
+        closeFloatingCard('new-target');
+        await loadTargets();
+        try {
+          const result = await apiFetch(`/api/targets/${encodeURIComponent(name)}/introspect`, { method: 'POST' });
+          const vcount = (result.vertex_collections || result.vertexCollections || []).length;
+          const ecount = (result.edge_collections || result.edgeCollections || []).length;
+          toast(`Introspected: ${vcount} vertex, ${ecount} edge collections`, 'success');
+        } catch (e) {
+          toast('Target saved but introspection failed: ' + e.message, 'error');
+        }
+      }},
+    ],
+  });
+  setTimeout(() => document.getElementById('nt-name')?.focus(), 50);
+}
+
+function openNewProjectForm() {
+  const sources = (window._sourcesCache || []);
+  if (!sources.length) {
+    toast('Add a source first', 'error');
+    openNewSourceForm();
+    return;
+  }
+  const sourceOptions = sources.map(s =>
+    `<option value="${_htmlEscape(s.name)}">${_htmlEscape(s.name)}</option>`
+  ).join('');
+  const defaultMappingPath = '~/.r2g/projects/<name>/mapping.yaml';
+  const html = `
+    <div class="fc-form">
+      <label>Project name
+        <input id="np-name" placeholder="ecommerce_graph" autocomplete="off" />
+      </label>
+      <label>Source
+        <select id="np-source">${sourceOptions}</select>
+      </label>
+      <label>Arango endpoint
+        <input id="np-endpoint" value="http://localhost:8529" autocomplete="off" />
+      </label>
+      <label>Arango database
+        <input id="np-database" value="_system" autocomplete="off" />
+      </label>
+      <label>Mapping config path
+        <input id="np-mapping-path" placeholder="${defaultMappingPath}" autocomplete="off" />
+        <span class="hint">Leave blank to use the default location under <code>~/.r2g/projects</code>.</span>
+      </label>
+      <div class="err" id="np-err" style="display:none"></div>
+    </div>
+  `;
+  openFloatingCard({
+    id: 'new-project',
+    title: 'New project',
+    body: html,
+    position: { right: 40, top: 80 },
+    actions: [
+      { label: 'Cancel', onClick: () => closeFloatingCard('new-project') },
+      { label: 'Create', kind: 'primary', onClick: async () => {
+        const name = document.getElementById('np-name').value.trim();
+        const source_name = document.getElementById('np-source').value;
+        const arango_endpoint = document.getElementById('np-endpoint').value.trim();
+        const arango_database = document.getElementById('np-database').value.trim();
+        let mapping_config_path = document.getElementById('np-mapping-path').value.trim();
+        const errEl = document.getElementById('np-err');
+        errEl.style.display = 'none';
+        if (!name || !source_name) {
+          errEl.textContent = 'Name and source are required.';
+          errEl.style.display = '';
+          return;
+        }
+        if (!mapping_config_path) {
+          mapping_config_path = `~/.r2g/projects/${name}/mapping.yaml`;
+        }
+        try {
+          await apiFetch('/api/projects', {
+            method: 'POST',
+            body: JSON.stringify({
+              name, source_name,
+              mapping_config_path,
+              arango_endpoint: arango_endpoint || 'http://localhost:8529',
+              arango_database: arango_database || '_system',
+            }),
+          });
+        } catch (e) {
+          errEl.textContent = 'Create failed: ' + e.message;
+          errEl.style.display = '';
+          return;
+        }
+        toast('Project created', 'success');
+        closeFloatingCard('new-project');
+        await loadProjects();
+        const sel = document.getElementById('project-select');
+        sel.value = name;
+        selectProject(name);
+      }},
+    ],
+  });
+  setTimeout(() => document.getElementById('np-name')?.focus(), 50);
+}
+
+async function confirmRemoveSource(name) {
+  try {
+    await apiFetch(`/api/sources/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    toast(`Source '${name}' removed`, 'success');
+    await loadSources();
+    return;
+  } catch (e) {
+    const msg = e.message || '';
+    const looksLikeDep = /depend|cannot remove|project|snapshot|409/i.test(msg);
+    if (!looksLikeDep) {
+      toast('Remove failed: ' + msg, 'error');
+      return;
+    }
+    const body = `
+      <div class="fc-form">
+        <div style="color:var(--yellow);font-size:12px;line-height:1.5;text-transform:none;letter-spacing:normal;font-weight:400">
+          <strong>Cascade delete?</strong><br><br>
+          Removing <code>${_htmlEscape(name)}</code> will also delete every project, snapshot, and load record that depends on it.
+        </div>
+        <pre style="background:var(--surface2);padding:8px;border-radius:4px;font-size:11px;color:var(--text-muted);white-space:pre-wrap;max-height:160px;overflow:auto">${_htmlEscape(msg)}</pre>
+      </div>
+    `;
+    openFloatingCard({
+      id: 'confirm-remove-source',
+      title: `Remove '${name}'?`,
+      body,
+      position: { right: 40, top: 100 },
+      actions: [
+        { label: 'Cancel', onClick: () => closeFloatingCard('confirm-remove-source') },
+        { label: 'Cascade delete', kind: 'danger', onClick: async () => {
+          try {
+            await apiFetch(`/api/sources/${encodeURIComponent(name)}?cascade=true`, { method: 'DELETE' });
+            toast(`Source '${name}' and dependents removed`, 'success');
+            closeFloatingCard('confirm-remove-source');
+            await loadSources();
+            await loadProjects();
+          } catch (err) {
+            toast('Remove failed: ' + err.message, 'error');
+          }
+        }},
+      ],
+    });
+  }
+}
+
+async function confirmRemoveTarget(name) {
+  if (!confirm(`Remove target '${name}'?`)) return;
+  try {
+    await apiFetch(`/api/targets/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    toast(`Target '${name}' removed`, 'success');
+    await loadTargets();
+  } catch (e) {
+    toast('Remove failed: ' + e.message, 'error');
   }
 }
 
@@ -3143,6 +3532,30 @@ function _menuSourcesItem(name, type) {
     { label: 'Set as project source (manual)', icon: '\u2192', onClick: () => toast('Open the relevant project in the picker to switch source.', 'info') },
     '-',
     { label: 'Copy source name', icon: '\u29C9', onClick: () => copyToClipboard(name) },
+    '-',
+    { label: 'Remove source\u2026', icon: '\u2716', danger: true, onClick: () => confirmRemoveSource(name) },
+  ];
+}
+
+function _menuTargetsItem(name) {
+  return [
+    { label: 'Introspect', icon: '\u21BA', onClick: () => introspectTarget(name) },
+    '-',
+    { label: 'Copy target name', icon: '\u29C9', onClick: () => copyToClipboard(name) },
+    '-',
+    { label: 'Remove target', icon: '\u2716', danger: true, onClick: () => confirmRemoveTarget(name) },
+  ];
+}
+
+function _menuSourcesPanel() {
+  return [
+    { label: 'New source\u2026', icon: '\u002B', onClick: () => openNewSourceForm() },
+  ];
+}
+
+function _menuTargetsPanel() {
+  return [
+    { label: 'New target\u2026', icon: '\u002B', onClick: () => openNewTargetForm() },
   ];
 }
 
@@ -3211,10 +3624,20 @@ document.addEventListener('contextmenu', e => {
       const ck = el.dataset.key;
       if (ck) openContextMenu(_menuTargetCollection(ck), e.clientX, e.clientY, { header: 'Collection: ' + (editState.collections[ck]?.targetCollection || ck) });
     }],
+    ['.source-item[data-target]', el => {
+      const name = el.dataset.target;
+      if (name) openContextMenu(_menuTargetsItem(name), e.clientX, e.clientY, { header: 'Target: ' + name });
+    }],
     ['.source-item', el => {
-      const name = el.querySelector('.source-name')?.textContent;
+      const name = el.dataset.source || el.querySelector('.source-name')?.textContent;
       const type = el.querySelector('.source-type')?.textContent;
       if (name) openContextMenu(_menuSourcesItem(name, type), e.clientX, e.clientY, { header: 'Source: ' + name });
+    }],
+    ['#sources-panel', () => {
+      openContextMenu(_menuSourcesPanel(), e.clientX, e.clientY, { header: 'Sources' });
+    }],
+    ['#targets-panel', () => {
+      openContextMenu(_menuTargetsPanel(), e.clientX, e.clientY, { header: 'Targets' });
     }],
     ['.mapper-canvas', () => {
       openContextMenu(_menuCanvas(), e.clientX, e.clientY, { header: 'Canvas' });
@@ -4303,6 +4726,7 @@ selectProject = async function (name) {
 
 document.addEventListener('DOMContentLoaded', () => {
   loadSources();
+  loadTargets();
   loadProjects();
   initExpressionEditor();
   renderLegend();

@@ -373,21 +373,21 @@ The following components from Workstreams A–C already exist and form the found
 
 ### Gap Analysis
 
-| PRD Requirement | Gap | Priority |
-|----------------|-----|----------|
-| **P5b.1.1 — Multi-source CRUD** | CSV and Kafka source types not registrable; no "Update" for sources | Medium |
-| **P5b.1.2 — CSV/Kafka introspection** | CSV header parsing exists in `dump_reader.py` but not wired to catalog; Kafka schema registry introspection not implemented | Medium |
-| **P5b.1.3 — Target graph definition** | No target graph introspection (fetch existing ArangoDB collections/graph schema) | High |
-| **P5b.1.4 — Cascading deletes** | `catalog.remove_source()` deletes the source but does not cascade to projects, snapshots, or load history | High |
-| **P5b.2.1 — Split-screen polish** | Left pane shows source tables but not as "entity cards" with columns inline; right pane is center graph, not a dedicated target panel | Medium |
-| **P5b.2.2 — Map object metadata** | Mappings are saved as YAML files but lack name/description/last-modified metadata | Low |
-| **P5b.2.3 — Parallel connection config** | `StreamingPipeline` supports `--workers` but UI has no field for configuring parallelism | Medium |
-| **P5b.2.4 — Default mapping in UI** | `generate-config` CLI exists but no "Auto-Map" button in the UI | High |
-| **P5b.2.5 — Drag-and-drop mapping** | Properties panel allows click-to-edit; no drag from source column to target property | Medium |
-| **P5b.3.1 — Load button** | No "Load" / "Run" button; no `/api/projects/{name}/load` endpoint | **Critical** |
-| **P5b.3.2 — Real-time job monitoring** | Load history exists; no SSE/WebSocket progress streaming | High |
-| **P5b.3.3 — Dead-letter queue** | Streaming pipeline logs errors but no structured DLQ | Medium |
-| **Security — Credential encryption** | Connection strings stored in plaintext in `catalog.json` | Medium |
+| PRD Requirement | Gap | Priority | Status |
+|----------------|-----|----------|--------|
+| **P5b.1.1 — Multi-source CRUD** | CSV and Kafka source types not registrable; no "Update" for sources | Medium | **Done for PostgreSQL** (CLI + API + in-UI "+ New source" form; CSV / Kafka registration still deferred) |
+| **P5b.1.2 — CSV/Kafka introspection** | CSV header parsing exists in `dump_reader.py` but not wired to catalog; Kafka schema registry introspection not implemented | Medium | Open (PostgreSQL introspection done and auto-triggered after in-UI source creation) |
+| **P5b.1.3 — Target graph definition** | No target graph introspection (fetch existing ArangoDB collections/graph schema) | High | **Done** — `src/r2g/connectors/arango_reader.py`, `TargetConfig`, `/api/targets*` endpoints, tests in `tests/test_target_introspection.py`, and in-UI "+ New target" form + right-click actions |
+| **P5b.1.4 — Cascading deletes** | `catalog.remove_source()` deletes the source but does not cascade to projects, snapshots, or load history | High | **Done** — `CatalogManager.remove_source(cascade=True)` + `DependencyError`; `DELETE /api/sources/{name}?cascade=true`; in-UI right-click "Remove source…" shows dependency report + cascade confirmation |
+| **P5b.2.1 — Split-screen polish** | Left pane shows source tables but not as "entity cards" with columns inline; right pane is center graph, not a dedicated target panel | Medium | **Done (Phase 5e)** — persistent three-zone layout with sources sidebar, center canvas carrying source / mapping / target graphs, and floating / overlay property surfaces |
+| **P5b.2.2 — Map object metadata** | Mappings are saved as YAML files but lack name/description/last-modified metadata | Low | Open (deferred to Phase 5d) |
+| **P5b.2.3 — Parallel connection config** | `StreamingPipeline` supports `--workers` but UI has no field for configuring parallelism | Medium | **Done** — Settings modal fields: `workers`, `batch_size`, `on_duplicate`, `drop_collections`; wired into Load payload |
+| **P5b.2.4 — Default mapping in UI** | `generate-config` CLI exists but no "Auto-Map" button in the UI | High | **Done** — `POST /api/projects/{name}/auto-map`, toolbar "Auto-Map" button, shortcut `a` |
+| **P5b.2.5 — Drag-and-drop mapping** | Properties panel allows click-to-edit; no drag from source column to target property | Medium | **Done (Phase 5e)** — column-dot to property-dot drag, Shift / Alt drag between target cards to add edges, right-click menus for edit / delete / promote |
+| **P5b.3.1 — Load button** | No "Load" / "Run" button; no `/api/projects/{name}/load` endpoint | **Critical** | **Done** — `POST /api/projects/{name}/load` runs `StreamingPipeline` in a background thread; toolbar "Load" action + confirmation modal; shortcut Ctrl/Cmd+Enter; tests in `tests/test_load_engine.py` |
+| **P5b.3.2 — Real-time job monitoring** | Load history exists; no SSE/WebSocket progress streaming | High | **Done** — `GET /api/projects/{name}/load/{load_id}/status` + SSE `/stream`; `progress_callback` in `StreamingPipeline`; floating progress card in the UI; bottom timeline strip for completed runs |
+| **P5b.3.3 — Dead-letter queue** | Streaming pipeline logs errors but no structured DLQ | Medium | **Done** — `src/r2g/dlq.py` `DeadLetterQueue` writes `~/.r2g/dlq/{load_id}.jsonl`; `GET /api/projects/{name}/load/{load_id}/errors` exposes entries; tests in `tests/test_dlq.py` |
+| **Security — Credential encryption** | Connection strings stored in plaintext in `catalog.json` | Medium | Open (env var references supported; full encryption deferred) |
 
 ---
 
@@ -737,6 +737,45 @@ G7 (evaluator, deferred)
 | G6: Target graph edges | 1 day |
 | G7: Evaluator (deferred) | 3 days |
 | **Total (excl. G7)** | **5 days** |
+
+---
+
+## Phase 5e Workstream H: Mapping UI Architecture Upgrade — Implemented
+
+Phase 5b delivered the functional split-screen mapper and Phase 5c added expression nodes and the graph-of-graphs layout. Phase 5e is the alignment pass that realigns the whole workspace with the object-centric UI contract in `.cursor/rules/ui-architecture.mdc`: one persistent stage, context-menu-primary, paint-only lenses, floating non-blocking work surfaces, first-class edges, legible legend, and inline validation. It is additive on top of 5b / 5c; no new routes.
+
+### Delivered
+
+| Work Item | Files | PRD | Status |
+|-----------|-------|-----|--------|
+| **H1: Shared primitives** — custom context-menu component with submenus, keyboard shortcut registry with scoped dispatch, `?` help overlay, draggable / minimizable / restorable floating-card stack with tray | `src/r2g/ui/static/index.html` | P5e.1.1 – P5e.1.4 | Done |
+| **H2: Right-click everywhere** — entity-specific menus on source tables, columns, target collections, properties, function circles, connectors, target edges, source FK lines, canvas blank space, sources sidebar, history rows; "View as" submenu on canvas | `src/r2g/ui/static/index.html` | P5e.2.1 – P5e.2.2 | Done |
+| **H3: First-class edges** — floating edge editor (name / direction / from-to / fields / delete), Shift / Alt drag-to-add between target cards, promote join table to explicit edge, composite FK round-trip (`from_fields` / `to_fields`) | `src/r2g/ui/static/index.html`, `src/r2g/types.py` (`EdgeDefinition._accept_singular`, `_split_field_spec`, `_serialize`) | P5e.3.1 – P5e.3.4 | Done |
+| **H4: Non-blocking execution** — floating progress card replaces the canvas-blocking overlay, SSE stream updates live counters, minimize-to-tray; collapsible bottom timeline strip of recent loads with pill pattern + right-click actions, shortcut `h` | `src/r2g/ui/static/index.html`, `src/r2g/ui/server.py` (SSE endpoint + progress callback wiring) | P5e.4.1 – P5e.4.2 | Done |
+| **H5: Legend + lenses** — complete legend covering every node / edge / connector / function encoding; `currentLens` + `applyLens()` paint-only; Topology / Coverage / Validation / Diff lenses; header `lens-chip`; shortcuts `1`–`4` | `src/r2g/ui/static/index.html` | P5e.5.1 – P5e.5.3 | Done |
+| **H6: Inline validation** — `POST /api/projects/{name}/validate-draft` tolerates parse errors (reports them as issues), debounced silent revalidation, per-entity badges + tooltip issue lists, validation lens reuses the same data | `src/r2g/ui/server.py`, `src/r2g/ui/static/index.html` | P5e.6.1 – P5e.6.3 | Done |
+| **H7: A11y + hygiene** — `role="menu"` / `menuitem` / `region` / `complementary`, `aria-label`s, Esc pops the topmost overlay, empty-state copy points at right-click + `?` | `src/r2g/ui/static/index.html` | P5e.7.1 – P5e.7.3 | Done |
+| **H8: In-UI catalog management** — "+ New source", "+ New target", "+ New project" floating-card forms; new Targets panel in the left sidebar; right-click "Remove source…" with cascade confirmation + dependency report; empty-state CTA copy on all three surfaces; auto-introspect after target create, auto-snapshot after source create | `src/r2g/ui/static/index.html` | P5e.8.1 – P5e.8.4 | Done |
+
+### Invariants enforced by this phase
+
+- **No new routes.** Every feature integrates into the existing `r2g ui` workspace. New detail editors are floating cards over the canvas, never page navigations.
+- **Context-menu-primary.** For every entity type, at least one action lives on the right-click menu; toolbar / side-panel buttons are secondary paths.
+- **Lens changes never relayout.** `applyLens()` is paint-only. Topology changes (add / remove / filter entities) are the only trigger for relayout; this split is documented in the legend.
+- **Floating cards stack.** Open, minimize, restore, close operations are composable; restoring preserves prior coordinates and content.
+- **Composite keys are a single concept.** UI always sends plural `from_fields` / `to_fields` when either side has more than one column; the backend normalizes comma-separated strings through `EdgeDefinition._split_field_spec` and round-trips them through `_serialize`.
+
+### Verification
+
+- All lint clean on `src/r2g/ui/static/index.html`, `src/r2g/ui/server.py`, `src/r2g/types.py`.
+- `python -m pytest -q` → `673 passed, 6 skipped`.
+- Manual smoke: save / validate / diff / load with both simple and composite foreign keys; context menus on every entity; lens switching does not retrigger force layout; progress card survives minimize / restore during an active load.
+
+### Followups (explicitly deferred)
+
+- **Expression editor polish.** Syntax highlighting and server-side preview (P5c.2.5) remain partial; the editor ships as a plain monospace textarea with engine selector and sources picker.
+- **Drag-and-drop for node / edge promotion across target cards.** Current drop is Shift/Alt + mouse drag; pure HTML5 DnD parity with explorer items is a polish item.
+- **Full KSQL expressions.** The in-UI editor accepts them but the backend evaluator (P5c.1.4 – P5c.1.6) is not yet wired; expressions are stored and round-tripped but not yet executed in the streaming / bulk paths.
 
 ---
 

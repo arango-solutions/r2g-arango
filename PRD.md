@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phases 5--7 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phase 5b (Visual Mapper) and Phase 5c (Expression / Graph-of-Graphs UI) largely implemented and augmented by Phase 5e (UI Architecture Upgrade); Phases 5 (Temporal), 5d (ArangoDB-backed catalog), and 6--7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -222,10 +222,10 @@ The Data Catalog is the central repository for all incoming data sources and tar
 
 | ID | Requirement | Description | Pre-requisite | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **P5b.1.1** | **Data source CRUD** | Users can Create, Read, Update, and Delete data sources. Supported source types: CSV directory, RDBMS (PostgreSQL; MySQL, Oracle planned), Kafka topics. | -- | Partial (CLI + API exist for PostgreSQL; CSV/Kafka sources not yet registrable) |
-| **P5b.1.2** | **Automated schema introspection** | Upon saving a new data source, the system automatically introspects the source. CSV: parse headers and infer types. RDBMS: extract tables, columns, PKs, FKs. Kafka: extract schema from Schema Registry or parse sample payload. Display as hierarchical tree or entity cards. | P5b.1.1 | Partial (PostgreSQL introspection implemented; CSV/Kafka introspection not yet) |
-| **P5b.1.3** | **Target graph definition** | Users define connections to target graph databases. System introspects the target graph to fetch existing vertex types, edge types, and their properties. | -- | Not started |
-| **P5b.1.4** | **Referential integrity & cascading deletes** | Deleting a data source warns the user of dependent mappings/projects. Upon confirmation, all associated mappings and load history are deleted. | P5b.1.1 | Not started |
+| **P5b.1.1** | **Data source CRUD** | Users can Create, Read, Update, and Delete data sources. Supported source types: CSV directory, RDBMS (PostgreSQL; MySQL, Oracle planned), Kafka topics. | -- | Done for PostgreSQL (CLI, API, and in-UI "+ New source" form + right-click remove, see P5e.8.1); CSV / Kafka source registration deferred |
+| **P5b.1.2** | **Automated schema introspection** | Upon saving a new data source, the system automatically introspects the source. CSV: parse headers and infer types. RDBMS: extract tables, columns, PKs, FKs. Kafka: extract schema from Schema Registry or parse sample payload. Display as hierarchical tree or entity cards. | P5b.1.1 | Done for PostgreSQL (`POST /api/sources/{name}/snapshot`, auto-triggered after in-UI source creation and exposed as right-click "Re-introspect"); CSV / Kafka introspection deferred |
+| **P5b.1.3** | **Target graph definition** | Users define connections to target graph databases. System introspects the target graph to fetch existing vertex types, edge types, and their properties. | -- | Done (`TargetConfig` in catalog, `src/r2g/connectors/arango_reader.py`, `GET/POST/DELETE /api/targets`, `POST /api/targets/{name}/introspect`, and in-UI "+ New target" form + right-click actions, see P5e.8.2) |
+| **P5b.1.4** | **Referential integrity & cascading deletes** | Deleting a data source warns the user of dependent mappings/projects. Upon confirmation, all associated mappings and load history are deleted. | P5b.1.1 | Done (`CatalogManager.remove_source(cascade=True)` + `DependencyError`; `DELETE /api/sources/{name}?cascade=true`; in-UI right-click "Remove source…" shows a confirmation dialog before cascading) |
 
 #### Epic 2: Visual Mapping Interface
 
@@ -233,11 +233,11 @@ The core workspace where users define how source data populates the graph.
 
 | ID | Requirement | Description | Pre-requisite | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **P5b.2.1** | **Split-screen object-centric UI** | Left pane: introspected source schema (table cards with columns). Right pane: visual graph schema of the target database (vertices and edges). | P5b.1.2 | Partial (current Mapping Studio has left sidebar + center graph + right properties panel) |
-| **P5b.2.2** | **Mapping management (CRUD)** | Users can create, read, update, and delete "Map Objects" that save the state of source-to-target connections. Maps have metadata: name, description, source ID, target ID, last modified. | P5b.2.1 | Partial (save/load mapping exists; no metadata, no multi-map management) |
-| **P5b.2.3** | **Parallel connection configuration** | Within the mapping interface, users can specify ingestion parallelism: number of parallel connections/threads for reading from the source (`fetch_size`, partition strategies for RDBMS, consumer group concurrency for Kafka). | P5b.2.1 | Not started |
-| **P5b.2.4** | **Automated default mapping** | When source and target are selected, generate a default mapping via heuristics (column name matching to vertex/edge property names, PK → Vertex ID). Render as visual connectors. | P5b.1.2 | Partial (CLI `generate-config` does this; not yet integrated into UI flow) |
-| **P5b.2.5** | **Mapping customization** | Users can drag-and-drop to draw new connections between source columns and target properties. Select existing mapping lines to delete or edit. Map a single source table to multiple vertex types or edge types. | P5b.2.4 | Partial (click-to-edit in properties panel exists; drag-and-drop mapping creation not yet) |
+| **P5b.2.1** | **Split-screen object-centric UI** | Left pane: introspected source schema (table cards with columns). Right pane: visual graph schema of the target database (vertices and edges). | P5b.1.2 | Done (persistent three-zone layout: sources sidebar, center canvas with source / mapping / target graphs, floating and overlay property surfaces; see Phase 5e) |
+| **P5b.2.2** | **Mapping management (CRUD)** | Users can create, read, update, and delete "Map Objects" that save the state of source-to-target connections. Maps have metadata: name, description, source ID, target ID, last modified. | P5b.2.1 | Partial (save / load via `PUT /api/projects/{name}/mapping`; per-map metadata and multi-map management pending, see Phase 5d) |
+| **P5b.2.3** | **Parallel connection configuration** | Within the mapping interface, users can specify ingestion parallelism: number of parallel connections/threads for reading from the source (`fetch_size`, partition strategies for RDBMS, consumer group concurrency for Kafka). | P5b.2.1 | Done (Settings modal exposes `workers`, `batch_size`, `on_duplicate`, `drop_collections`; wired into the Load payload) |
+| **P5b.2.4** | **Automated default mapping** | When source and target are selected, generate a default mapping via heuristics (column name matching to vertex/edge property names, PK → Vertex ID). Render as visual connectors. | P5b.1.2 | Done (`POST /api/projects/{name}/auto-map` + toolbar "Auto-Map" action, shortcut `a`) |
+| **P5b.2.5** | **Mapping customization** | Users can drag-and-drop to draw new connections between source columns and target properties. Select existing mapping lines to delete or edit. Map a single source table to multiple vertex types or edge types. | P5b.2.4 | Done (drag from source column dot to target property dot; Shift / Alt drag between target cards to add edges; right-click context menus on every connector, column, property, FK line, and edge; promote join table to explicit edge) |
 
 #### Epic 3: Ingestion & Execution Engine
 
@@ -245,9 +245,9 @@ The mechanics of moving data based on the accepted map.
 
 | ID | Requirement | Description | Pre-requisite | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **P5b.3.1** | **Execution trigger ("Load" button)** | Once a mapping is saved, a "Load" / "Run" button provisions the ingestion job based on parallel connection settings and the active map. | P5b.2.2 | Not started |
-| **P5b.3.2** | **Job monitoring** | Status indicator (Pending, Running, Success, Failed). Metrics: rows processed, vertices created, edges created, error count. | P5b.3.1 | Partial (load history endpoint exists; no real-time progress streaming) |
-| **P5b.3.3** | **Error handling** | Records that fail mapping constraints (missing Vertex IDs, type mismatch) are routed to a dead-letter queue or error log without stopping the ingestion job. | P5b.3.1 | Partial (streaming pipeline already logs per-document errors; DLQ not yet) |
+| **P5b.3.1** | **Execution trigger ("Load" button)** | Once a mapping is saved, a "Load" / "Run" button provisions the ingestion job based on parallel connection settings and the active map. | P5b.2.2 | Done (`POST /api/projects/{name}/load` runs the streaming pipeline in a background thread with load id tracking; toolbar "Load" action + confirmation modal; shortcut Ctrl/Cmd+Enter) |
+| **P5b.3.2** | **Job monitoring** | Status indicator (Pending, Running, Success, Failed). Metrics: rows processed, vertices created, edges created, error count. | P5b.3.1 | Done (`GET /api/projects/{name}/load/{load_id}/status` + Server-Sent Events stream at `/stream`; `progress_callback` in `StreamingPipeline`; floating progress card in the UI with live per-table counters, error count, elapsed time, minimize-to-tray; bottom timeline strip records completed runs) |
+| **P5b.3.3** | **Error handling** | Records that fail mapping constraints (missing Vertex IDs, type mismatch) are routed to a dead-letter queue or error log without stopping the ingestion job. | P5b.3.1 | Done (`src/r2g/dlq.py` `DeadLetterQueue` writes `~/.r2g/dlq/{load_id}.jsonl`; `GET /api/projects/{name}/load/{load_id}/errors` exposes entries; streaming pipeline continues past per-record failures and records them to the DLQ) |
 
 #### Non-functional requirements (Phase 5b)
 
@@ -312,9 +312,9 @@ Three vertically-aligned graphs, left to right:
 | **P5c.2.2** | **Target graph-model visualization** | Right pane renders target vertex collections as graph nodes and edge collections as labeled directed edges between them. Click to expand a vertex to show its properties with connector ports on the left edge. | P5b.2.1 | Partial (split-screen exists; inter-collection edges in-pane added) |
 | **P5c.2.3** | **Mapping function nodes** | Each connector line carries a circular function node in the center canvas. The node labels its target property; hovering shows the expression preview; clicking opens an expression editor modal. Default (identity) functions render as small hollow circles; non-identity as filled circles in a distinct colour. | P5c.1.1 | Done |
 | **P5c.2.4** | **Fan-in via drag-and-drop** | Users drag a source column connector dot onto an existing function circle to add that column as another input (multi-input fan-in). The function's `sources` list is updated in the mapping config. | P5c.2.3 | Done |
-| **P5c.2.5** | **Expression editor** | Modal editor with engine selector (AQL / KSQL), syntax-highlighted textarea, available-sources picker (columns already bound to this function), optional description field, and a live preview button that evaluates the expression against one source row. | P5c.2.3 | Partial (editor modal + engine selector + live textarea implemented; syntax highlighting and server-side preview deferred) |
+| **P5c.2.5** | **Expression editor** | Modal editor with engine selector (AQL / KSQL), syntax-highlighted textarea, available-sources picker (columns already bound to this function), optional description field, and a live preview button that evaluates the expression against one source row. | P5c.2.3 | Partial (editor modal + engine selector + sources picker + plain textarea + reset-to-identity; syntax highlighting and server-side preview deferred) |
 | **P5c.2.6** | **Graph-of-graphs consistency** | All three graphs (source, mapping, target) stay aligned during scroll, window resize, and layout simulation ticks. Connectors reroute when either source or target nodes move. | P5c.2.1, P5c.2.2, P5c.2.3 | Done |
-| **P5c.2.7** | **Expression validation feedback** | When a user closes the editor, the mapping is validated: source references must exist, the expression must parse under the selected engine, and the target property must not conflict with another mapping. Errors shown inline in the properties panel. | P5c.2.5 | Not started |
+| **P5c.2.7** | **Expression validation feedback** | When a user closes the editor, the mapping is validated: source references must exist, the expression must parse under the selected engine, and the target property must not conflict with another mapping. Errors shown inline in the properties panel. | P5c.2.5 | Done (inline validation via `POST /api/projects/{name}/validate-draft` on a debounce; per-entity validation badges and a validation lens shared with Phase 5e) |
 
 #### Out of scope (V1 of Phase 5c)
 
@@ -339,6 +339,92 @@ The catalog currently persists to `~/.r2g/catalog.json` and mapping configs to Y
 - The catalog database is a separate ArangoDB instance (or database within an instance) from the data target; they must not be conflated.
 - Connection strings and credentials stored in the catalog are encrypted at rest using either the OS keychain (via `keyring`) or an AES-256-GCM key material bound to the user account.
 - A lightweight "zero-config" mode continues to use the filesystem backend for single-user local development.
+
+### Phase 5e: Mapping UI architecture upgrade -- Implemented
+
+Phases 5b and 5c delivered the functional split-screen visual mapper and expression nodes. Phase 5e realigns the workspace with the object-centric UI contract (`/.cursor/rules/ui-architecture.mdc`): one persistent stage, context-menu-primary interactions, lenses that only repaint, floating non-blocking work surfaces, first-class edges, legible legend, and inline validation. It is additive on top of 5b / 5c.
+
+#### Product principles (reaffirmed)
+
+- **Single stage, no new routes.** The Mapping Studio (`r2g ui`) is the only workspace; every feature integrates into it.
+- **Context-over-navigation.** Every entity (source table, column, target collection, property, function circle, connector, edge, FK line, canvas blank space, sources sidebar item, history row) exposes its actions through right-click context menus; side-panel buttons are secondary paths.
+- **Overlay, not replacement.** Detail editors (expression editor, edge editor, progress view, validation and help modals) float over the canvas with drag / minimize / dismiss.
+- **Lenses repaint, never relayout.** Topology, Coverage, Validation, and Diff lenses change only colors / badges / opacities on the stable graph.
+- **Legible encoding.** A persistent legend documents every node, edge, connector, and function visual encoding per lens.
+
+#### Epic 1: Shared primitives
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.1.1** | **Context-menu component** | Vanilla-JS `openContextMenu` / `closeContextMenu` primitive with submenu support, click-outside / Esc dismissal, `role="menu"` / `role="menuitem"` ARIA semantics, and per-entity menu builders. | Done |
+| **P5e.1.2** | **Keyboard shortcut registry** | `registerShortcut(combo, description, scope, handler)` with modifier normalization, scoped dispatch (global / canvas / modal), and an introspectable registry that feeds the help overlay. | Done |
+| **P5e.1.3** | **Help overlay** | `?` opens a modal listing every registered shortcut and the right-click contract. Toolbar `?` button and shortcut `?` / `Shift+?`. | Done |
+| **P5e.1.4** | **Floating card primitive** | `openFloatingCard` / `minimizeFloatingCard` / `restoreFloatingCard` / `closeFloatingCard` with draggable headers, minimized tray, and restore-on-reopen. Used by progress, edge editor, expression editor, diff, validation detail. | Done |
+
+#### Epic 2: Right-click everywhere
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.2.1** | **Entity-specific context menus** | Menus bound to source tables, source columns, target collections, target properties, mapping function circles, connectors, target edges, source FK lines, canvas blank space, sources sidebar items, and history rows. Each menu surfaces only the legal operations for that entity (edit, delete, reverse, promote, include / exclude, copy id, etc.). | Done |
+| **P5e.2.2** | **View-as submenu on canvas** | Canvas right-click exposes a "View as" submenu that switches lens (Topology, Coverage, Validation, Diff); same action is available via keyboard accelerators `1`–`4`. | Done |
+
+#### Epic 3: First-class edges
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.3.1** | **Floating edge editor** | Dedicated floating card to edit an edge's name, direction, from / to collections, from / to fields (including composite keys), and delete. Same surface as node editors. | Done |
+| **P5e.3.2** | **Drag-to-add edges** | Shift / Alt drag between two target-vertex cards creates a new edge. Visual feedback during drag; drop target highlights. | Done |
+| **P5e.3.3** | **Promote join table** | Right-click a join table offers "Promote to edge" which converts the join-table mapping into an explicit edge definition and removes the vertex mapping. | Done |
+| **P5e.3.4** | **Composite keys** | `EdgeDefinition` round-trips both singular (`from_field` / `to_field`) and plural (`from_fields` / `to_fields`) forms; the UI emits plural when any side has more than one column, and the backend normalizes comma-separated strings into lists. | Done |
+
+#### Epic 4: Non-blocking execution
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.4.1** | **Floating progress card** | Replaces the canvas-blocking overlay. Live SSE counters stream into a minimizable floating card so the user can keep mapping while loads run. Click a minimized card in the tray to restore. | Done |
+| **P5e.4.2** | **Bottom timeline strip** | Collapsible bottom strip listing recent load runs as pills with summary stats; right-click a pill for actions (view report, copy run id, open visualization, re-load). Toggle with shortcut `h`. | Done |
+
+#### Epic 5: Legend and lenses
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.5.1** | **Complete legend** | Collapsible legend documenting every node, edge, connector, and mapping-function visual encoding (pass-through vs expression, engine badges, edge-collection arrows, FK lines, dirty / validation badges, active-lens cues). Anchored near the canvas; visible at all times unless explicitly collapsed. | Done |
+| **P5e.5.2** | **Lens infrastructure** | `currentLens` state + `applyLens()` paint-only step. Lens-change never reruns force layout. Header status chip (`#lens-chip`) shows the active lens. | Done |
+| **P5e.5.3** | **Lens implementations** | Topology (default), Coverage (colors nodes / connectors by mapping completeness), Validation (colors by issue severity and pins tooltip lists), Diff (highlights changed entities vs the saved mapping). | Done |
+
+#### Epic 6: Inline validation
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.6.1** | **Silent draft validation endpoint** | `POST /api/projects/{name}/validate-draft` accepts a draft `MappingConfig` (unsaved), returns bucketed issues, and tolerates parse errors (reported as validation issues rather than 500s). | Done |
+| **P5e.6.2** | **Debounced revalidation** | Mapping edits mark the state dirty; a debounced request revalidates silently; responses update per-entity badges and tooltip issue lists. No user action required. | Done |
+| **P5e.6.3** | **Validation badges** | Per-entity badges rendered on source tables, target collections, edges, and connectors; colored by severity; clicking a badge opens a floating validation detail card. | Done |
+
+#### Epic 7: A11y + hygiene
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.7.1** | **ARIA roles** | Context menu uses `role="menu"` and `role="menuitem"`; bottom strip uses `role="region"`; floating-card tray uses `role="complementary"`; key buttons carry `aria-label`s. | Done |
+| **P5e.7.2** | **Esc closes topmost overlay** | Global Esc handler pops the top of the overlay stack (context menu, floating card, modal) in order. | Done |
+| **P5e.7.3** | **Discoverability copy** | Empty-state copy on the canvas and properties panel points the user at right-click and the `?` help overlay; status strings on the strip describe the right-click contract. | Done |
+
+#### Epic 8: In-UI catalog management
+
+New-user bootstrapping. Before Phase 5e.8, sources / targets / projects could only be created via CLI (`r2g source add`, `r2g project create`) or direct HTTP API calls; the Mapping Studio only listed and selected existing ones. Phase 5e.8 adds in-UI creation surfaces so a fresh user can reach a working mapping without leaving the workspace.
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5e.8.1** | **Source CRUD in UI** | Sources panel header exposes a "+ New source" button opening a floating-card form (name, type, connection string or env-var ref, description). On save: `POST /api/sources` → auto-trigger snapshot. Right-click a source → "Re-introspect", "Copy name", "Remove source…" with a cascade-delete confirmation that lists dependent projects / snapshots / loads. Toasts surface success / failure. | Done |
+| **P5e.8.2** | **Target CRUD in UI** | New Targets panel in the left sidebar mirrors the Sources panel. "+ New target" floating-card form (name, endpoint, database, username, password, description). On save: `POST /api/targets` → optionally `POST /api/targets/{name}/introspect`. Right-click a target → "Introspect", "Copy endpoint", "Remove target". | Done |
+| **P5e.8.3** | **Project CRUD in UI** | Toolbar gains a "+ New project" button next to the project selector, opening a floating-card form (name, source selector populated from the catalog, Arango endpoint, database, mapping config path with a sensible default). On save: `POST /api/projects` → auto-select. Right-click the project chip → "Rename project" (deferred), "Copy project name". | Done |
+| **P5e.8.4** | **Discoverability copy** | Empty states on the Sources panel, Targets panel, and project selector include a direct CTA to the "+ New …" action instead of a dead-end "None configured" label. | Done |
+
+#### Non-functional notes (Phase 5e)
+
+- No new routes were introduced; all interactions are overlays, lenses, or context menus on the existing workspace.
+- Lens changes are paint-only; topology changes (new / removed / filtered entities) are the only triggers for relayout.
+- The floating-card stack survives page interaction: restore preserves prior coordinates and contents.
+- The UI consumes `progress_callback` events from `StreamingPipeline` via SSE; the backend keeps at-least-once semantics unchanged.
 
 ---
 
@@ -375,5 +461,8 @@ These ideas are exploratory and represent potential directions, not committed wo
 
 | **Visual Mapper PRD** | **April 2026** | Phase 5b added: Visual Graph Data Mapper & Ingestion Engine. Three epics (Data Catalog Interface, Visual Mapping Interface, Ingestion & Execution Engine) incorporating TigerGraph-inspired split-screen mapping UI, automated introspection, parallel ingestion, job monitoring, and cascading referential integrity. Mapped against existing implementation (catalog, mapping diff, selective reload, Mapping Studio UI). |
 | **Expression + Graph-of-Graphs** | **April 2026** | Phase 5c added: Expression Mapping & Graph-of-Graphs UI. Introduces `FieldExpression` first-class data model (fan-in of 1..N source properties into a single target property via AQL / KSQL / Python expressions, identity default), mapping function nodes rendered as circles on connector lines with an inline expression editor, fan-in via drag-and-drop, and mini ER/graph-model visualizations within the source and target panes (FK edges in-pane on the left, edge-collection arrows in-pane on the right). Phase 5d added: ArangoDB-backed data catalog (sources, targets, snapshots, projects, mappings, loads as a named graph). |
+| **Phase 5b Execution Engine** | **April 2026** | P5b.3.1 Load trigger, P5b.3.2 SSE progress monitoring, and P5b.3.3 dead-letter queue (`src/r2g/dlq.py`) implemented. Target graph introspection (P5b.1.3) landed via `src/r2g/connectors/arango_reader.py`, `TargetConfig` in the catalog, and `/api/targets*` endpoints. Cascading deletes (P5b.1.4) wired through `remove_source(cascade=True)` and `DELETE /api/sources/{name}?cascade=true`. Settings modal + Auto-Map button closed P5b.2.3 / P5b.2.4. MCP server (`src/r2g/mcp_server.py`) exposes catalog and load operations for agent tooling. Composite foreign keys normalized on `EdgeDefinition` via plural `from_fields` / `to_fields` with round-trip serialization. |
+| **UI Architecture Upgrade** | **April 2026** | Phase 5e added and implemented: shared primitives (context menu, keyboard registry, `?` help overlay, floating-card stack); right-click menus on every entity; first-class edges with floating edge editor, drag-to-add, and promote-join-table; floating non-blocking progress card replaces the canvas-blocking overlay; bottom timeline strip for recent loads; complete legend; paint-only lens infrastructure (Topology / Coverage / Validation / Diff) with `1`–`4` shortcuts and header status chip; inline silent validation via `POST /api/projects/{name}/validate-draft` with per-entity badges and tooltip issue lists; a11y and hygiene polish (menu / region / complementary roles, `aria-label`s, Esc pops the top overlay, discoverability copy). 673 tests passing. |
+| **In-UI catalog management** | **April 2026** | Phase 5e Epic 8 added: in-UI "+ New source", "+ New target", and "+ New project" floating-card forms wired to the existing `POST /api/sources`, `POST /api/targets`, `POST /api/projects` endpoints; right-click "Remove source…" with cascade-delete confirmation listing dependent projects / snapshots / loads; new Targets panel in the left sidebar with introspect + remove actions; empty-state copy now includes direct CTAs. Closes the "how do I even start" gap so first-time users can go from zero to a working mapping without touching the CLI. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
