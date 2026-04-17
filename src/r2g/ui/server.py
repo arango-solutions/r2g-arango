@@ -55,6 +55,43 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
     async def health():
         return {"status": "ok"}
 
+    @app.get("/api/expressions/functions")
+    async def list_expression_functions():
+        """Advertise the AQL subset the in-UI expression editor can use."""
+        from r2g.expressions import SUPPORTED_FUNCTIONS
+
+        return {
+            "engine": "aql",
+            "functions": list(SUPPORTED_FUNCTIONS),
+            "operators": [
+                "+", "-", "*", "/", "%",
+                "==", "!=", "<", "<=", ">", ">=",
+                "&&", "||", "NOT",
+                "??", "? :",
+            ],
+            "bind_syntax": "@column_name",
+        }
+
+    @app.post("/api/expressions/compile")
+    async def compile_expression_endpoint(body: dict[str, Any]):
+        """Parse-check an expression without evaluating it.
+
+        Body: ``{"expression": "...", "engine": "aql"}``. Returns the list of
+        referenced bind parameters when the expression is syntactically valid
+        (so the UI can suggest adding them as sources).
+        """
+        from r2g.expressions import ExpressionError, compile_expression
+
+        engine = (body.get("engine") or "aql").lower()
+        expr = body.get("expression") or ""
+        if engine != "aql":
+            return {"valid": False, "error": f"engine '{engine}' is not supported"}
+        try:
+            compiled = compile_expression(expr)
+        except ExpressionError as err:
+            return {"valid": False, "error": str(err)}
+        return {"valid": True, "references": list(compiled.references)}
+
     # ── Source endpoints ──────────────────────────────────────────────
 
     @app.get("/api/sources")

@@ -703,11 +703,11 @@ Phase 5c is additive on top of Phase 5b. The split-screen mapper built in Workst
 ### G7: Expression evaluator (backend, deferred)
 **Files:** new `src/r2g/expressions.py`, `src/r2g/transformers/node_transformer.py`
 
-- Minimal AQL subset evaluator (CONCAT, UPPER, LOWER, SUBSTRING, LENGTH, LTRIM, RTRIM, TO_STRING, arithmetic, comparisons, null handling).
-- Node transformer consults `field_expressions` first, falls back to `field_mappings`.
-- For expressions outside the subset, delegate to ArangoDB via a per-batch `FOR doc IN @docs LET <assignments> RETURN doc` query.
-- Arangoimport bulk path: pre-evaluate in Python so `arangoimport` receives final JSONL.
-- This requirement is tracked in PRD (P5c.1.4, P5c.1.5, P5c.1.6) and implemented in a subsequent iteration.
+- **Done (P5c.1.4 / P5c.1.6 — Python subset).** `src/r2g/expressions.py` ships a safe AQL-subset evaluator (literals, `@bind` references, arithmetic with null propagation, comparisons, `&&`/`||`/`NOT`, `??`, ternary `? :`, and the function set `CONCAT`, `CONCAT_SEPARATOR`, `UPPER`, `LOWER`, `SUBSTRING`, `LENGTH`, `LTRIM`, `RTRIM`, `TRIM`, `TO_STRING`, `TO_NUMBER`, `TO_BOOL`, `CONTAINS`, `COALESCE`).
+- **Done.** `NodeTransformer` compiles each collection's `field_expressions` once in `__init__`, applies them per row in `transform_row` after the column-level `field_mappings` pass, and drops field-mapping outputs for any target that is also produced by an expression. Identity expressions, expressions on non-AQL engines, and uncompilable expressions fall back to a pass-through read with a structured-log warning.
+- **Done.** `validate_config` parse-checks every AQL expression against the snapshot columns, reporting both source-reference and `@binding` mismatches so they surface in the UI validation lens and through `POST /api/projects/{name}/validate-draft`.
+- **Done.** `/api/expressions/functions` advertises the supported function set and `/api/expressions/compile` is a parse-only check used by the in-modal live syntax indicator; save is blocked when the editor shows a compile error.
+- **Deferred (P5c.1.5).** Per-batch AQL delegation for expressions outside the supported Python subset (and for the `ksql` / `python` engines) is still open; the evaluator currently falls back to identity pass-through with a warning so loads keep making progress.
 
 ### Execution order for Phase 5c
 
@@ -775,7 +775,7 @@ Phase 5b delivered the functional split-screen mapper and Phase 5c added express
 
 - **Expression editor polish.** Syntax highlighting and server-side preview (P5c.2.5) remain partial; the editor ships as a plain monospace textarea with engine selector and sources picker.
 - **Drag-and-drop for node / edge promotion across target cards.** Current drop is Shift/Alt + mouse drag; pure HTML5 DnD parity with explorer items is a polish item.
-- **Full KSQL expressions.** The in-UI editor accepts them but the backend evaluator (P5c.1.4 – P5c.1.6) is not yet wired; expressions are stored and round-tripped but not yet executed in the streaming / bulk paths.
+- **KSQL / Python expression engines.** The in-UI editor accepts them but only the `aql` engine is evaluated in-process today (P5c.1.4 / P5c.1.6 for the supported subset). Per-batch AQL delegation for the remainder of AQL and translation layers for KSQL / Python are still TODO under P5c.1.5 / P5c.1.7 — unsupported expressions currently fall back to identity pass-through with a structured-log warning.
 
 ---
 

@@ -5,6 +5,7 @@ from typing import Any, Dict, Set
 
 import yaml
 
+from r2g.expressions import ExpressionError, compile_expression
 from r2g.types import CollectionMapping, EdgeDefinition, MappingConfig, Schema, Table
 
 DEFAULT_TYPE_MAP: Dict[str, str] = {
@@ -147,6 +148,28 @@ def validate_config(schema: Schema, config: MappingConfig) -> list[str]:
                         f"Collection '{key}': include_field '{incl}' "
                         f"is not a column in table '{src}'"
                     )
+
+        for fx in cm.field_expressions:
+            for s in fx.sources:
+                if s not in cols:
+                    issues.append(
+                        f"Collection '{key}': expression for '{fx.target}' "
+                        f"references source '{s}' which is not a column in table '{src}'"
+                    )
+            if fx.engine == "aql" and fx.expression.strip():
+                try:
+                    compiled = compile_expression(fx.expression)
+                except ExpressionError as err:
+                    issues.append(
+                        f"Collection '{key}': expression for '{fx.target}' is invalid: {err}"
+                    )
+                    continue
+                for ref in compiled.references:
+                    if ref not in cols:
+                        issues.append(
+                            f"Collection '{key}': expression for '{fx.target}' "
+                            f"references @{ref} which is not a column in table '{src}'"
+                        )
 
     for key, cm in config.collections.items():
         src = cm.source_table

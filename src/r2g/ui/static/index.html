@@ -354,6 +354,15 @@
     resize: vertical; outline: none;
   }
   .expr-textarea:focus { border-color: var(--accent); }
+  .expr-textarea.expr-invalid { border-color: var(--danger, #d85); }
+  .expr-textarea.expr-valid { border-color: var(--success, #4caf50); }
+  .expr-status {
+    font-family: 'SF Mono','Fira Code',monospace; font-size: 11px;
+    margin-top: 4px; min-height: 14px;
+  }
+  .expr-status.expr-ok { color: var(--success, #4caf50); }
+  .expr-status.expr-err { color: var(--danger, #d85); }
+  .expr-status.expr-muted { color: var(--text-muted); }
   .expr-desc-input {
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 10px; font-family: inherit; font-size: 12px;
@@ -930,7 +939,11 @@
     <div class="expr-modal-row">
       <div class="expr-modal-field-label">Expression</div>
       <textarea class="expr-textarea" id="expr-textarea" placeholder='e.g. CONCAT(@first_name, " ", @last_name)'></textarea>
-      <div class="expr-hint">Leave empty to pass the (single) source column through unchanged.</div>
+      <div class="expr-status" id="expr-status" aria-live="polite"></div>
+      <div class="expr-hint">
+        Leave empty to pass the (single) source column through unchanged.
+        <span id="expr-fns-hint" class="muted"></span>
+      </div>
     </div>
 
     <div class="expr-modal-row">
@@ -2465,6 +2478,68 @@ function openExpressionEditor(collKey, targetProp) {
   renderExprSources();
   modal.classList.add('visible');
   setTimeout(() => document.getElementById('expr-textarea').focus(), 50);
+  scheduleExprCompile();
+}
+
+let _exprCompileTimer = null;
+let _exprCompileSeq = 0;
+function scheduleExprCompile() {
+  if (!exprEditorState) return;
+  const ta = document.getElementById('expr-textarea');
+  const status = document.getElementById('expr-status');
+  if (!ta || !status) return;
+  const engine = exprEditorState.engine || 'aql';
+  const expr = ta.value || '';
+  ta.classList.remove('expr-valid', 'expr-invalid');
+  if (engine !== 'aql') {
+    status.className = 'expr-status expr-muted';
+    status.textContent = `${engine.toUpperCase()} expressions are delegated at load time; parse-check is unavailable in the browser.`;
+    return;
+  }
+  if (!expr.trim()) {
+    status.className = 'expr-status expr-muted';
+    status.textContent = 'Identity mapping (pass-through).';
+    return;
+  }
+  status.className = 'expr-status expr-muted';
+  status.textContent = 'Checking\u2026';
+  if (_exprCompileTimer) clearTimeout(_exprCompileTimer);
+  const seq = ++_exprCompileSeq;
+  _exprCompileTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch('/api/expressions/compile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expression: expr, engine }),
+      });
+      const data = await resp.json();
+      if (seq !== _exprCompileSeq) return;
+      if (data.valid) {
+        ta.classList.add('expr-valid');
+        status.className = 'expr-status expr-ok';
+        const refs = (data.references || []).map(r => '@' + r).join(', ') || '\u2014';
+        status.textContent = `OK. References: ${refs}`;
+        if (exprEditorState && Array.isArray(data.references)) {
+          for (const r of data.references) {
+            if (!exprEditorState.sources.includes(r)) {
+              const chip = document.querySelector(`.expr-source-chip[data-col="${CSS.escape(r)}"]`);
+              if (chip && !chip.classList.contains('active')) {
+                chip.classList.add('pending');
+              }
+            }
+          }
+        }
+      } else {
+        ta.classList.add('expr-invalid');
+        status.className = 'expr-status expr-err';
+        status.textContent = data.error || 'Invalid expression';
+      }
+    } catch (e) {
+      if (seq !== _exprCompileSeq) return;
+      status.className = 'expr-status expr-muted';
+      status.textContent = '';
+    }
+  }, 250);
 }
 
 function renderExprSources() {
@@ -2505,6 +2580,12 @@ function saveExpressionEditor() {
 
   if (!sources.length) {
     toast('At least one source column is required', 'error');
+    return;
+  }
+
+  const ta = document.getElementById('expr-textarea');
+  if (ta && ta.classList.contains('expr-invalid')) {
+    toast('Fix the expression syntax before saving', 'error');
     return;
   }
 
@@ -2549,8 +2630,17 @@ function initExpressionEditor() {
       exprEditorState.engine = btn.dataset.engine;
       document.querySelectorAll('#expr-engines .expr-engine-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      scheduleExprCompile();
     });
   });
+  const ta = document.getElementById('expr-textarea');
+  if (ta) ta.addEventListener('input', scheduleExprCompile);
+
+  fetch('/api/expressions/functions').then(r => r.json()).then(data => {
+    const hint = document.getElementById('expr-fns-hint');
+    if (!hint || !data || !Array.isArray(data.functions)) return;
+    hint.textContent = ` Available functions: ${data.functions.join(', ')}.`;
+  }).catch(() => {});
 }
 
 // ── Keyboard shortcuts ──

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from r2g.transformers.node_transformer import NodeTransformer
-from r2g.types import CollectionMapping, Column, Table
+from r2g.types import CollectionMapping, Column, FieldExpression, Table
 
 
 def _simple_table(columns=None, primary_key=None):
@@ -196,3 +196,157 @@ class TestNullableEmptyString:
         result = transformer.transform_row({"id": "1", "note": ""})
 
         assert result["note"] == ""
+
+
+class TestFieldExpressions:
+    def _people_table(self):
+        return Table(
+            name="people",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True, is_nullable=False),
+                Column(name="first_name", data_type="text", is_nullable=False),
+                Column(name="last_name", data_type="text", is_nullable=True),
+                Column(name="age", data_type="integer", is_nullable=True),
+            ],
+            primary_key=["id"],
+        )
+
+    def test_concat_expression_produces_target(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="full_name",
+                    sources=["first_name", "last_name"],
+                    expression='CONCAT(@first_name, " ", @last_name)',
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        result = transformer.transform_row(
+            {"id": 1, "first_name": "Ada", "last_name": "Lovelace", "age": 36}
+        )
+
+        assert result["full_name"] == "Ada Lovelace"
+        assert result["first_name"] == "Ada"
+        assert result["age"] == 36
+
+    def test_expression_overrides_pass_through_for_same_target(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="first_name",
+                    sources=["first_name"],
+                    expression="UPPER(@first_name)",
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        result = transformer.transform_row(
+            {"id": 1, "first_name": "ada", "last_name": "Lovelace", "age": 36}
+        )
+
+        assert result["first_name"] == "ADA"
+
+    def test_expression_respects_field_mappings_for_target_name(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_mappings={"first_name": "given_name"},
+            field_expressions=[
+                FieldExpression(
+                    target="given_name",
+                    sources=["first_name"],
+                    expression="UPPER(@first_name)",
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        result = transformer.transform_row(
+            {"id": 1, "first_name": "ada", "last_name": "L", "age": 1}
+        )
+
+        assert result["given_name"] == "ADA"
+        assert "first_name" not in result
+
+    def test_null_coalesce_fallback(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="display_last",
+                    sources=["last_name"],
+                    expression='@last_name ?? "unknown"',
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        row = {"id": 1, "first_name": "Ada", "last_name": None, "age": None}
+        result = transformer.transform_row(row)
+
+        assert result["display_last"] == "unknown"
+
+    def test_identity_expression_passes_value_through(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(target="age", sources=["age"], expression="")
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        result = transformer.transform_row(
+            {"id": 1, "first_name": "Ada", "last_name": "L", "age": "42"}
+        )
+
+        assert result["age"] == 42
+
+    def test_uncompilable_expression_falls_back_to_source_pass_through(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="age_note",
+                    sources=["age"],
+                    expression="UNKNOWN_FUNC(@age)",
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        result = transformer.transform_row(
+            {"id": 1, "first_name": "Ada", "last_name": "L", "age": "42"}
+        )
+
+        assert result["age_note"] == 42
+
+    def test_non_aql_engine_falls_back_to_identity(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="first_name",
+                    sources=["first_name"],
+                    expression="first_name.upper()",
+                    engine="python",
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        result = transformer.transform_row(
+            {"id": 1, "first_name": "ada", "last_name": "L", "age": 1}
+        )
+
+        assert result["first_name"] == "ada"

@@ -4,8 +4,9 @@ import json
 from typing import Any, Dict, Optional
 
 from r2g.config import pg_type_to_json_type
+from r2g.expressions import CompiledExpression, ExpressionError, compile_expression
 from r2g.log import get_logger
-from r2g.types import CollectionMapping, Column, Table
+from r2g.types import CollectionMapping, Column, FieldExpression, Table
 
 logger = get_logger(__name__)
 
@@ -22,6 +23,32 @@ class NodeTransformer:
         self._mapping = collection_mapping
         self.key_separator = key_separator
         self._type_overrides = type_overrides or {}
+        self._compiled_expressions: list[tuple[FieldExpression, Optional[CompiledExpression]]] = []
+        if collection_mapping is not None:
+            for fx in collection_mapping.field_expressions:
+                if fx.is_identity or not fx.expression.strip():
+                    self._compiled_expressions.append((fx, None))
+                    continue
+                if fx.engine != "aql":
+                    logger.warning(
+                        "field_expression_engine_unsupported",
+                        target=fx.target,
+                        engine=fx.engine,
+                    )
+                    self._compiled_expressions.append((fx, None))
+                    continue
+                try:
+                    compiled = compile_expression(fx.expression)
+                except ExpressionError as err:
+                    logger.warning(
+                        "field_expression_compile_failed",
+                        target=fx.target,
+                        engine=fx.engine,
+                        error=str(err),
+                    )
+                    self._compiled_expressions.append((fx, None))
+                    continue
+                self._compiled_expressions.append((fx, compiled))
 
     def _json_type_for_column(self, column: Column) -> str:
         if column.name in self._type_overrides:
@@ -107,6 +134,8 @@ class NodeTransformer:
             names &= set(self._mapping.include_fields)
         names -= set(self._mapping.exclude_fields)
 
+        expression_targets = {fx.target for fx, _ in self._compiled_expressions}
+
         ordered_names = [k for k in row if k in names]
         doc: Dict[str, Any] = {}
         for src_name in ordered_names:
@@ -118,8 +147,63 @@ class NodeTransformer:
                 logger.warning("coerce_failed", column=src_name, error=str(e))
                 coerced = raw
             tgt_name = self._mapping.field_mappings.get(src_name, src_name)
+            if tgt_name in expression_targets:
+                continue
             doc[tgt_name] = coerced
+
+        for fx, compiled in self._compiled_expressions:
+            doc[fx.target] = self._apply_field_expression(fx, compiled, row, col_by_name)
 
         if key:
             doc["_key"] = key
         return doc
+
+    def _apply_field_expression(
+        self,
+        fx: FieldExpression,
+        compiled: Optional[CompiledExpression],
+        row: Dict[str, Any],
+        col_by_name: Dict[str, Column],
+    ) -> Any:
+        """Evaluate a ``FieldExpression`` against the raw source row.
+
+        Identity and un-compilable expressions fall back to a pass-through
+        read of ``sources`` (or the target name if ``sources`` is empty).
+        """
+
+        if compiled is None:
+            src_name = fx.sources[0] if fx.sources else fx.target
+            raw = row.get(src_name)
+            column = col_by_name.get(src_name)
+            if column is None:
+                return raw
+            try:
+                return self._coerce_value(raw, column)
+            except (TypeError, ValueError) as e:
+                logger.warning("coerce_failed", column=src_name, error=str(e))
+                return raw
+
+        env: Dict[str, Any] = {}
+        source_names = fx.sources or list(compiled.references)
+        for src_name in source_names:
+            raw = row.get(src_name)
+            column = col_by_name.get(src_name)
+            if column is None:
+                env[src_name] = raw
+                continue
+            try:
+                env[src_name] = self._coerce_value(raw, column)
+            except (TypeError, ValueError) as e:
+                logger.warning("coerce_failed", column=src_name, error=str(e))
+                env[src_name] = raw
+        for ref in compiled.references:
+            env.setdefault(ref, row.get(ref))
+        try:
+            return compiled.evaluate(env)
+        except ExpressionError as err:
+            logger.warning(
+                "field_expression_eval_failed",
+                target=fx.target,
+                error=str(err),
+            )
+            return None
