@@ -73,7 +73,7 @@ def add_source(
     Args:
         name: Unique name for the source (e.g. "prod_ecommerce")
         connection_string: Database connection URI or env var reference like "$PG_CONN"
-        source_type: One of "postgresql", "csv", "kafka"
+        source_type: One of "postgresql", "snowflake" (introspection only today)
         description: Human-readable description
     """
     mgr = _get_catalog()
@@ -211,10 +211,14 @@ def introspect_source_schema(
         return {"error": f"Source '{source_name}' not found"}
 
     try:
-        from r2g.connectors.postgres import PostgresConnector
+        from r2g.connectors.base import create_source_connector
 
         conn_str = _resolve_conn_string(source.connection_string)
-        connector = PostgresConnector(conn_str, schema_name=pg_schema)
+        connector = create_source_connector(
+            source.source_type or "postgresql",
+            conn_str,
+            schema_name=pg_schema,
+        )
         schema = connector.get_schema()
 
         result: dict[str, Any] = {

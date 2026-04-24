@@ -624,6 +624,31 @@
     display: flex; flex-direction: column-reverse; gap: 8px; pointer-events: none;
   }
   .fc-tray > * { pointer-events: auto; }
+  /* FK suggestion card */
+  .fk-suggest-header {
+    display: flex; justify-content: space-between; align-items: center;
+    padding-bottom: 8px; border-bottom: 1px solid var(--border);
+    margin-bottom: 10px; color: var(--text-dim); font-size: 12px;
+  }
+  .fk-suggest-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .fk-suggest-row {
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px;
+    background: rgba(255,255,255,0.02);
+  }
+  .fk-suggest-line { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+  .fk-suggest-conf {
+    display: inline-block; min-width: 42px; text-align: center;
+    padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: bold;
+  }
+  .fk-suggest-conf.high { background: rgba(34,197,94,.2); color: #22c55e; }
+  .fk-suggest-conf.mid  { background: rgba(251,191,36,.2); color: #fbbf24; }
+  .fk-suggest-conf.low  { background: rgba(244,114,182,.2); color: #f472b6; }
+  .fk-suggest-method { color: var(--text-dim); font-size: 11px; font-family: var(--font-mono); }
+  .fk-suggest-arrow { flex: 1; font-size: 12px; color: var(--text); }
+  .fk-suggest-arrow code { background: rgba(255,255,255,.06); padding: 1px 4px; border-radius: 2px; }
+  .fk-suggest-evidence { color: var(--text-dim); font-size: 11px; margin-bottom: 6px; }
+  .fk-suggest-actions { display: flex; gap: 6px; }
+  .fk-suggest-actions .btn { padding: 4px 10px; font-size: 11px; }
 
   /* ── Phase A: Help button + active-lens chip in toolbar ───────── */
   .toolbar-status {
@@ -807,6 +832,7 @@
     <button class="btn" id="btn-validate" disabled onclick="validateMapping()" title="Validate (Cmd/Ctrl+Shift+V)">Validate</button>
     <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()" title="Save (Cmd/Ctrl+S)">Save</button>
     <button class="btn" id="btn-automap" disabled onclick="autoMap()" title="Auto-map (a)">Auto-Map</button>
+    <button class="btn" id="btn-suggest-fks" disabled onclick="suggestFks()" title="Suggest foreign keys from names / values (i)">Suggest FKs</button>
     <button class="btn" id="btn-diff" disabled onclick="showDiff()" title="Diff (Cmd/Ctrl+D)">Diff</button>
     <button class="btn" id="btn-export" disabled onclick="exportYaml()">Export YAML</button>
     <button class="btn" id="btn-history" disabled onclick="showHistory()">History</button>
@@ -1022,7 +1048,7 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 });
 
 function setActionButtons(enabled) {
-  ['btn-validate','btn-save','btn-automap','btn-diff','btn-export','btn-history','btn-load'].forEach(id => {
+  ['btn-validate','btn-save','btn-automap','btn-suggest-fks','btn-diff','btn-export','btn-history','btn-load'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = !enabled;
   });
@@ -1159,12 +1185,17 @@ function openNewSourceForm() {
       <label>Type
         <select id="ns-type">
           <option value="postgresql">PostgreSQL</option>
+          <option value="snowflake">Snowflake (introspect-only)</option>
         </select>
-        <span class="hint">CSV and Kafka source types coming later.</span>
+        <span class="hint">Snowflake supports schema capture today; streaming / FK inference land in a later slice. CSV and Kafka source types coming later.</span>
       </label>
       <label>Connection string
         <input id="ns-conn" placeholder="postgresql://user:pass@host:5432/db" autocomplete="off" />
-        <span class="hint">Use <code>$ENV_VAR</code> to reference an environment variable.</span>
+        <span class="hint">
+          PostgreSQL: <code>postgresql://user:pass@host:5432/db</code>.
+          Snowflake: <code>snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&amp;role=R</code>.
+          Use <code>$ENV_VAR</code> to reference an environment variable.
+        </span>
       </label>
       <label>Description (optional)
         <input id="ns-desc" placeholder="Production database" autocomplete="off" />
@@ -3101,6 +3132,182 @@ async function autoMap() {
   }
 }
 
+// ── Phase 6 P6.6: Suggest foreign keys ──
+async function suggestFks({ sample = false } = {}) {
+  if (!currentProject) return;
+
+  openFloatingCard({
+    id: 'fk-suggestions',
+    title: 'Inferring foreign keys\u2026',
+    body: '<p style="color:var(--text-dim)">Querying catalog and schema\u2026</p>',
+    status: { kind: 'info', label: 'working' },
+    actions: [],
+    position: { right: 20, bottom: 120 },
+  });
+
+  try {
+    // Resolve the source name from the project. We deliberately
+    // re-fetch each time so the card reflects the *current* snapshot
+    // even after the user re-snapshots the source.
+    const project = await apiFetch(`/api/projects/${currentProject}`);
+    const source = project.source_name || project.sourceName;
+    if (!source) {
+      throw new Error('No source attached to this project');
+    }
+    const body = { sample, min_confidence: 0.4 };
+    const result = await apiFetch(`/api/sources/${encodeURIComponent(source)}/infer-fks`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    renderFkSuggestions(result);
+  } catch (e) {
+    openFloatingCard({
+      id: 'fk-suggestions',
+      title: 'Suggest foreign keys',
+      body: `<p style="color:var(--red)">${escHtml(e.message || String(e))}</p>`,
+      status: { kind: 'error', label: 'failed' },
+    });
+  }
+}
+
+function renderFkSuggestions(result) {
+  const candidates = (result && result.candidates) || [];
+  if (!candidates.length) {
+    openFloatingCard({
+      id: 'fk-suggestions',
+      title: 'Suggest foreign keys',
+      body: '<p style="color:var(--text-dim)">No candidates met the confidence threshold. The schema may already have its FKs declared, or the naming doesn\u2019t match common patterns. Try <code>r2g source infer-fks &lt;name&gt; --sample</code> from the CLI to enable value-overlap scoring.</p>',
+      status: { kind: 'info', label: '0 found' },
+    });
+    return;
+  }
+
+  const sampleNote = result.sample_used
+    ? '<span class="hint" style="color:var(--green)">Value-overlap sampling ON</span>'
+    : '<span class="hint">Name-heuristic only \u2014 use CLI <code>--sample</code> for value checks</span>';
+
+  const rows = candidates.map((c, idx) => {
+    const already = editState.edges.some(e =>
+      e.fromCollection === c.table &&
+      e.toCollection === c.foreign_table &&
+      (e.fromField || '').replace(/\s+/g, '') === c.columns.join(',')
+    );
+    const confPct = Math.round((c.confidence || 0) * 100);
+    const confClass = confPct >= 80 ? 'high' : (confPct >= 60 ? 'mid' : 'low');
+    const evidence = (c.evidence || []).join(' \u00b7 ');
+    const disabledAttr = already ? 'disabled title="This edge is already in the mapping"' : '';
+    const acceptLabel = already ? 'Already added' : 'Accept as edge';
+    return `
+      <li class="fk-suggest-row" data-idx="${idx}">
+        <div class="fk-suggest-line">
+          <span class="fk-suggest-conf ${confClass}">${confPct}%</span>
+          <span class="fk-suggest-method">${escHtml(c.method || '')}</span>
+          <span class="fk-suggest-arrow">
+            <code>${escHtml(c.table)}</code>(${escHtml(c.columns.join(', '))})
+            \u2192
+            <code>${escHtml(c.foreign_table)}</code>(${escHtml(c.foreign_columns.join(', '))})
+          </span>
+        </div>
+        <div class="fk-suggest-evidence">${escHtml(evidence)}</div>
+        <div class="fk-suggest-actions">
+          <button class="btn btn-primary" ${disabledAttr} onclick="acceptFkSuggestion(${idx})">${acceptLabel}</button>
+          <button class="btn" onclick="dismissFkSuggestion(${idx})">Dismiss</button>
+        </div>
+      </li>`;
+  }).join('');
+
+  const bodyHtml = `
+    <div class="fk-suggest-header">
+      <span>${candidates.length} candidate${candidates.length === 1 ? '' : 's'}</span>
+      ${sampleNote}
+    </div>
+    <ul class="fk-suggest-list">${rows}</ul>
+  `;
+
+  _pendingFkSuggestions = candidates.slice();
+
+  openFloatingCard({
+    id: 'fk-suggestions',
+    title: 'Suggested foreign keys',
+    body: bodyHtml,
+    status: { kind: 'ok', label: `${candidates.length} proposed` },
+    actions: [
+      { label: 'Accept all', kind: 'primary', onClick: acceptAllFkSuggestions },
+      { label: 'Close', onClick: () => closeFloatingCard('fk-suggestions') },
+    ],
+  });
+}
+
+let _pendingFkSuggestions = [];
+
+function _fkSuggestionToEdge(c) {
+  const name = `${c.table}_to_${c.foreign_table}`;
+  return {
+    edgeCollection: name,
+    fromCollection: c.table,
+    toCollection: c.foreign_table,
+    fromField: c.columns.join(', '),
+    toField: c.foreign_columns.join(', '),
+  };
+}
+
+function acceptFkSuggestion(idx) {
+  const c = _pendingFkSuggestions[idx];
+  if (!c) return;
+  const edge = _fkSuggestionToEdge(c);
+  // Avoid name collisions with existing edges.
+  let finalName = edge.edgeCollection;
+  let suffix = 1;
+  while (editState.edges.some(e => e.edgeCollection === finalName)) {
+    finalName = `${edge.edgeCollection}_${suffix++}`;
+  }
+  edge.edgeCollection = finalName;
+  editState.edges.push(edge);
+  markDirty();
+  renderMapper();
+  toast(`Added edge ${finalName}`, 'success');
+  // Re-render the card so the row shows "Already added".
+  renderFkSuggestions({ candidates: _pendingFkSuggestions, sample_used: false });
+}
+
+function dismissFkSuggestion(idx) {
+  _pendingFkSuggestions.splice(idx, 1);
+  if (!_pendingFkSuggestions.length) {
+    closeFloatingCard('fk-suggestions');
+    return;
+  }
+  renderFkSuggestions({ candidates: _pendingFkSuggestions, sample_used: false });
+}
+
+function acceptAllFkSuggestions() {
+  const before = editState.edges.length;
+  for (const c of _pendingFkSuggestions) {
+    const already = editState.edges.some(e =>
+      e.fromCollection === c.table &&
+      e.toCollection === c.foreign_table &&
+      (e.fromField || '').replace(/\s+/g, '') === c.columns.join(',')
+    );
+    if (already) continue;
+    const edge = _fkSuggestionToEdge(c);
+    let finalName = edge.edgeCollection;
+    let suffix = 1;
+    while (editState.edges.some(e => e.edgeCollection === finalName)) {
+      finalName = `${edge.edgeCollection}_${suffix++}`;
+    }
+    edge.edgeCollection = finalName;
+    editState.edges.push(edge);
+  }
+  const added = editState.edges.length - before;
+  if (added > 0) {
+    markDirty();
+    renderMapper();
+    toast(`Added ${added} edge${added === 1 ? '' : 's'}`, 'success');
+  } else {
+    toast('All candidates were already in the mapping', 'info');
+  }
+  closeFloatingCard('fk-suggestions');
+}
+
 // ── Settings ──
 
 function showSettings() {
@@ -3598,6 +3805,7 @@ function _menuSourceFk(fromTable, toTable, fk) {
 function _menuCanvas() {
   return [
     { label: 'Auto-map all', icon: '\u2728', shortcut: 'a', onClick: autoMap },
+    { label: 'Suggest foreign keys\u2026', icon: '\u2699', shortcut: 'i', onClick: () => suggestFks() },
     { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping },
     { label: 'Save', icon: '\u2630', shortcut: '\u2318S', onClick: saveMapping },
     { label: 'Load\u2026', icon: '\u25B6', shortcut: '\u2318\u23CE', onClick: showLoadModal },
@@ -4668,6 +4876,7 @@ registerShortcut('ctrl+d', 'Show diff', 'global', () => showDiff());
 registerShortcut('meta+enter', 'Open load dialog', 'global', () => showLoadModal());
 registerShortcut('ctrl+enter', 'Open load dialog', 'global', () => showLoadModal());
 registerShortcut('a', 'Auto-map all', 'global', () => autoMap());
+registerShortcut('i', 'Suggest foreign keys', 'global', () => suggestFks());
 registerShortcut('1', 'View: Topology', 'global', () => setLens('topology'));
 registerShortcut('2', 'View: Coverage', 'global', () => setLens('coverage'));
 registerShortcut('3', 'View: Validation', 'global', () => setLens('validation'));

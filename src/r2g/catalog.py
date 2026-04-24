@@ -149,6 +149,19 @@ class CatalogManager:
         owner: str = "",
         source_params: dict[str, Any] | None = None,
     ) -> SourceConfig:
+        # Catalog accepts any *known* source type so future types
+        # (csv, kafka) can be pre-registered; the connector factory
+        # remains the strict gate on what we can actually introspect.
+        KNOWN_TYPES = ("postgresql", "snowflake", "csv", "kafka")
+        normalized = (source_type or "").strip().lower()
+        if normalized in ("postgres", "pg"):
+            normalized = "postgresql"
+        if normalized not in KNOWN_TYPES:
+            raise ValueError(
+                f"Unsupported source_type '{source_type}'. "
+                f"Expected one of: {', '.join(KNOWN_TYPES)}."
+            )
+        source_type = normalized
         catalog = self._load()
         if name in catalog.sources:
             raise ValueError(f"Source '{name}' already exists")

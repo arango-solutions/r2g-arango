@@ -1,19 +1,23 @@
-"""Streaming pipeline: reads from PostgreSQL and writes directly to ArangoDB.
+"""Streaming pipeline: reads from any supported source and writes directly to ArangoDB.
 
-Eliminates intermediate files by using server-side cursors for batched reads
-and the ArangoDB HTTP bulk import API for writes.
+The read path is source-agnostic: any object satisfying the
+:class:`r2g.connectors.base.SourceConnector` Protocol can drive the
+pipeline (PostgreSQL via :class:`PostgresConnector`, Snowflake via
+:class:`SnowflakeConnector`). Each worker opens its own
+:class:`r2g.connectors.session.SourceSession` with consistent-snapshot
+semantics (PG ``REPEATABLE READ`` / Snowflake ``BEGIN``) so parallelism
+does not break read consistency.
 """
 
 from __future__ import annotations
 
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Generator
-
-import psycopg
-from psycopg.rows import dict_row
+from typing import Any, Callable, Optional
 
 from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
+from r2g.connectors.base import SourceConnector
+from r2g.connectors.session import SourceSession
 from r2g.log import get_logger
 from r2g.topo_sort import topological_sort_tables
 from r2g.transformers.edge_transformer import EdgeTransformer
@@ -27,12 +31,14 @@ EventFn = Callable[[dict[str, Any]], None]
 
 
 class StreamingPipeline:
-    """Orchestrates streaming data from PostgreSQL to ArangoDB.
+    """Orchestrates streaming data from a relational source to ArangoDB.
 
-    Uses REPEATABLE READ transaction isolation for snapshot consistency
-    and server-side cursors for bounded memory usage.
+    The pipeline is driven by a :class:`SourceConnector`; each worker
+    (1 by default, ``workers`` in parallel mode) calls
+    :meth:`SourceConnector.open_session` for its own consistent
+    snapshot.
 
-    When ``dry_run=True`` the pipeline connects to both PostgreSQL and
+    When ``dry_run=True`` the pipeline connects to both the source and
     ArangoDB (validating credentials), reads and transforms all rows,
     but skips writes and graph creation.  Returns counts and sample
     documents for pre-flight validation.
@@ -41,16 +47,26 @@ class StreamingPipeline:
     where *event* is ``"start"`` / ``"progress"`` / ``"done"``; *name* is the
     collection name; *current* is rows processed so far; *total* is the
     estimated row count (may be ``None`` if unavailable).
+
+    Backward compatibility
+    ----------------------
+
+    Previous callers passed ``pg_conn_string=...`` (PostgreSQL only).
+    That keyword still works — the pipeline wraps it in a
+    :class:`PostgresConnector` automatically. New callers should pass
+    ``source_connector=...`` directly, which supports any source type.
     """
 
     PREVIEW_LIMIT = 3
 
     def __init__(
         self,
-        pg_conn_string: str,
+        *,
         arango_writer: ArangoWriter,
         schema: Schema,
         config: MappingConfig,
+        source_connector: Optional[SourceConnector] = None,
+        pg_conn_string: Optional[str] = None,
         batch_size: int = 10_000,
         on_duplicate: str = "replace",
         pg_schema: str = "public",
@@ -63,7 +79,22 @@ class StreamingPipeline:
         since: str | None = None,
         since_column: str | None = None,
     ) -> None:
-        self.pg_conn_string = pg_conn_string
+        if source_connector is None and pg_conn_string is None:
+            raise ValueError(
+                "StreamingPipeline requires either source_connector or pg_conn_string"
+            )
+
+        if source_connector is None:
+            # Backward-compat shim: legacy callers pass only pg_conn_string.
+            from r2g.connectors.postgres import PostgresConnector
+
+            source_connector = PostgresConnector(
+                pg_conn_string,  # type: ignore[arg-type]
+                schema_name=pg_schema,
+            )
+
+        self.source_connector: SourceConnector = source_connector
+        self.pg_conn_string = pg_conn_string  # retained for logging / compat
         self.writer = arango_writer
         self.schema = schema
         self.config = config
@@ -85,8 +116,9 @@ class StreamingPipeline:
         self._on_event: EventFn | None = None
         self._lock = __import__("threading").Lock()
 
+    # ── Filtering / skip-existing ──────────────────────────────────
+
     def _should_skip_collection(self, writer: ArangoWriter, collection_name: str) -> bool:
-        """Return True if the collection exists and has data and skip_existing is on."""
         if not self.skip_existing:
             return False
         try:
@@ -107,12 +139,27 @@ class StreamingPipeline:
         return False
 
     def _should_include_table(self, table_name: str) -> bool:
-        """Check whether a source table passes the include/exclude filters."""
         if self.include_tables is not None and table_name not in self.include_tables:
             return False
         if self.exclude_tables is not None and table_name in self.exclude_tables:
             return False
         return True
+
+    def _resolve_since_column(self, table_name: str) -> str | None:
+        if self.since is None:
+            return None
+        table = self.schema.tables.get(table_name)
+        if table is None:
+            return None
+        col_names = {c.name for c in table.columns}
+        if self.since_column:
+            return self.since_column if self.since_column in col_names else None
+        for candidate in ("updated_at", "modified_at", "last_modified", "created_at"):
+            if candidate in col_names:
+                return candidate
+        return None
+
+    # ── Write path ─────────────────────────────────────────────────
 
     def _flush_batch(
         self,
@@ -120,7 +167,6 @@ class StreamingPipeline:
         collection: str,
         batch: list[dict[str, Any]],
     ) -> None:
-        """Import a batch, capturing document-level errors instead of aborting."""
         try:
             writer.import_batch(collection, batch, self.on_duplicate)
         except ImportBatchError as exc:
@@ -142,61 +188,7 @@ class StreamingPipeline:
         if self._on_event is not None:
             self._on_event(event_data)
 
-    def _count_table_rows(self, conn: psycopg.Connection, table_name: str) -> int:
-        """Fast row count within the current REPEATABLE READ transaction."""
-        from psycopg.rows import tuple_row
-
-        qualified = f"{self.pg_schema}.{table_name}"
-        since_col = self._resolve_since_column(table_name)
-        with conn.cursor(row_factory=tuple_row) as cur:
-            if since_col and self.since:
-                cur.execute(
-                    f"SELECT count(*) FROM {qualified} WHERE {since_col} >= %s",  # noqa: S608
-                    (self.since,),
-                )
-            else:
-                cur.execute(f"SELECT count(*) FROM {qualified}")  # noqa: S608
-            return cur.fetchone()[0]
-
-    def _resolve_since_column(self, table_name: str) -> str | None:
-        """Determine the timestamp column for --since filtering on a table."""
-        if self.since is None:
-            return None
-        table = self.schema.tables.get(table_name)
-        if table is None:
-            return None
-        col_names = {c.name for c in table.columns}
-        if self.since_column:
-            return self.since_column if self.since_column in col_names else None
-        for candidate in ("updated_at", "modified_at", "last_modified", "created_at"):
-            if candidate in col_names:
-                return candidate
-        return None
-
-    def _stream_rows(
-        self,
-        conn: psycopg.Connection,
-        table_name: str,
-    ) -> Generator[dict[str, Any], None, None]:
-        """Stream rows from a PostgreSQL table using a server-side cursor."""
-        qualified = f"{self.pg_schema}.{table_name}"
-        cursor_name = f"r2g_{table_name}"
-
-        since_col = self._resolve_since_column(table_name)
-        with conn.cursor(name=cursor_name, row_factory=dict_row) as cur:
-            cur.itersize = self.batch_size
-            if since_col and self.since:
-                logger.info("stream_since_filter", table=table_name, column=since_col, since=self.since)
-                cur.execute(
-                    f"SELECT * FROM {qualified} WHERE {since_col} >= %s",  # noqa: S608
-                    (self.since,),
-                )
-            else:
-                cur.execute(f"SELECT * FROM {qualified}")  # noqa: S608
-            yield from cur
-
     def _make_writer(self) -> ArangoWriter:
-        """Create a new ArangoWriter with the same connection params."""
         return ArangoWriter(
             endpoint=self.writer.endpoint,
             database=self.writer.database_name,
@@ -205,15 +197,15 @@ class StreamingPipeline:
             max_retries=self.writer.max_retries,
         )
 
+    # ── Per-collection streaming ──────────────────────────────────
+
     def _stream_one_document(
         self,
         table_name: str,
         cm: Any,
-        conn: psycopg.Connection | None = None,
-        writer: ArangoWriter | None = None,
+        session: SourceSession,
+        writer: Optional[ArangoWriter] = None,
     ) -> tuple[str, int]:
-        """Stream a single document collection. Thread-safe when each
-        call receives its own *conn* and *writer*."""
         table_def = self.schema.tables[table_name]
         target = cm.target_collection
         w = writer or self.writer
@@ -240,17 +232,26 @@ class StreamingPipeline:
             type_overrides=self.config.type_overrides,
         )
 
-        assert conn is not None
+        since_col = self._resolve_since_column(table_name)
         batch: list[dict[str, Any]] = []
         total = 0
         samples: list[dict[str, Any]] = []
-        row_estimate = self._count_table_rows(conn, table_name)
+        row_estimate = session.count_rows(
+            table_name,
+            since_column=since_col,
+            since_value=self.since if since_col else None,
+        )
 
         logger.info("stream_documents_start", table=table_name, target=target, rows=row_estimate)
         self._notify("start", target, 0, row_estimate)
         self._emit({"event": "start", "collection": target, "type": "document", "estimated_rows": row_estimate})
 
-        for row in self._stream_rows(conn, table_name):
+        for row in session.stream_rows(
+            table_name,
+            batch_size=self.batch_size,
+            since_column=since_col,
+            since_value=self.since if since_col else None,
+        ):
             doc = transformer.transform_row(row)
             if len(samples) < self.PREVIEW_LIMIT:
                 samples.append(doc)
@@ -280,11 +281,9 @@ class StreamingPipeline:
     def _stream_one_edge(
         self,
         edge_def: Any,
-        conn: psycopg.Connection | None = None,
-        writer: ArangoWriter | None = None,
+        session: SourceSession,
+        writer: Optional[ArangoWriter] = None,
     ) -> tuple[str, int]:
-        """Stream a single edge collection. Thread-safe when each call
-        receives its own *conn* and *writer*."""
         table_name = edge_def.from_collection
         table_def = self.schema.tables[table_name]
         edge_name = edge_def.edge_collection
@@ -303,17 +302,26 @@ class StreamingPipeline:
             key_separator=self.config.key_separator,
         )
 
-        assert conn is not None
+        since_col = self._resolve_since_column(table_name)
         batch: list[dict[str, Any]] = []
         total = 0
         samples: list[dict[str, Any]] = []
-        row_estimate = self._count_table_rows(conn, table_name)
+        row_estimate = session.count_rows(
+            table_name,
+            since_column=since_col,
+            since_value=self.since if since_col else None,
+        )
 
         logger.info("stream_edges_start", table=table_name, edge=edge_name, rows=row_estimate)
         self._notify("start", edge_name, 0, row_estimate)
         self._emit({"event": "start", "collection": edge_name, "type": "edge", "estimated_rows": row_estimate})
 
-        for row in self._stream_rows(conn, table_name):
+        for row in session.stream_rows(
+            table_name,
+            batch_size=self.batch_size,
+            since_column=since_col,
+            since_value=self.since if since_col else None,
+        ):
             doc = transformer.transform_row(row)
             if doc is not None:
                 if len(samples) < self.PREVIEW_LIMIT:
@@ -344,11 +352,9 @@ class StreamingPipeline:
         logger.info("stream_edges_done", edge=edge_name, count=total)
         return (edge_name, total)
 
-    def _stream_documents(
-        self,
-        conn: psycopg.Connection,
-    ) -> list[tuple[str, int]]:
-        """Stream all document collections in topological (dependency) order."""
+    # ── Phase orchestration ────────────────────────────────────────
+
+    def _iter_document_jobs(self) -> list[tuple[str, Any]]:
         ordered, cycles = topological_sort_tables(self.schema)
         if cycles:
             for cycle in cycles:
@@ -357,10 +363,8 @@ class StreamingPipeline:
                     cycle=" -> ".join(cycle),
                     hint="Import order may not satisfy all FK dependencies",
                 )
-
         cm_by_table = {cm.source_table: cm for cm in self.config.collections.values()}
-
-        results: list[tuple[str, int]] = []
+        jobs: list[tuple[str, Any]] = []
         for table_name in ordered:
             cm = cm_by_table.get(table_name)
             if cm is None or cm.collection_type != "document":
@@ -371,15 +375,11 @@ class StreamingPipeline:
             if not self._should_include_table(cm.source_table):
                 logger.info("stream_skip_filtered_table", table=cm.source_table)
                 continue
-            results.append(self._stream_one_document(cm.source_table, cm, conn=conn))
-        return results
+            jobs.append((cm.source_table, cm))
+        return jobs
 
-    def _stream_edges(
-        self,
-        conn: psycopg.Connection,
-    ) -> list[tuple[str, int]]:
-        """Stream all edge collections (sequential, single connection)."""
-        results: list[tuple[str, int]] = []
+    def _iter_edge_jobs(self) -> list[tuple[Any]]:
+        jobs: list[tuple[Any]] = []
         for edge_def in self.config.edges:
             if edge_def.from_collection not in self.schema.tables:
                 logger.warning("stream_edge_skip_unknown_table", table=edge_def.from_collection)
@@ -387,33 +387,48 @@ class StreamingPipeline:
             if not self._should_include_table(edge_def.from_collection):
                 logger.info("stream_edge_skip_filtered_table", table=edge_def.from_collection)
                 continue
-            results.append(self._stream_one_edge(edge_def, conn=conn))
-        return results
+            jobs.append((edge_def,))
+        return jobs
+
+    def _stream_documents(self, session: SourceSession) -> list[tuple[str, int]]:
+        return [
+            self._stream_one_document(table_name, cm, session=session)
+            for (table_name, cm) in self._iter_document_jobs()
+        ]
+
+    def _stream_edges(self, session: SourceSession) -> list[tuple[str, int]]:
+        return [
+            self._stream_one_edge(edge_def, session=session)
+            for (edge_def,) in self._iter_edge_jobs()
+        ]
 
     def _run_parallel_phase(
         self,
         jobs: list[tuple[Any, ...]],
         phase_fn: str,
     ) -> list[tuple[str, int]]:
-        """Run *jobs* in parallel, each on its own PG conn + ArangoDB writer.
-
-        *phase_fn* is ``"doc"`` or ``"edge"``; each job tuple contains
-        the arguments after (conn, writer) for the target method.
-        """
+        """Run *jobs* in parallel, each on its own source session + ArangoDB writer."""
         results: list[tuple[str, int]] = []
 
         def worker(job_args: tuple) -> tuple[str, int]:
             w = self._make_writer()
             if not self.dry_run:
                 w.connect()
-            with psycopg.connect(
-                self.pg_conn_string, row_factory=dict_row, autocommit=False
-            ) as c:
-                c.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            session = self.source_connector.open_session()
+            try:
                 if phase_fn == "doc":
-                    result = self._stream_one_document(job_args[0], job_args[1], conn=c, writer=w)
+                    result = self._stream_one_document(
+                        job_args[0], job_args[1], session=session, writer=w
+                    )
                 else:
-                    result = self._stream_one_edge(job_args[0], conn=c, writer=w)
+                    result = self._stream_one_edge(
+                        job_args[0], session=session, writer=w
+                    )
+            finally:
+                try:
+                    session.close()
+                except Exception:  # noqa: BLE001
+                    pass
             if not self.dry_run:
                 w.close()
             return result
@@ -429,39 +444,9 @@ class StreamingPipeline:
         self,
         graph_name: str | None,
     ) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-        """Execute documents then edges in parallel using separate connections."""
         logger.info("parallel_streaming", workers=self.workers)
-
-        ordered, cycles = topological_sort_tables(self.schema)
-        if cycles:
-            for cycle in cycles:
-                logger.warning(
-                    "circular_fk_dependency",
-                    cycle=" -> ".join(cycle),
-                    hint="Import order may not satisfy all FK dependencies",
-                )
-
-        cm_by_table = {cm.source_table: cm for cm in self.config.collections.values()}
-
-        doc_jobs: list[tuple[Any, ...]] = []
-        for table_name in ordered:
-            cm = cm_by_table.get(table_name)
-            if cm is None or cm.collection_type != "document":
-                continue
-            if cm.source_table not in self.schema.tables:
-                continue
-            if not self._should_include_table(cm.source_table):
-                continue
-            doc_jobs.append((cm.source_table, cm))
-
-        edge_jobs: list[tuple[Any, ...]] = []
-        for edge_def in self.config.edges:
-            if edge_def.from_collection not in self.schema.tables:
-                continue
-            if not self._should_include_table(edge_def.from_collection):
-                continue
-            edge_jobs.append((edge_def,))
-
+        doc_jobs = [(t, cm) for (t, cm) in self._iter_document_jobs()]
+        edge_jobs = self._iter_edge_jobs()
         doc_results = self._run_parallel_phase(doc_jobs, "doc")
         edge_results = self._run_parallel_phase(edge_jobs, "edge")
         return doc_results, edge_results
@@ -474,21 +459,10 @@ class StreamingPipeline:
     ) -> dict[str, list[tuple[str, int]]]:
         """Execute the full streaming pipeline.
 
-        Opens a single PG connection with REPEATABLE READ isolation
-        for consistent snapshot semantics, then streams documents
-        followed by edges into ArangoDB.
-
-        When ``dry_run`` is True the pipeline connects to both PG and
-        ArangoDB (validating credentials and reachability) and reads /
-        transforms every row, but skips all writes.  Sample documents
-        are stored in ``self.previews``.
-
-        *on_progress* receives ``(event, collection, current, total)``
-        callbacks for Rich progress bars or other UIs.
-
-        *on_event* receives structured dicts suitable for SSE streaming.
-
-        Returns a dict with 'documents', 'edges', and 'elapsed_seconds' keys.
+        Single-worker mode opens one :class:`SourceSession` and reads
+        documents then edges through it. Multi-worker mode opens one
+        session per in-flight job (fresh snapshot per worker, matching
+        the existing PG behaviour).
         """
         self._on_progress = on_progress
         self._on_event = on_event
@@ -498,16 +472,13 @@ class StreamingPipeline:
         if self.workers > 1:
             doc_results, edge_results = self._run_parallel(graph_name)
         else:
-            with psycopg.connect(
-                self.pg_conn_string,
-                row_factory=dict_row,
-                autocommit=False,
-            ) as conn:
-                conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-                logger.info("pg_snapshot_started", isolation="REPEATABLE READ")
-
-                doc_results = self._stream_documents(conn)
-                edge_results = self._stream_edges(conn)
+            session = self.source_connector.open_session()
+            try:
+                logger.info("source_snapshot_started", source_type=type(self.source_connector).__name__)
+                doc_results = self._stream_documents(session)
+                edge_results = self._stream_edges(session)
+            finally:
+                session.close()
 
         if not self.dry_run and graph_name:
             edge_defs = []

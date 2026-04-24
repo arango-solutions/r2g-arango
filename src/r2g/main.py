@@ -602,7 +602,17 @@ def validate_schema(
 
 @app.command("stream")
 def stream(
-    pg_conn: str = typer.Option(..., "--pg-conn", help="PostgreSQL connection string", envvar="PG_CONN"),
+    pg_conn: Optional[str] = typer.Option(
+        None,
+        "--pg-conn",
+        help="PostgreSQL connection string (legacy; prefer --source)",
+        envvar="PG_CONN",
+    ),
+    source_name: Optional[str] = typer.Option(
+        None,
+        "--source",
+        help="Catalog source name; resolves to any supported source_type (PostgreSQL, Snowflake, …)",
+    ),
     schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
     config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
     endpoint: str = typer.Option(
@@ -642,17 +652,27 @@ def stream(
         help="Column to use for --since filtering (default: auto-detect updated_at/created_at)"
     ),
 ) -> None:
-    """Stream data directly from PostgreSQL to ArangoDB (no intermediate files).
+    """Stream data directly from a relational source to ArangoDB (no intermediate files).
 
-    Opens a PostgreSQL connection with REPEATABLE READ isolation for consistent
-    snapshots, reads tables via server-side cursors in configurable batches,
-    transforms rows on the fly, and bulk-imports into ArangoDB via the HTTP API.
+    Opens a consistent-snapshot read session on the source (PG
+    ``REPEATABLE READ`` / Snowflake ``BEGIN``), reads tables in
+    configurable batches, transforms rows on the fly, and bulk-imports
+    into ArangoDB via the HTTP API.
+
+    Use ``--source <name>`` to dispatch by catalog ``source_type``
+    (PostgreSQL, Snowflake, …). The legacy ``--pg-conn`` flag still
+    works and routes through the PostgreSQL connector.
 
     Use --dry-run to preview row counts and sample documents without writing.
     Use --since with --on-duplicate=replace for basic incremental updates.
     """
     from r2g.connectors.arango_writer import ArangoWriter
+    from r2g.connectors.base import create_source_connector
     from r2g.streaming.pipeline import StreamingPipeline
+
+    if not pg_conn and not source_name:
+        console.print("[red]Specify either --source <name> or --pg-conn <url>.[/red]")
+        raise typer.Exit(code=2)
 
     try:
         schema = Schema.load_from_file(schema_file)
@@ -668,8 +688,26 @@ def stream(
         inc = {t.strip() for t in include_tables.split(",")} if include_tables else None
         exc = {t.strip() for t in exclude_tables.split(",")} if exclude_tables else None
 
+        if source_name:
+            mgr = _get_catalog()
+            source = mgr.get_source(source_name)
+            if source is None:
+                console.print(f"[red]Source '{source_name}' not found in catalog.[/red]")
+                raise typer.Exit(code=1)
+            source_connector = create_source_connector(
+                source.source_type or "postgresql",
+                source.connection_string,
+                schema_name=pg_schema,
+            )
+            source_label = f"{source.source_type} ({source_name})"
+        else:
+            from r2g.connectors.postgres import PostgresConnector
+
+            source_connector = PostgresConnector(pg_conn, schema_name=pg_schema)
+            source_label = pg_conn.split("@")[-1] if pg_conn and "@" in pg_conn else pg_conn
+
         pipeline = StreamingPipeline(
-            pg_conn_string=pg_conn,
+            source_connector=source_connector,
             arango_writer=writer,
             schema=schema,
             config=mapping,
@@ -688,8 +726,8 @@ def stream(
 
         mode_label = "[yellow]DRY RUN[/yellow] — " if dry_run else ""
         console.print(
-            f"{mode_label}[green]Streaming from PostgreSQL → ArangoDB[/green]\n"
-            f"  PG: {pg_conn.split('@')[-1] if '@' in pg_conn else pg_conn}\n"
+            f"{mode_label}[green]Streaming from source → ArangoDB[/green]\n"
+            f"  Source: {source_label}\n"
             f"  ArangoDB: {endpoint}/{database}\n"
             f"  Batch size: {batch_size:,}"
         )
@@ -1664,10 +1702,20 @@ def source_remove(
 @source_app.command("snapshot")
 def source_snapshot(
     name: str = typer.Argument(..., help="Source name to snapshot"),
-    pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name"),
+    pg_schema: str = typer.Option(
+        "public",
+        "--pg-schema",
+        help="Schema to introspect (PostgreSQL schema or Snowflake schema)",
+    ),
     compare_last: bool = typer.Option(False, "--compare-last", help="Diff against previous snapshot"),
 ) -> None:
-    """Introspect the schema from PostgreSQL and save a snapshot."""
+    """Introspect the schema from the source and save a snapshot.
+
+    Uses the source's ``source_type`` (``postgresql`` or ``snowflake``)
+    to pick the right connector.
+    """
+    from r2g.connectors.base import create_source_connector
+
     mgr = _get_catalog()
     source = mgr.get_source(name)
     if source is None:
@@ -1675,7 +1723,11 @@ def source_snapshot(
         raise typer.Exit(code=1)
 
     try:
-        connector = PostgresConnector(source.connection_string, schema_name=pg_schema)
+        connector = create_source_connector(
+            source.source_type or "postgresql",
+            source.connection_string,
+            schema_name=pg_schema,
+        )
         schema = connector.get_schema()
         previous = mgr.get_latest_snapshot(name) if compare_last else None
         snap = mgr.create_snapshot(name, schema, pg_schema=pg_schema)
@@ -1704,6 +1756,224 @@ def source_snapshot(
         log.exception("source_snapshot_failed")
         console.print(f"[red]Snapshot failed:[/red] {e}")
         raise typer.Exit(code=1)
+
+
+@source_app.command("dump")
+def source_dump(
+    name: str = typer.Argument(..., help="Catalog source name"),
+    output_dir: str = typer.Option(
+        "./dumps", "--output-dir", "-o", help="Directory to write CSV files"
+    ),
+    pg_schema: str = typer.Option(
+        "public",
+        "--pg-schema",
+        help="Source schema to dump (PG/Snowflake schema name)",
+    ),
+    tables: Optional[str] = typer.Option(
+        None,
+        "--tables",
+        "-t",
+        help="Comma-separated list of tables (default: latest snapshot's tables)",
+    ),
+) -> None:
+    """Dump every table in a cataloged source to CSV files.
+
+    Source-agnostic replacement for the legacy ``r2g dump-tables
+    --conn <pg_url>``. Uses :meth:`SourceSession.dump_table_to_csv`,
+    so PostgreSQL goes through ``COPY TO STDOUT`` and Snowflake streams
+    through the cursor; both produce comma-separated, header-row CSV.
+    """
+    from r2g.connectors.base import create_source_connector
+
+    mgr = _get_catalog()
+    source = mgr.get_source(name)
+    if source is None:
+        console.print(f"[red]Source '{name}' not found in catalog.[/red]")
+        raise typer.Exit(code=1)
+
+    snap = mgr.get_latest_snapshot(name)
+    if tables:
+        table_names = [t.strip() for t in tables.split(",") if t.strip()]
+    elif snap is not None:
+        table_names = sorted(snap.schema_data.tables.keys())
+    else:
+        console.print(
+            "[red]No --tables given and no snapshot exists. "
+            "Run `r2g source snapshot` first or pass --tables.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    if not table_names:
+        console.print("[yellow]No tables to dump.[/yellow]")
+        return
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    try:
+        connector = create_source_connector(
+            source.source_type or "postgresql",
+            source.connection_string,
+            schema_name=pg_schema,
+        )
+    except ImportError as err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(code=1)
+    except ValueError as err:
+        console.print(f"[red]{err}[/red]")
+        raise typer.Exit(code=2)
+
+    console.print(
+        f"[green]Dumping {len(table_names)} tables from "
+        f"{source.source_type} source '{name}' → {output_dir}/[/green]"
+    )
+
+    session = connector.open_session()
+    try:
+        total_rows = 0
+        for tbl in table_names:
+            csv_path = out / f"{tbl}.csv"
+            try:
+                rows = session.dump_table_to_csv(tbl, csv_path)
+            except Exception as err:  # noqa: BLE001
+                log.exception("source_dump_table_failed", source=name, table=tbl)
+                console.print(f"  [red]{tbl}[/red] → failed: {err}")
+                continue
+            total_rows += rows
+            console.print(f"  [cyan]{tbl}[/cyan] → {csv_path} ({rows} rows)")
+        console.print(
+            f"[green]Done. {len(table_names)} CSV files written "
+            f"({total_rows:,} rows total).[/green]"
+        )
+    finally:
+        session.close()
+
+
+@source_app.command("infer-fks")
+def source_infer_fks(
+    name: str = typer.Argument(..., help="Source name"),
+    sample: bool = typer.Option(
+        False,
+        "--sample",
+        help="Run bounded value-overlap queries to score candidates (PostgreSQL only)",
+    ),
+    sample_limit: int = typer.Option(
+        10_000,
+        "--sample-limit",
+        help="Row cap per side for --sample queries",
+    ),
+    min_confidence: float = typer.Option(
+        0.4,
+        "--min-confidence",
+        help="Drop candidates below this confidence (0..1)",
+    ),
+    accept: bool = typer.Option(
+        False,
+        "--accept",
+        help=(
+            "Write accepted candidates back into the latest snapshot as "
+            "declared foreign keys. Skips anything already declared."
+        ),
+    ),
+) -> None:
+    """Propose foreign keys for a source's latest schema snapshot.
+
+    Uses the stored ``source_type`` (PostgreSQL or Snowflake) for the
+    name-based heuristic. ``--sample`` additionally opens a PostgreSQL
+    connection and runs small ``LEFT JOIN`` queries to score
+    value-overlap between candidate columns; Snowflake sampling is
+    not supported in this slice and falls back to name-only.
+    """
+    from rich.table import Table as RichTable
+
+    from r2g.fk_inference import (
+        InferenceOptions,
+        PostgresValueSampler,
+        infer_foreign_keys,
+    )
+
+    mgr = _get_catalog()
+    source = mgr.get_source(name)
+    if source is None:
+        console.print(f"[red]Source '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+    snap = mgr.get_latest_snapshot(name)
+    if snap is None:
+        console.print(
+            f"[red]No snapshot for '{name}'. Run `r2g source snapshot {name}` first.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    sampler = None
+    stype = (source.source_type or "postgresql").lower()
+    if sample and stype in ("postgresql", "postgres", "pg"):
+        sampler = PostgresValueSampler(
+            source.connection_string,
+            schema_name=snap.pg_schema,
+            limit=sample_limit,
+        )
+    elif sample:
+        console.print(
+            f"[yellow]--sample is only supported for PostgreSQL sources (got "
+            f"'{stype}'); falling back to name-only inference.[/yellow]"
+        )
+
+    opts = InferenceOptions(min_confidence=min_confidence, sample_overlap=bool(sampler))
+    try:
+        candidates = infer_foreign_keys(snap.schema_data, options=opts, sampler=sampler)
+    finally:
+        if sampler is not None:
+            sampler.close()
+
+    if not candidates:
+        console.print("[dim]No FK candidates met the confidence threshold.[/dim]")
+        return
+
+    tbl = RichTable(title=f"Inferred FK candidates for '{name}'")
+    tbl.add_column("Table")
+    tbl.add_column("Columns")
+    tbl.add_column("→ Foreign")
+    tbl.add_column("Conf", justify="right")
+    tbl.add_column("Method")
+    for c in candidates:
+        tbl.add_row(
+            c.table,
+            ", ".join(c.columns),
+            f"{c.foreign_table}({', '.join(c.foreign_columns)})",
+            f"{c.confidence:.2f}",
+            c.method,
+        )
+    console.print(tbl)
+
+    if accept:
+        from r2g.types import ForeignKey
+
+        accepted = 0
+        schema = snap.schema_data
+        for c in candidates:
+            tbl_def = schema.tables.get(c.table)
+            if tbl_def is None:
+                continue
+            existing = {tuple(sorted(fk.columns)) for fk in tbl_def.foreign_keys}
+            if tuple(sorted(c.columns)) in existing:
+                continue
+            tbl_def.foreign_keys.append(
+                ForeignKey(
+                    columns=list(c.columns),
+                    foreign_table=c.foreign_table,
+                    foreign_columns=list(c.foreign_columns),
+                    constraint_name=f"inferred_{c.method}",
+                )
+            )
+            accepted += 1
+        if accepted:
+            mgr.create_snapshot(name, schema, pg_schema=snap.pg_schema)
+            console.print(
+                f"[green]Accepted {accepted} candidate(s); wrote a new snapshot "
+                f"with merged FKs.[/green]"
+            )
+        else:
+            console.print("[dim]No new FKs to accept.[/dim]")
 
 
 # ── Project commands ─────────────────────────────────────────────────

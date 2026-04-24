@@ -1,6 +1,27 @@
+"""StreamingPipeline unit tests.
+
+These tests exercise the pipeline against a ``FakeSourceConnector``
+rather than a live PostgreSQL server. The fake satisfies the
+:class:`r2g.connectors.base.SourceConnector` / ``SourceSession``
+protocols and is the same shape the test suite at large uses for
+connector-facing code (see ``tests/test_snowflake_connector.py``).
+
+Why a fake rather than a psycopg mock
+-------------------------------------
+
+Pre-Phase-6 the pipeline called ``psycopg.connect`` directly, so the
+tests had to ``patch("r2g.streaming.pipeline.psycopg")``. Phase 6
+slice 3 moved the read path behind :class:`SourceConnector`, which
+means (a) psycopg is no longer reachable from the pipeline module's
+namespace and (b) the pipeline is no longer PG-specific — Snowflake
+drives it too. The fake below exercises the exact integration surface
+the pipeline now uses.
+"""
+
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from typing import Any, Iterator, Optional
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,6 +36,79 @@ from r2g.types import (
     Schema,
     Table,
 )
+
+# ── Fake connector / session ────────────────────────────────────────
+
+
+class FakeSession:
+    """Minimal :class:`SourceSession` impl backed by in-memory table data."""
+
+    def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
+        self._tables = tables
+        self.closed = False
+        self.since_calls: list[tuple[str, Optional[str], Optional[str]]] = []
+
+    def count_rows(
+        self,
+        table: str,
+        *,
+        since_column: Optional[str] = None,
+        since_value: Optional[str] = None,
+    ) -> int:
+        self.since_calls.append((table, since_column, since_value))
+        rows = self._tables.get(table, [])
+        if since_column and since_value is not None:
+            return sum(
+                1 for r in rows if r.get(since_column) and r[since_column] >= since_value
+            )
+        return len(rows)
+
+    def stream_rows(
+        self,
+        table: str,
+        *,
+        batch_size: int = 10_000,
+        since_column: Optional[str] = None,
+        since_value: Optional[str] = None,
+    ) -> Iterator[dict[str, Any]]:
+        rows = self._tables.get(table, [])
+        if since_column and since_value is not None:
+            rows = [r for r in rows if r.get(since_column) and r[since_column] >= since_value]
+        yield from rows
+
+    def dump_table_to_csv(self, table: str, out_path: Any, *, header: bool = True) -> int:
+        rows = self._tables.get(table, [])
+        return len(rows)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> "FakeSession":
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
+class FakeConnector:
+    """Minimal :class:`SourceConnector` used by the streaming tests."""
+
+    def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
+        self.connection_string = "fake://local"
+        self.schema_name = "public"
+        self._tables = tables
+        self.sessions_opened: list[FakeSession] = []
+
+    def get_schema(self) -> Schema:  # pragma: no cover - not exercised here
+        return Schema()
+
+    def open_session(self) -> FakeSession:
+        s = FakeSession(self._tables)
+        self.sessions_opened.append(s)
+        return s
+
+
+# ── Fixtures ────────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -70,10 +164,24 @@ def mock_writer():
     return writer
 
 
+def _pipeline(*, source_connector, arango_writer, schema, config, **kw) -> StreamingPipeline:
+    """Construct a StreamingPipeline with sensible defaults for tests."""
+    return StreamingPipeline(
+        source_connector=source_connector,
+        arango_writer=arango_writer,
+        schema=schema,
+        config=config,
+        **kw,
+    )
+
+
+# ── Tests ───────────────────────────────────────────────────────────
+
+
 class TestStreamingPipelineInit:
     def test_stores_params(self, simple_schema, simple_config, mock_writer):
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
@@ -83,49 +191,56 @@ class TestStreamingPipelineInit:
         assert pipeline.on_duplicate == "replace"
 
     def test_default_batch_size(self, simple_schema, simple_config, mock_writer):
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
         )
         assert pipeline.batch_size == 10_000
 
-
-class TestStreamDocuments:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_creates_collections_and_imports(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            name = kwargs.get("name", "")
-            if "users" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 1, "name": "Alice", "email": "a@b.com"},
-                    {"id": 2, "name": "Bob", "email": None},
-                ]))
-            elif "orders" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 10, "user_id": 1, "total": 99.99},
-                ]))
-            else:
-                cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-
+    def test_pg_conn_string_backward_compat_builds_connector(
+        self, simple_schema, simple_config, mock_writer
+    ):
         pipeline = StreamingPipeline(
             pg_conn_string="postgresql://test",
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
+        )
+        from r2g.connectors.postgres import PostgresConnector
+
+        assert isinstance(pipeline.source_connector, PostgresConnector)
+
+    def test_rejects_missing_source(self, simple_schema, simple_config, mock_writer):
+        with pytest.raises(ValueError, match="source_connector or pg_conn_string"):
+            StreamingPipeline(
+                arango_writer=mock_writer,
+                schema=simple_schema,
+                config=simple_config,
+            )
+
+
+class TestStreamDocuments:
+    def test_creates_collections_and_imports(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({
+            "users": [
+                {"id": 1, "name": "Alice", "email": "a@b.com"},
+                {"id": 2, "name": "Bob", "email": None},
+            ],
+            "orders": [
+                {"id": 10, "user_id": 1, "total": 99.99},
+            ],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
+            arango_writer=mock_writer,
+            schema=simple_schema,
+            config=simple_config,
             batch_size=100,
         )
-
-        results = pipeline._stream_documents(mock_conn)
+        with connector.open_session() as sess:
+            results = pipeline._stream_documents(sess)
 
         assert len(results) == 2
         assert mock_writer.ensure_collection.call_count == 2
@@ -133,27 +248,23 @@ class TestStreamDocuments:
 
 
 class TestStreamEdges:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_creates_edge_collections_and_imports(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([
-            {"id": 1, "user_id": 10, "total": 99.99},
-            {"id": 2, "user_id": 20, "total": 50.0},
-        ]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_creates_edge_collections_and_imports(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({
+            "orders": [
+                {"id": 1, "user_id": 10, "total": 99.99},
+                {"id": 2, "user_id": 20, "total": 50.0},
+            ],
+            "users": [{"id": 10, "name": "x", "email": None}, {"id": 20, "name": "y", "email": None}],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             batch_size=100,
         )
-
-        results = pipeline._stream_edges(mock_conn)
+        with connector.open_session() as sess:
+            results = pipeline._stream_edges(sess)
 
         assert len(results) == 1
         assert results[0][0] == "orders_to_users"
@@ -161,68 +272,62 @@ class TestStreamEdges:
 
 
 class TestRunPipeline:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_full_run_calls_connect_and_close(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_full_run_calls_connect_and_close(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({"users": [], "orders": []})
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
         )
-
         results = pipeline.run()
-
         mock_writer.connect.assert_called_once()
         mock_writer.close.assert_called_once()
         assert "documents" in results
         assert "edges" in results
+        # The single-worker path must open exactly one session and close it.
+        assert len(connector.sessions_opened) == 1
+        assert connector.sessions_opened[0].closed is True
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_run_with_graph_creates_graph(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_run_with_graph_creates_graph(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({"users": [], "orders": []})
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
         )
-
         pipeline.run(graph_name="test_graph")
-
         mock_writer.create_named_graph.assert_called_once()
         args = mock_writer.create_named_graph.call_args
         assert args[0][0] == "test_graph"
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_sets_repeatable_read(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
+    def test_pg_session_backed_run_sets_repeatable_read(
+        self, simple_schema, simple_config, mock_writer, monkeypatch
+    ):
+        """The PG session must SET TRANSACTION ISOLATION LEVEL REPEATABLE READ.
+
+        We patch ``psycopg.connect`` so the assertion observes the SQL
+        the session issues, without needing a live PG server.
+        """
+        import psycopg
+
+        observed: list[str] = []
+
+        fake_conn = MagicMock()
+
+        def fake_execute(sql, *args, **kwargs):
+            observed.append(str(sql))
+
+        fake_conn.execute.side_effect = fake_execute
+        fake_cursor = MagicMock()
+        fake_cursor.__enter__.return_value = fake_cursor
+        fake_cursor.__exit__.return_value = False
+        fake_cursor.__iter__ = MagicMock(return_value=iter([]))
+        fake_cursor.fetchone.return_value = (0,)
+        fake_conn.cursor.return_value = fake_cursor
+
+        monkeypatch.setattr(psycopg, "connect", lambda *a, **kw: fake_conn)
 
         pipeline = StreamingPipeline(
             pg_conn_string="postgresql://test",
@@ -230,47 +335,24 @@ class TestRunPipeline:
             schema=simple_schema,
             config=simple_config,
         )
-
         pipeline.run()
 
-        mock_conn.execute.assert_any_call("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        assert any("REPEATABLE READ" in sql for sql in observed), observed
 
 
 class TestDryRun:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_dry_run_skips_arango_writes(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            name = kwargs.get("name", "")
-            if "users" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 1, "name": "Alice", "email": "a@b.com"},
-                ]))
-            elif "orders" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 10, "user_id": 1, "total": 99.99},
-                ]))
-            else:
-                cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_dry_run_skips_arango_writes(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({
+            "users": [{"id": 1, "name": "Alice", "email": "a@b.com"}],
+            "orders": [{"id": 10, "user_id": 1, "total": 99.99}],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             dry_run=True,
         )
-
         results = pipeline.run(graph_name="test_graph")
 
         mock_writer.connect.assert_called_once()
@@ -282,82 +364,43 @@ class TestDryRun:
         assert sum(c for _, c in results["documents"]) >= 1
         assert sum(c for _, c in results["edges"]) >= 1
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_dry_run_captures_previews(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            name = kwargs.get("name", "")
-            if "users" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 1, "name": "Alice", "email": "a@b.com"},
-                    {"id": 2, "name": "Bob", "email": None},
-                ]))
-            elif "orders" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 10, "user_id": 1, "total": 99.99},
-                ]))
-            else:
-                cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_dry_run_captures_previews(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({
+            "users": [
+                {"id": 1, "name": "Alice", "email": "a@b.com"},
+                {"id": 2, "name": "Bob", "email": None},
+            ],
+            "orders": [{"id": 10, "user_id": 1, "total": 99.99}],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             dry_run=True,
         )
-
         pipeline.run()
 
         assert "users" in pipeline.previews
         assert len(pipeline.previews["users"]) == 2
         assert pipeline.previews["users"][0]["_key"] == "1"
-
         assert "orders_to_users" in pipeline.previews
         assert len(pipeline.previews["orders_to_users"]) == 1
 
 
 class TestTableFiltering:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_include_tables_filters_documents(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            name = kwargs.get("name", "")
-            if "users" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 1, "name": "Alice", "email": "a@b.com"},
-                ]))
-            else:
-                cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_include_tables_filters_documents(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({
+            "users": [{"id": 1, "name": "Alice", "email": "a@b.com"}],
+            "orders": [],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             include_tables={"users"},
         )
-
         results = pipeline.run()
 
         doc_names = [name for name, _ in results["documents"]]
@@ -365,36 +408,18 @@ class TestTableFiltering:
         assert "orders" not in doc_names
         assert len(results["edges"]) == 0
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_exclude_tables_filters_documents(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            name = kwargs.get("name", "")
-            if "users" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 1, "name": "Alice", "email": "a@b.com"},
-                ]))
-            else:
-                cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_exclude_tables_filters_documents(self, simple_schema, simple_config, mock_writer):
+        connector = FakeConnector({
+            "users": [{"id": 1, "name": "Alice", "email": "a@b.com"}],
+            "orders": [],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             exclude_tables={"orders"},
         )
-
         results = pipeline.run()
 
         doc_names = [name for name, _ in results["documents"]]
@@ -404,8 +429,7 @@ class TestTableFiltering:
 
 
 class TestImportErrorSurfacing:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_batch_errors_captured_in_results(self, mock_psycopg, simple_schema, simple_config):
+    def test_batch_errors_captured_in_results(self, simple_schema, simple_config):
         mock_writer = MagicMock(spec=ArangoWriter)
         mock_writer.import_batch.side_effect = ImportBatchError(
             collection="users",
@@ -413,71 +437,34 @@ class TestImportErrorSurfacing:
             total_count=5,
             details=["doc 1: unique constraint", "doc 3: invalid key"],
         )
-
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            name = kwargs.get("name", "")
-            if "users" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 1, "name": "Alice", "email": "a@b.com"},
-                ]))
-            elif "orders" in name:
-                cursor.__iter__ = MagicMock(return_value=iter([
-                    {"id": 10, "user_id": 1, "total": 99.99},
-                ]))
-            else:
-                cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+        connector = FakeConnector({
+            "users": [{"id": 1, "name": "Alice", "email": "a@b.com"}],
+            "orders": [{"id": 10, "user_id": 1, "total": 99.99}],
+        })
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
         )
-
         results = pipeline.run()
-
         assert "errors" in results
         assert "users" in results["errors"]
         assert len(results["errors"]["users"]) == 2
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_no_errors_key_when_clean(self, mock_psycopg, simple_schema, simple_config, mock_writer):
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_no_errors_key_when_clean(self, simple_schema, simple_config, mock_writer):
+        pipeline = _pipeline(
+            source_connector=FakeConnector({"users": [], "orders": []}),
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
         )
-
         results = pipeline.run()
-
         assert "errors" not in results
 
 
 class TestSkipExisting:
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_skips_populated_collections(self, mock_psycopg, simple_schema, simple_config):
+    def _writer_with_populated_collection(self, count: int) -> MagicMock:
         mock_writer = MagicMock(spec=ArangoWriter)
         mock_writer.import_batch.return_value = {
             "created": 0, "errors": 0, "empty": 0, "updated": 0, "ignored": 0,
@@ -485,81 +472,44 @@ class TestSkipExisting:
         mock_db = MagicMock()
         mock_db.has_collection.return_value = True
         mock_coll = MagicMock()
-        mock_coll.count.return_value = 100
+        mock_coll.count.return_value = count
         mock_db.collection.return_value = mock_coll
         mock_writer.db = mock_db
+        return mock_writer
 
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_skips_populated_collections(self, simple_schema, simple_config):
+        mock_writer = self._writer_with_populated_collection(100)
+        pipeline = _pipeline(
+            source_connector=FakeConnector({"users": [], "orders": []}),
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             skip_existing=True,
         )
-
         results = pipeline.run()
-
         assert "skipped" in results
         assert len(results["skipped"]) > 0
         mock_writer.import_batch.assert_not_called()
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_no_skip_when_empty_collection(self, mock_psycopg, simple_schema, simple_config):
-        mock_writer = MagicMock(spec=ArangoWriter)
-        mock_writer.import_batch.return_value = {
-            "created": 0, "errors": 0, "empty": 0, "updated": 0, "ignored": 0,
-        }
-        mock_db = MagicMock()
-        mock_db.has_collection.return_value = True
-        mock_coll = MagicMock()
-        mock_coll.count.return_value = 0
-        mock_db.collection.return_value = mock_coll
-        mock_writer.db = mock_db
-
-        mock_conn = MagicMock()
-
-        def make_cursor(*args, **kwargs):
-            cursor = MagicMock()
-            cursor.__iter__ = MagicMock(return_value=iter([]))
-            cursor.__enter__ = MagicMock(return_value=cursor)
-            cursor.__exit__ = MagicMock(return_value=False)
-            return cursor
-
-        mock_conn.cursor.side_effect = make_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+    def test_no_skip_when_empty_collection(self, simple_schema, simple_config):
+        mock_writer = self._writer_with_populated_collection(0)
+        pipeline = _pipeline(
+            source_connector=FakeConnector({"users": [], "orders": []}),
             arango_writer=mock_writer,
             schema=simple_schema,
             config=simple_config,
             skip_existing=True,
         )
-
         results = pipeline.run()
-
         assert "skipped" not in results
         mock_writer.ensure_collection.assert_called()
 
 
 class TestSinceFiltering:
     def test_resolve_since_column_explicit(self, simple_schema, simple_config):
-        mock_writer = MagicMock(spec=ArangoWriter)
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
-            arango_writer=mock_writer,
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
+            arango_writer=MagicMock(spec=ArangoWriter),
             schema=simple_schema,
             config=simple_config,
             since="2026-01-01",
@@ -568,10 +518,9 @@ class TestSinceFiltering:
         assert pipeline._resolve_since_column("users") == "name"
 
     def test_resolve_since_column_not_found(self, simple_schema, simple_config):
-        mock_writer = MagicMock(spec=ArangoWriter)
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
-            arango_writer=mock_writer,
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
+            arango_writer=MagicMock(spec=ArangoWriter),
             schema=simple_schema,
             config=simple_config,
             since="2026-01-01",
@@ -591,10 +540,9 @@ class TestSinceFiltering:
                 primary_key=["id"],
             ),
         })
-        mock_writer = MagicMock(spec=ArangoWriter)
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
-            arango_writer=mock_writer,
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
+            arango_writer=MagicMock(spec=ArangoWriter),
             schema=schema_with_ts,
             config=simple_config,
             since="2026-01-01",
@@ -602,10 +550,9 @@ class TestSinceFiltering:
         assert pipeline._resolve_since_column("events") == "updated_at"
 
     def test_resolve_since_column_none_when_no_since(self, simple_schema, simple_config):
-        mock_writer = MagicMock(spec=ArangoWriter)
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
-            arango_writer=mock_writer,
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
+            arango_writer=MagicMock(spec=ArangoWriter),
             schema=simple_schema,
             config=simple_config,
         )
@@ -623,10 +570,9 @@ class TestSinceFiltering:
                 primary_key=["id"],
             ),
         })
-        mock_writer = MagicMock(spec=ArangoWriter)
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
-            arango_writer=mock_writer,
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
+            arango_writer=MagicMock(spec=ArangoWriter),
             schema=schema_with_ts,
             config=simple_config,
             since="2026-01-01",
@@ -635,18 +581,51 @@ class TestSinceFiltering:
 
     def test_resolve_since_column_no_match(self, simple_schema, simple_config):
         """When --since is provided but the table has no timestamp column, returns None."""
-        mock_writer = MagicMock(spec=ArangoWriter)
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
-            arango_writer=mock_writer,
+        pipeline = _pipeline(
+            source_connector=FakeConnector({}),
+            arango_writer=MagicMock(spec=ArangoWriter),
             schema=simple_schema,
             config=simple_config,
             since="2026-01-01",
         )
         assert pipeline._resolve_since_column("users") is None
 
-    @patch("r2g.streaming.pipeline.psycopg")
-    def test_pkless_table_warning(self, mock_psycopg, simple_config):
+    def test_since_propagates_to_session(self, simple_config):
+        """Pipeline should pass since_column/since_value through to the session."""
+        schema = Schema(tables={
+            "logs": Table(
+                name="logs",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(name="created_at", data_type="timestamp"),
+                ],
+                primary_key=["id"],
+            ),
+        })
+        config = MappingConfig(
+            collections={
+                "logs": CollectionMapping(source_table="logs", target_collection="logs"),
+            },
+        )
+        connector = FakeConnector({"logs": [
+            {"id": 1, "created_at": "2026-02-01"},
+            {"id": 2, "created_at": "2025-12-01"},
+        ]})
+        pipeline = _pipeline(
+            source_connector=connector,
+            arango_writer=MagicMock(spec=ArangoWriter),
+            schema=schema,
+            config=config,
+            since="2026-01-01",
+            dry_run=True,
+        )
+        pipeline.run()
+        # The session's count_rows must have been called with since plumbing.
+        assert connector.sessions_opened, "session should have been opened"
+        calls = connector.sessions_opened[0].since_calls
+        assert any(c[1] == "created_at" and c[2] == "2026-01-01" for c in calls), calls
+
+    def test_pkless_table_warning(self, simple_config):
         """Tables with no PK should log a warning but not crash."""
         pkless_schema = Schema(tables={
             "logs": Table(
@@ -663,27 +642,17 @@ class TestSinceFiltering:
                 "logs": CollectionMapping(source_table="logs", target_collection="logs"),
             },
         )
-
-        mock_conn = MagicMock()
-        mock_cursor = MagicMock()
-        mock_cursor.__iter__ = MagicMock(return_value=iter([
-            {"message": "hello", "created_at": "2026-01-01"},
-        ]))
-        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
-        mock_cursor.__exit__ = MagicMock(return_value=False)
-        mock_conn.cursor.return_value = mock_cursor
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-        mock_psycopg.connect.return_value = mock_conn
-
+        connector = FakeConnector({
+            "logs": [{"message": "hello", "created_at": "2026-01-01"}],
+        })
         mock_writer = MagicMock(spec=ArangoWriter)
         mock_writer.ensure_collection = MagicMock()
         mock_writer.collection_count = MagicMock(return_value=0)
         mock_writer.import_batch = MagicMock(return_value={
             "created": 1, "errors": 0, "empty": 0, "updated": 0, "ignored": 0,
         })
-        pipeline = StreamingPipeline(
-            pg_conn_string="postgresql://test",
+        pipeline = _pipeline(
+            source_connector=connector,
             arango_writer=mock_writer,
             schema=pkless_schema,
             config=pkless_config,

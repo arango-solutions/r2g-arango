@@ -155,14 +155,93 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         if source is None:
             raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
         try:
-            from r2g.connectors.postgres import PostgresConnector
+            from r2g.connectors.base import create_source_connector
 
-            connector = PostgresConnector(source.connection_string, schema_name=pg_schema)
+            connector = create_source_connector(
+                source.source_type or "postgresql",
+                source.connection_string,
+                schema_name=pg_schema,
+            )
             schema = connector.get_schema()
             snap = catalog.create_snapshot(name, schema, pg_schema=pg_schema)
             return {"id": snap.id, "tables": len(schema.tables), "captured_at": snap.captured_at.isoformat()}
+        except ImportError as e:
+            raise HTTPException(status_code=501, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/sources/{name}/infer-fks")
+    async def infer_fks(name: str, body: InferFksRequest | None = None):
+        """Return ranked FK candidates for the source's latest snapshot.
+
+        When ``sample: true`` is passed in the body, the engine runs
+        bounded value-overlap queries via :class:`PostgresValueSampler`
+        (PostgreSQL only for now; Snowflake sampling will land with
+        P6.4). Without sampling, the suggestions are name-heuristic
+        only and the endpoint is schema-metadata-only (safe / free).
+        """
+        from r2g.fk_inference import (
+            InferenceOptions,
+            PostgresValueSampler,
+            infer_foreign_keys,
+        )
+
+        source = catalog.get_source(name)
+        if source is None:
+            raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
+        snap = catalog.get_latest_snapshot(name)
+        if snap is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No schema snapshot for this source — take one first.",
+            )
+
+        req = body or InferFksRequest()
+        opts = InferenceOptions(
+            min_confidence=req.min_confidence,
+            sample_overlap=req.sample,
+            overlap_veto_on_zero=req.veto_on_zero_overlap,
+        )
+
+        sampler = None
+        sampler_used = False
+        if req.sample:
+            stype = (source.source_type or "postgresql").lower()
+            if stype in ("postgresql", "postgres", "pg"):
+                try:
+                    sampler = PostgresValueSampler(
+                        source.connection_string,
+                        schema_name=snap.pg_schema,
+                        limit=req.sample_limit,
+                    )
+                    sampler_used = True
+                except Exception as err:  # noqa: BLE001
+                    logger.warning("fk_infer_sampler_init_failed", error=str(err))
+            else:
+                logger.info(
+                    "fk_infer_sampler_unsupported",
+                    source_type=stype,
+                    note="value-overlap sampling is PostgreSQL-only; name heuristic still runs",
+                )
+
+        try:
+            candidates = infer_foreign_keys(
+                snap.schema_data,
+                options=opts,
+                sampler=sampler,
+            )
+        finally:
+            if sampler is not None:
+                sampler.close()
+
+        return {
+            "source": name,
+            "snapshot_id": snap.id,
+            "sample_used": sampler_used,
+            "candidates": [c.model_dump() for c in candidates],
+        }
 
     # ── Schema endpoints ──────────────────────────────────────────────
 
@@ -195,6 +274,13 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
     @app.get("/api/projects")
     async def list_projects():
         return [p.model_dump() for p in catalog.list_projects()]
+
+    @app.get("/api/projects/{name}")
+    async def get_project(name: str):
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        return project.model_dump()
 
     @app.post("/api/projects", status_code=201)
     async def create_project(body: ProjectCreateRequest):
@@ -374,8 +460,21 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
             password=arango_password,
         )
 
+        try:
+            from r2g.connectors.base import create_source_connector
+
+            source_connector = create_source_connector(
+                source.source_type or "postgresql",
+                source.connection_string,
+                schema_name=snap.pg_schema,
+            )
+        except ImportError as e:
+            raise HTTPException(status_code=501, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         pipeline = StreamingPipeline(
-            pg_conn_string=source.connection_string,
+            source_connector=source_connector,
             arango_writer=writer,
             schema=snap.schema_data,
             config=config,
@@ -595,6 +694,20 @@ class TargetCreateRequest(BaseModel):
     username: str = "root"
     password: str = ""
     description: str = ""
+
+
+class InferFksRequest(BaseModel):
+    """Parameters for POST /api/sources/{name}/infer-fks.
+
+    Defaults are "cheap" — name-heuristic only, no warehouse queries.
+    Set ``sample=true`` to opt into value-overlap sampling (PostgreSQL
+    only today).
+    """
+
+    sample: bool = False
+    sample_limit: int = 10_000
+    min_confidence: float = 0.4
+    veto_on_zero_overlap: bool = True
 
 
 def _serialize_rows(rows: list[dict]) -> list[dict]:

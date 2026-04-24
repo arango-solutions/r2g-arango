@@ -69,6 +69,138 @@ class TestSourceEndpoints:
         resp = client.delete("/api/sources/nonexistent")
         assert resp.status_code == 404
 
+    def test_add_snowflake_source_is_accepted(self, client):
+        resp = client.post("/api/sources", json={
+            "name": "analytics_sf",
+            "source_type": "snowflake",
+            "connection_string": (
+                "snowflake://svc:x@xy12345.us-east-1/ANALYTICS/CORE"
+                "?warehouse=WH&role=R"
+            ),
+        })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["source_type"] == "snowflake"
+        # connection string should be redacted
+        assert "svc:x@" not in body["connection_string"]
+
+    def test_add_source_rejects_unsupported_type(self, client):
+        resp = client.post("/api/sources", json={
+            "name": "my_mysql",
+            "source_type": "mysql",
+            "connection_string": "mysql://u:p@h/db",
+        })
+        assert resp.status_code in (400, 409)
+        assert "mysql" in resp.text.lower() or "unsupported" in resp.text.lower()
+
+    def test_snapshot_snowflake_without_driver_returns_501(self, client, monkeypatch):
+        import sys
+
+        client.post("/api/sources", json={
+            "name": "analytics_sf",
+            "source_type": "snowflake",
+            "connection_string": (
+                "snowflake://svc:x@xy12345/ANALYTICS/CORE?warehouse=WH"
+            ),
+        })
+        monkeypatch.setitem(sys.modules, "snowflake", None)
+        monkeypatch.setitem(sys.modules, "snowflake.connector", None)
+        resp = client.post("/api/sources/analytics_sf/snapshot")
+        assert resp.status_code == 501
+        body = resp.json()
+        detail = body.get("detail", "").lower()
+        assert "r2g[snowflake]" in detail or "snowflake-connector" in detail
+
+
+class TestInferFksEndpoint:
+    def _setup(self, client, catalog_dir):
+        client.post("/api/sources", json={
+            "name": "src",
+            "source_type": "postgresql",
+            "connection_string": "postgresql://localhost/test",
+        })
+        mgr = CatalogManager(catalog_dir)
+        schema = Schema(tables={
+            "users": Table(name="users", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+            ], primary_key=["id"]),
+            "orders": Table(name="orders", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="user_id", data_type="integer"),
+            ], primary_key=["id"]),
+        })
+        mgr.create_snapshot("src", schema)
+
+    def test_infer_fks_returns_user_id_candidate(self, client, catalog_dir):
+        self._setup(client, catalog_dir)
+        resp = client.post("/api/sources/src/infer-fks")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source"] == "src"
+        assert body["sample_used"] is False
+        cands = body["candidates"]
+        assert len(cands) == 1
+        c = cands[0]
+        assert c["table"] == "orders"
+        assert c["columns"] == ["user_id"]
+        assert c["foreign_table"] == "users"
+        assert c["foreign_columns"] == ["id"]
+        assert 0.0 <= c["confidence"] <= 1.0
+
+    def test_infer_fks_without_snapshot_returns_400(self, client):
+        client.post("/api/sources", json={
+            "name": "empty",
+            "source_type": "postgresql",
+            "connection_string": "postgresql://localhost/test",
+        })
+        resp = client.post("/api/sources/empty/infer-fks")
+        assert resp.status_code == 400
+        assert "snapshot" in resp.json()["detail"].lower()
+
+    def test_infer_fks_unknown_source_returns_404(self, client):
+        resp = client.post("/api/sources/nonexistent/infer-fks")
+        assert resp.status_code == 404
+
+    def test_infer_fks_min_confidence_filters_results(self, client, catalog_dir):
+        self._setup(client, catalog_dir)
+        resp = client.post(
+            "/api/sources/src/infer-fks",
+            json={"min_confidence": 0.99},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["candidates"] == []
+
+    def test_infer_fks_skips_sampling_for_snowflake_source(self, client, catalog_dir):
+        client.post("/api/sources", json={
+            "name": "sf",
+            "source_type": "snowflake",
+            "connection_string": "snowflake://u:p@acct/DB/PUBLIC",
+        })
+        mgr = CatalogManager(catalog_dir)
+        schema = Schema(tables={
+            "USERS": Table(
+                name="USERS",
+                columns=[Column(name="ID", data_type="number", is_primary_key=True)],
+                primary_key=["ID"],
+            ),
+            "ORDERS": Table(
+                name="ORDERS",
+                columns=[
+                    Column(name="ID", data_type="number", is_primary_key=True),
+                    Column(name="USER_ID", data_type="number"),
+                ],
+                primary_key=["ID"],
+            ),
+        })
+        mgr.create_snapshot("sf", schema, pg_schema="PUBLIC")
+        resp = client.post("/api/sources/sf/infer-fks", json={"sample": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        # Sampling is PG-only today — requesting it on a Snowflake source
+        # must not crash and must not claim sampling was used.
+        assert body["sample_used"] is False
+        assert len(body["candidates"]) >= 1
+
 
 class TestProjectEndpoints:
     def _add_source(self, client):
