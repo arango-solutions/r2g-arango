@@ -1,10 +1,26 @@
-# Experimental Relational-to-Graph ETL Pipeline
+# r2g — Relational-to-Graph for ArangoDB
 
-An experimental reference implementation showing how to transform PostgreSQL relational schemas and data into ArangoDB graph structures. Foreign keys become edges, tables become vertex collections, and `arangoimport` scripts are generated for high-performance bulk loading.
+[![CI](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml/badge.svg)](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
-This project is intended to guide ArangoDB users through the mechanics of relational-to-graph migration. It is not production software.
+> Project relational and structured data sources as a graph in ArangoDB —
+> materialize via batch ETL, sync via CDC/Kafka, or query interactively
+> through the mapping studio.
 
-See [PRD.md](PRD.md) for the full product requirements document.
+`r2g` turns relational schemas into ArangoDB graph schemas mechanically:
+tables become document collections, foreign keys become edges, join tables
+become edges, and types are coerced from PostgreSQL representations into
+proper JSON types. PostgreSQL and Snowflake are supported as sources today;
+the connector layer is designed for additional structured and
+semi-structured sources over time.
+
+> **Status — experimental reference implementation.** Useful for evaluating
+> relational-to-graph migration with ArangoDB and as a starting point for
+> production pipelines, but not itself production-hardened software.
+
+See [`docs/PRD.md`](docs/PRD.md) for the full product requirements document
+and roadmap.
 
 ## Concepts
 
@@ -437,7 +453,7 @@ Use `--offset-reset earliest` or `latest` to control where a new consumer group 
 
 This is an experimental reference implementation. The following constraints apply:
 
-- **PostgreSQL only (currently)** -- the schema reader uses `pg_catalog` queries specific to PostgreSQL. Snowflake support is planned (Phase 5 in the PRD). No MySQL, SQLite, or other source support yet.
+- **PostgreSQL and Snowflake are both supported sources.** Phase 6 shipped: schema introspection, FK inference, CSV dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) all work on both backends through a common `SourceConnector` / `SourceSession` abstraction. Snowflake is gated on the optional `r2g[snowflake]` extra. End-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No MySQL, SQLite, or other source support yet.
 - **Data validation is opt-in** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. Use `validate-data` before import to catch these, but it is not enforced automatically.
 - **Basic incremental support only** -- `stream --since` filters rows by a timestamp column for basic incremental updates, but there is no change tracking, CDC, or diff-based processing yet (see Phases 3-4 in the PRD).
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
@@ -466,12 +482,36 @@ pytest tests/ -v
 
 ## Roadmap
 
-Phases 1 through 4 are implemented. See [PRD.md](PRD.md) for the full phased roadmap:
+Phases 1 through 4 are implemented. See [`docs/PRD.md`](docs/PRD.md) for the full phased roadmap:
 
 - **Phase 1** -- Table dump file processing (MVP): schema ingestion, JSONL transforms, CSV-direct import, visualizer -- **complete**
 - **Phase 2** -- Direct PostgreSQL streaming (server-side cursors, HTTP API bulk import, REPEATABLE READ snapshots) -- **complete**
 - **Phase 3** -- CDC integration: event models, delta transformer, handler, replication listener, output plugin parsers (`test_decoding`/`wal2json`), continuous polling loop, conflict resolution (`source_wins`/`last_write_wins`/`log_and_skip`/`fail`), CLI commands -- **complete**
 - **Phase 4** -- Kafka integration: Debezium parser, flat JSON parser, confluent-kafka consumer, kafka-start CLI command -- **complete**
 - **Phase 5** -- Temporal graph mode: immutable-proxy time travel pattern (ProxyIn/Entity/ProxyOut), soft deletes with `created`/`expired` versioning, TTL aging, MDI-prefixed temporal indexes, point-in-time query templates, SmartGraph compatibility -- **planned**
-- **Phase 6** -- Snowflake integration (schema reader, type mapping, streaming, FK inference, source abstraction layer) -- **planned**
+- **Phase 6** -- Snowflake integration -- **done**. Slice 1: source-abstraction `SourceConnector` Protocol, `SnowflakeConnector` for schema introspection via `INFORMATION_SCHEMA` + `SHOW PRIMARY/IMPORTED KEYS`, Snowflake-aware type map, UI / MCP / CLI dispatching through the factory. Slice 2: pure-Python FK inference engine (`r2g.fk_inference`, `POST /api/sources/{name}/infer-fks`, **Suggest FKs** toolbar button with per-row accept, `r2g source infer-fks <name> [--sample] [--accept]` CLI) with an optional PostgreSQL value-overlap sampler. Slice 3: new `SourceSession` Protocol (`count_rows`, `stream_rows`, `dump_table_to_csv`, `close`), `PostgresSession` (`REPEATABLE READ` + server-side cursor + `COPY TO STDOUT`), `SnowflakeSession` (`BEGIN`/`COMMIT` + `fetchmany` + CSV dump). `StreamingPipeline` is now fully source-agnostic; `r2g stream --source <name>` and new `r2g source dump <name>` work identically on PostgreSQL and Snowflake; `POST /api/projects/{name}/load` dispatches through `create_source_connector`. Legacy `--pg-conn` / `r2g dump-tables --conn` flags still work via a backward-compat shim.
 - **Phase 7+** -- Additional sources (MySQL, SQL Server), LLM-driven ontology derivation, ArangoRDF, bi-directional sync -- **exploratory**
+
+## Contributing
+
+Contributions are welcome. Before opening a pull request please read
+[CONTRIBUTING.md](CONTRIBUTING.md) and the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
+Bug reports and feature requests go to the
+[issue tracker](https://github.com/ArthurKeen/r2g-arango/issues). Use the
+provided templates so reports include the context needed to reproduce.
+
+## Security
+
+Please do **not** report security vulnerabilities through public issues.
+See [SECURITY.md](SECURITY.md) for the responsible disclosure process.
+
+## License
+
+`r2g` is licensed under the [Apache License, Version 2.0](LICENSE).
+Third-party dependency notices are in [NOTICE](NOTICE).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes.

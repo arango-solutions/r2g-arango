@@ -1,0 +1,102 @@
+name: Bug report
+description: Report a reproducible defect in r2g
+title: "[bug] <short description>"
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in every
+        section; incomplete reports will be closed or moved to Discussions.
+
+        **Do not** file security vulnerabilities here — see
+        [SECURITY.md](https://github.com/ArthurKeen/r2g-arango/blob/main/SECURITY.md).
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: |
+        Exact commands, configuration, and schema fragments needed to
+        reproduce. Include the smallest failing example you can.
+      placeholder: |
+        1. Start with schema `...`
+        2. Run `r2g stream --pg-conn ... --schema schema.json --config mapping.yaml`
+        3. Observe error `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include full stack traces and relevant log output.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: r2g-version
+    attributes:
+      label: r2g version
+      placeholder: "0.1.0 (or commit SHA)"
+    validations:
+      required: true
+
+  - type: input
+    id: python-version
+    attributes:
+      label: Python version
+      placeholder: "3.11.7"
+    validations:
+      required: true
+
+  - type: input
+    id: arango-version
+    attributes:
+      label: ArangoDB version
+      placeholder: "3.12.1"
+    validations:
+      required: false
+
+  - type: input
+    id: source-version
+    attributes:
+      label: Source system and version
+      description: PostgreSQL, Snowflake, etc. — include the server version.
+      placeholder: "PostgreSQL 16.2"
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 14.4, Ubuntu 22.04, ..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: I have redacted any credentials or sensitive data from the report.
+          required: true

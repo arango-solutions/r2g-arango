@@ -74,27 +74,45 @@ def _tokenize(src: str) -> list[_Tok]:
             continue
         two = src[i:i + 2]
         if two == "==":
-            toks.append(_Tok("EQ", "==", i)); i += 2; continue
+            toks.append(_Tok("EQ", "==", i))
+            i += 2
+            continue
         if two == "!=":
-            toks.append(_Tok("NEQ", "!=", i)); i += 2; continue
+            toks.append(_Tok("NEQ", "!=", i))
+            i += 2
+            continue
         if two == "<=":
-            toks.append(_Tok("LTE", "<=", i)); i += 2; continue
+            toks.append(_Tok("LTE", "<=", i))
+            i += 2
+            continue
         if two == ">=":
-            toks.append(_Tok("GTE", ">=", i)); i += 2; continue
+            toks.append(_Tok("GTE", ">=", i))
+            i += 2
+            continue
         if two == "&&":
-            toks.append(_Tok("AND", "&&", i)); i += 2; continue
+            toks.append(_Tok("AND", "&&", i))
+            i += 2
+            continue
         if two == "||":
-            toks.append(_Tok("OR", "||", i)); i += 2; continue
+            toks.append(_Tok("OR", "||", i))
+            i += 2
+            continue
         if two == "??":
-            toks.append(_Tok("NULLCOAL", "??", i)); i += 2; continue
+            toks.append(_Tok("NULLCOAL", "??", i))
+            i += 2
+            continue
         if c in _SINGLE:
             toks.append(_Tok(_SINGLE[c], c, i))
             i += 1
             continue
         if c == "<":
-            toks.append(_Tok("LT", "<", i)); i += 1; continue
+            toks.append(_Tok("LT", "<", i))
+            i += 1
+            continue
         if c == ">":
-            toks.append(_Tok("GT", ">", i)); i += 1; continue
+            toks.append(_Tok("GT", ">", i))
+            i += 1
+            continue
         if c == "=":
             raise ExpressionError(f"single '=' is not allowed (use '==') at column {i}")
         if c == "!":
@@ -270,15 +288,20 @@ class _Parser:
     def _primary(self) -> tuple:
         t = self._peek()
         if t.kind == "NUM":
-            self._advance(); return ("num", t.value)
+            self._advance()
+            return ("num", t.value)
         if t.kind == "STR":
-            self._advance(); return ("str", t.value)
+            self._advance()
+            return ("str", t.value)
         if t.kind == "BOOL":
-            self._advance(); return ("bool", t.value)
+            self._advance()
+            return ("bool", t.value)
         if t.kind == "NULL":
-            self._advance(); return ("null", None)
+            self._advance()
+            return ("null", None)
         if t.kind == "BIND":
-            self._advance(); return ("bind", t.value)
+            self._advance()
+            return ("bind", t.value)
         if t.kind == "LPAREN":
             self._advance()
             e = self._ternary()
@@ -511,19 +534,19 @@ def _eval(node: tuple, env: dict[str, Any]) -> Any:
         op = node[1]
         # short-circuit logical
         if op == "&&":
-            l = _eval(node[2], env)
-            if not _to_bool(l):
+            left = _eval(node[2], env)
+            if not _to_bool(left):
                 return False
             return _to_bool(_eval(node[3], env))
         if op == "||":
-            l = _eval(node[2], env)
-            if _to_bool(l):
+            left = _eval(node[2], env)
+            if _to_bool(left):
                 return True
             return _to_bool(_eval(node[3], env))
         if op == "??":
-            l = _eval(node[2], env)
-            if l is not None:
-                return l
+            left = _eval(node[2], env)
+            if left is not None:
+                return left
             return _eval(node[3], env)
         a = _eval(node[2], env)
         b = _eval(node[3], env)
@@ -562,9 +585,12 @@ def _collect_bindings(node: tuple, out: set[str]) -> None:
             _collect_bindings(a, out)
         return
     if tag == "unary":
-        _collect_bindings(node[2], out); return
+        _collect_bindings(node[2], out)
+        return
     if tag == "bin":
-        _collect_bindings(node[2], out); _collect_bindings(node[3], out); return
+        _collect_bindings(node[2], out)
+        _collect_bindings(node[3], out)
+        return
     if tag == "tern":
         _collect_bindings(node[1], out)
         _collect_bindings(node[2], out)
@@ -598,9 +624,12 @@ def _validate_functions(node: tuple) -> None:
     if node[0] in ("num", "str", "bool", "null", "bind"):
         return
     if node[0] == "unary":
-        _validate_functions(node[2]); return
+        _validate_functions(node[2])
+        return
     if node[0] == "bin":
-        _validate_functions(node[2]); _validate_functions(node[3]); return
+        _validate_functions(node[2])
+        _validate_functions(node[3])
+        return
     if node[0] == "tern":
         _validate_functions(node[1])
         _validate_functions(node[2])

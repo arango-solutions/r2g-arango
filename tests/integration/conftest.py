@@ -16,7 +16,7 @@ import uuid
 
 import pytest
 
-PG_CONN = os.getenv("PG_CONN", "postgresql://arthurkeen@localhost:5432/r2g_test")
+PG_CONN = os.getenv("PG_CONN", "postgresql://postgres@localhost:5432/r2g_test")
 ARANGO_ENDPOINT = os.getenv("ARANGO_ENDPOINT", "http://localhost:8540")
 ARANGO_USER = os.getenv("ARANGO_USER", "root")
 ARANGO_PASSWORD = os.getenv("ARANGO_PASSWORD", "r2g_test_2026")

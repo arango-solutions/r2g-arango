@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from r2g.expressions import (
-    ExpressionError,
     SUPPORTED_FUNCTIONS,
+    ExpressionError,
     compile_expression,
     evaluate,
 )

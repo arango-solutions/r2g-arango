@@ -1,0 +1,29 @@
+r2g (r2g-arango)
+Copyright 2026 Arthur Keen
+
+This product includes software developed by Arthur Keen and contributors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+This product depends on third-party software with their own licenses.
+See `pyproject.toml` for the full dependency list. Notable runtime
+dependencies and their licenses include:
+
+  - typer (MIT)
+  - psycopg (LGPL-3.0)
+  - python-arango (Apache-2.0)
+  - pydantic (MIT)
+  - rich (MIT)
+  - polars (MIT)
+  - pyyaml (MIT)
+  - structlog (Apache-2.0 / MIT dual)
+  - python-dotenv (BSD-3-Clause)
+  - cryptography (Apache-2.0 / BSD dual)
+  - fastapi, uvicorn, httpx (MIT / BSD)
+  - confluent-kafka (Apache-2.0)
+  - snowflake-connector-python (Apache-2.0)
+  - mcp (MIT)

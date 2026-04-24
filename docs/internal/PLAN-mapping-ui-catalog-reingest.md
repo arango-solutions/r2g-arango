@@ -780,6 +780,59 @@ Phase 5b delivered the functional split-screen mapper and Phase 5c added express
 
 ---
 
+## Phase 6 — Snowflake integration (in progress)
+
+This plan doc was originally scoped to the mapping/UI/catalog/re-ingest work (Phase 5). Phase 6 (Snowflake) was tracked directly in the PRD; the first slice has now landed and is summarized here for cross-reference.
+
+### Slice 1 — Source abstraction + introspect-only Snowflake — **Done**
+
+Goal: let the catalog and Mapping Studio *see* a Snowflake schema without committing to dump / streaming / FK-inference yet.
+
+Shipped:
+
+- **`src/r2g/connectors/base.py`** (new): `SourceConnector` Protocol (`connection_string`, `schema_name`, `get_schema() -> Schema`), `SUPPORTED_SOURCE_TYPES = ("postgresql", "snowflake")`, and `create_source_connector(source_type, connection_string, schema_name)` factory with lazy imports. `PostgresConnector` satisfies the protocol without modification (P6.5).
+- **`src/r2g/connectors/snowflake.py`** (new): `SnowflakeConnector` reading `INFORMATION_SCHEMA.TABLES` / `INFORMATION_SCHEMA.COLUMNS` plus `SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS`. Connection strings use the Snowflake SQLAlchemy URL shape: `snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&role=R`. Missing `snowflake-connector-python` raises `ImportError` with a `pip install 'r2g[snowflake]'` hint; transient driver errors are wrapped as `RuntimeError` (P6.1, introspection only).
+- **`src/r2g/config.py`**: extended `DEFAULT_TYPE_MAP` with `NUMBER`, `FIXED`, `FLOAT`/`DOUBLE`, `VARIANT`, `OBJECT`, `ARRAY`, `TIMESTAMP_LTZ/NTZ/TZ`, `BINARY`/`VARBINARY`, `GEOGRAPHY`/`GEOMETRY`, `VECTOR`. `pg_type_to_json_type` is now a shared source-agnostic mapper (P6.2).
+- **`pyproject.toml`**: new `snowflake` optional-deps group (`snowflake-connector-python>=3.0.0`).
+- **Dispatch wired everywhere that introspects**: `POST /api/sources/{name}/snapshot` (UI), `introspect_source_schema` (MCP), and `r2g source snapshot` (CLI) now call `create_source_connector(source.source_type, ...)`. UI surface responds `501` when the Snowflake extra is missing and `400` for unknown types.
+- **`src/r2g/catalog.py`**: `add_source` enforces a known-types allowlist (`postgresql`, `snowflake`, `csv`, `kafka`) while the factory keeps a stricter allowlist for what we can actually instantiate.
+- **UI**: "+ New source" dropdown now offers `PostgreSQL` and `Snowflake (introspect-only)`; connection-string hint explains both formats.
+- **Tests**: `tests/test_connectors_base.py` (factory + Protocol conformance), `tests/test_snowflake_connector.py` (URL parsing, constructor semantics, full introspection against a fake driver, composite-FK ordering, missing-driver + driver-exception paths, type-map round-trip for VARIANT/TIMESTAMP/NUMBER), additional cases in `tests/test_ui_api.py::TestSourceEndpoints` for Snowflake acceptance and unsupported-type rejection. 785 pass, 6 skipped.
+
+### Slice 2 — FK inference (P6.6) — **Done**
+
+Goal: rescue schemas (Snowflake or legacy PG) that shipped without declared FKs, without silently inventing graph topology.
+
+Shipped:
+
+- **`src/r2g/fk_inference.py`** (new): pure-Python heuristic engine (`infer_foreign_keys`, `InferenceOptions`, `InferredForeignKey`) plus `PostgresValueSampler` for bounded `LEFT JOIN` overlap queries. Patterns covered: `{prefix}_id`, `{prefix}id` (penalised), `{prefix}_{pkcol}`, non-generic PK-name direct match, and a composite-PK pass that finds local tables carrying every column of a multi-column PK. Type compatibility is checked via the shared `pg_type_to_json_type` mapper (integer↔float compat so Snowflake NUMBER ↔ PG integer works). Sampler results can boost or veto a candidate (confidence ±) and are fully optional — the engine is safe to run on metadata alone.
+- **`POST /api/sources/{name}/infer-fks`**: returns ranked candidates for the latest snapshot. Accepts `{ sample, sample_limit, min_confidence, veto_on_zero_overlap }`. Returns `{ source, snapshot_id, sample_used, candidates: [...] }`. Sampling is silently skipped on non-PostgreSQL sources with a logged note.
+- **`GET /api/projects/{name}`**: new convenience endpoint so the UI can resolve the source name without scanning the list.
+- **Mapping Studio UI**: new **Suggest FKs** toolbar button (shortcut `i`, canvas right-click menu entry) opens a floating card with per-row `Accept as edge` / `Dismiss` plus an `Accept all` action. Accepted candidates become real `EdgeDefinition`s with collision-proof naming (`<from>_to_<to>`, `_2`, `_3`, …) and mark the project dirty for save. Confidence is visualised with a green/yellow/pink pill and evidence strings are shown below each row.
+- **CLI**: `r2g source infer-fks <name> [--sample] [--sample-limit N] [--min-confidence 0.4] [--accept]`. Prints a Rich table of candidates; `--accept` writes every candidate above the threshold back into the catalog as a new snapshot with merged FKs so downstream auto-map / mapping generation picks them up.
+- **Tests**: `tests/test_fk_inference.py` (28 cases — name heuristic, composite, type-compat, nullability, sampler boost/veto/neutral/exception, edge-definition round-trip, parametric coverage, PG sampler plumbing) and 5 API cases in `tests/test_ui_api.py::TestInferFksEndpoint`. **819 tests passing, 34 new.**
+
+### Slice 3 — Snowflake dump + streaming (P6.3 + P6.4) — **Done**
+
+Goal: make the streaming pipeline and dump path source-agnostic so the same UI and CLI work against PostgreSQL and Snowflake without branching on type at every call site.
+
+Shipped:
+
+- **`src/r2g/connectors/session.py`** (new): `SourceSession` Protocol with `count_rows`, `stream_rows`, `dump_table_to_csv`, `close`. Structural so existing test doubles satisfy it without inheritance.
+- **`src/r2g/connectors/base.py`**: `SourceConnector` Protocol gains `open_session() -> SourceSession`. Both connectors implement it.
+- **`src/r2g/connectors/postgres.py`**: new `PostgresSession` owns one `REPEATABLE READ` autocommit=False connection, uses a named server-side cursor for `stream_rows`, and routes `dump_table_to_csv` through `COPY TO STDOUT WITH CSV HEADER` (the same fast path the legacy `r2g dump-tables` used, now source-agnostic).
+- **`src/r2g/connectors/snowflake.py`**: new `SnowflakeSession` opens a `BEGIN`/`COMMIT` transaction for implicit snapshot isolation, streams rows via `cursor.fetchmany(batch_size)`, and writes CSV through Python's `csv` module (header row, empty-string NULLs, `"` quoting). Lazy driver import surfaces the same `pip install 'r2g[snowflake]'` hint as introspection.
+- **`src/r2g/streaming/pipeline.py`**: fully rewritten to consume a `SourceConnector`. Single-worker path opens one session; parallel workers each open their own session for per-snapshot isolation. `pg_conn_string=…` constructor keyword is preserved as a backward-compat shim that builds a `PostgresConnector` automatically (every existing caller, including `ui/server.py`, `mcp_server.py`, and `selective_reload.py`, still works unchanged while new call sites pass `source_connector=…`).
+- **`src/r2g/ui/server.py`**: `POST /api/projects/{name}/load` resolves the source through `create_source_connector(source_type, …)`; 501 on missing optional extras, 400 on unknown types.
+- **`src/r2g/main.py`**: `r2g stream --source <name>` resolves a catalog source and drives the pipeline through the abstraction; `--pg-conn` still works as the legacy path. New `r2g source dump <name> [--tables a,b,c] [--output-dir ./dumps]` writes one CSV per table via `SourceSession.dump_table_to_csv` and works identically on PostgreSQL and Snowflake.
+- **Tests**: `tests/test_source_sessions.py` (14 cases — Protocol conformance, Snowflake `count_rows`/`stream_rows`/`dump_table_to_csv`/`since`/`BEGIN`+`COMMIT` semantics/missing-driver/context-manager, PostgresSession smoke for `REPEATABLE READ` + close-drops-connection + connector wiring); `tests/test_streaming_pipeline.py` rewritten around a `FakeSourceConnector`/`FakeSession` pair (25 cases, including explicit PG-session `REPEATABLE READ` observation, `since` propagation, backward-compat shim, and error rejection); `tests/test_cli_source_dump.py` (5 cases — dumps every snapshot table, `--tables` filter, unknown source, missing Snowflake extra, `r2g stream --source` dispatch). **845 tests passing, 26 new.**
+
+### Phase 6 close-out
+
+Every Phase 6 task (P6.1–P6.6) is shipped. End-to-end verification against a live Snowflake warehouse remains a field-validation exercise; enabling `--sample` for FK inference on Snowflake is a clean follow-up (just add a `SnowflakeValueSampler` that opens a `SourceSession` instead of a raw `psycopg` connection).
+
+---
+
 ## Style and Convention Notes
 
 - Follow existing patterns: Pydantic models in `types.py` style, Typer commands in `main.py` style

@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 import stat
-from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from r2g.catalog import CatalogManager
 from r2g.security import (
@@ -18,7 +18,6 @@ from r2g.security import (
     redact_connection_string,
     redact_for_display,
 )
-from cryptography.fernet import Fernet
 
 
 @pytest.fixture
