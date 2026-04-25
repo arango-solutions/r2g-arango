@@ -245,7 +245,7 @@ class TestIntrospection:
         monkeypatch.setitem(sys.modules, "snowflake", None)
         monkeypatch.setitem(sys.modules, "snowflake.connector", None)
         conn = SnowflakeConnector("snowflake://svc:x@xy12345/ANALYTICS")
-        with pytest.raises(ImportError, match="r2g\\[snowflake\\]"):
+        with pytest.raises(ImportError, match="r2g-arango\\[snowflake\\]"):
             conn.get_schema()
 
     def test_driver_exception_is_wrapped_as_runtime_error(self, monkeypatch):

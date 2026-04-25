@@ -11,7 +11,6 @@ from rich.syntax import Syntax
 from rich.table import Table as RichTable
 
 from r2g.config import ConfigManager
-from r2g.connectors.postgres import PostgresConnector
 from r2g.generators.arangoimport import ArangoImportGenerator, CsvImportGenerator
 from r2g.generators.visualizer import MappingVisualizer
 from r2g.input.dump_reader import DumpReader
@@ -563,6 +562,8 @@ def ingest_schema(
     pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name to introspect"),
 ) -> None:
     """Connect to PostgreSQL and extract schema metadata."""
+    from r2g.connectors.postgres import PostgresConnector
+
     console.print("[green]Connecting to PostgreSQL...[/green]")
 
     try:
@@ -1011,6 +1012,8 @@ def dump_tables(
     """
     import psycopg
 
+    from r2g.connectors.postgres import PostgresConnector
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -1347,7 +1350,7 @@ def kafka_start(
     specified topics, transforms them through the mapping config,
     and applies deltas to ArangoDB.
 
-    Requires confluent-kafka: pip install 'r2g[kafka]'
+    Requires confluent-kafka: pip install 'r2g-arango[kafka]'
 
     Press Ctrl+C to stop gracefully.
     """
@@ -1369,7 +1372,7 @@ def kafka_start(
     except ImportError:
         console.print(
             "[red]confluent-kafka is not installed.[/red] "
-            "Install it with: [bold]pip install 'r2g[kafka]'[/bold]"
+            "Install it with: [bold]pip install 'r2g-arango[kafka]'[/bold]"
         )
         raise typer.Exit(code=1)
 
@@ -1597,7 +1600,10 @@ def ui_cmd(
 
         from r2g.ui.server import create_app
     except ImportError:
-        console.print("[red]FastAPI/Uvicorn not installed.[/red] Install with: [bold]pip install 'r2g[ui]'[/bold]")
+        console.print(
+            "[red]FastAPI/Uvicorn not installed.[/red] "
+            "Install with: [bold]pip install 'r2g-arango[ui]'[/bold]"
+        )
         raise typer.Exit(code=1)
 
     console.print(f"[green]R2G Mapping Studio[/green] starting at http://{host}:{port}")
@@ -1626,7 +1632,7 @@ def mcp_cmd(
         from r2g.mcp_server import mcp as mcp_app
     except ImportError:
         console.print(
-            "[red]MCP SDK not installed.[/red] Install with: [bold]pip install 'r2g[mcp]'[/bold]"
+            "[red]MCP SDK not installed.[/red] Install with: [bold]pip install 'r2g-arango[mcp]'[/bold]"
         )
         raise typer.Exit(code=1)
 

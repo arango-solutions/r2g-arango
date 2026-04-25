@@ -4,7 +4,7 @@ Subscribes to one or more Kafka topics carrying Debezium (or flat JSON)
 change events, parses them into ChangeEvents, and feeds them through the
 existing CDCHandler pipeline for transformation and application to ArangoDB.
 
-Requires ``confluent-kafka`` (install via ``pip install r2g[kafka]``).
+Requires ``confluent-kafka`` (install via ``pip install r2g-arango[kafka]``).
 
 Key design decisions:
 - Uses ``confluent-kafka`` for robust, high-throughput consumption.
@@ -37,7 +37,7 @@ def _check_confluent_kafka() -> None:
     except ImportError:
         raise ImportError(
             "confluent-kafka is required for Kafka integration. "
-            "Install it with: pip install 'r2g[kafka]'"
+            "Install it with: pip install 'r2g-arango[kafka]'"
         )
 
 

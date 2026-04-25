@@ -28,6 +28,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies
-        run: pip install -e ".[test]"
+        # [all] pulls in every optional connector/UI/MCP extra so the full test
+        # suite can import them; [test] adds pytest/pytest-cov.
+        run: pip install -e ".[all,test]"
       - name: Run tests
         run: pytest tests/ -v --tb=short -m "not integration"

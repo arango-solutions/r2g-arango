@@ -222,7 +222,7 @@ class TestSnowflakeSession:
             schema_name="SCH",
             connect_params={"user": "u", "password": "p", "account": "xy123", "database": "DB"},
         )
-        with pytest.raises(ImportError, match="r2g\\[snowflake\\]"):
+        with pytest.raises(ImportError, match="r2g-arango\\[snowflake\\]"):
             _ = s.connection
 
     def test_context_manager_closes_on_exit(self, monkeypatch):

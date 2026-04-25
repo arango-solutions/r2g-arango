@@ -41,7 +41,7 @@ Example::
 Missing ``snowflake-connector-python``
 --------------------------------------
 
-The package is an *optional* dependency (``r2g[snowflake]``). We never
+The package is an *optional* dependency (``r2g-arango[snowflake]``). We never
 import it at module import time; the first attempt to introspect a
 Snowflake source raises :class:`ImportError` with a pip-install hint so
 the UI / MCP server can surface a clean message.
@@ -73,7 +73,7 @@ def _load_snowflake_connector() -> Any:
     except ImportError as err:
         raise ImportError(
             "Snowflake support requires snowflake-connector-python. "
-            "Install with: pip install 'r2g[snowflake]'"
+            "Install with: pip install 'r2g-arango[snowflake]'"
         ) from err
     return _sf
 

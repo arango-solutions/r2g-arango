@@ -200,7 +200,7 @@ class TestSourceDump:
         def _raise(*a, **kw):
             raise ImportError(
                 "Snowflake support requires snowflake-connector-python. "
-                "Install with: pip install 'r2g[snowflake]'"
+                "Install with: pip install 'r2g-arango[snowflake]'"
             )
 
         with patch("r2g.connectors.base.create_source_connector", _raise):

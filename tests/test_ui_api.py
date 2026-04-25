@@ -109,7 +109,7 @@ class TestSourceEndpoints:
         assert resp.status_code == 501
         body = resp.json()
         detail = body.get("detail", "").lower()
-        assert "r2g[snowflake]" in detail or "snowflake-connector" in detail
+        assert "r2g-arango[snowflake]" in detail or "snowflake-connector" in detail
 
 
 class TestInferFksEndpoint:

@@ -129,20 +129,55 @@ src/r2g/
 
 ## Installation
 
+`r2g` is a CLI plus an optional FastAPI mapping studio. It ships from PyPI as
+`r2g-arango` and is designed around opt-in extras so you only pull in the
+connectors / UI you actually need.
+
+### End users — install with `pipx`
+
+We recommend [`pipx`](https://pipx.pypa.io/) so the CLI lives in its own
+isolated venv and does not pollute your project environments:
+
 ```bash
-pip install -e .
+pipx install 'r2g-arango[postgres,ui]'   # PG source + interactive mapping studio
+r2g --help
+r2g ui                                   # opens http://localhost:8765
 ```
 
-With test dependencies:
+Plain `pip install` works too; just be aware that the connector
+dependency trees (psycopg, snowflake-connector-python, confluent-kafka) are
+substantial and you probably don't want them in an unrelated app venv.
+
+### Extras matrix
+
+Pick the extras that match your use case. Combine with commas.
+
+| Extra        | What it pulls in                                        | When you need it                              |
+| ------------ | ------------------------------------------------------- | --------------------------------------------- |
+| `postgres`   | `psycopg[binary]`                                       | Any PostgreSQL source — schema introspection, dumps, streaming, CDC via logical replication |
+| `snowflake`  | `snowflake-connector-python`                            | Snowflake source                              |
+| `kafka`      | `confluent-kafka`                                       | Kafka-fed CDC consumer (Debezium or flat JSON) |
+| `ui`         | `fastapi`, `uvicorn[standard]`, `httpx`                 | Local mapping studio (`r2g ui`)               |
+| `mcp`        | `mcp[cli]`                                              | Run r2g as an MCP server for AI assistants    |
+| `all`        | everything above                                        | Don't think about it; want every feature      |
+
+Common recipes:
 
 ```bash
-pip install -e ".[test]"
+pipx install 'r2g-arango[postgres,ui]'              # mapping studio against PG
+pipx install 'r2g-arango[postgres,kafka]'           # batch load + Kafka CDC worker
+pipx install 'r2g-arango[snowflake,ui]'             # Snowflake source via the studio
+pip   install 'r2g-arango[all]'                     # kitchen sink
 ```
 
-With test and dev (lint) dependencies:
+### Contributors — editable install
 
 ```bash
-pip install -e ".[test,dev]"
+git clone https://github.com/ArthurKeen/r2g-arango
+cd r2g-arango
+pip install -e ".[all,test,dev]"   # all extras + pytest + ruff
+ruff check src/ tests/
+pytest tests/ -m "not integration"
 ```
 
 ## Quick start
@@ -417,7 +452,7 @@ ALTER TABLE users REPLICA IDENTITY FULL;
 Consume change events from Kafka instead of PostgreSQL logical replication. Requires the optional dependency:
 
 ```bash
-pip install 'r2g[kafka]'
+pip install 'r2g-arango[kafka]'
 ```
 
 **Debezium** messages (default `--format debezium`):
@@ -453,7 +488,7 @@ Use `--offset-reset earliest` or `latest` to control where a new consumer group 
 
 This is an experimental reference implementation. The following constraints apply:
 
-- **PostgreSQL and Snowflake are both supported sources.** Phase 6 shipped: schema introspection, FK inference, CSV dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) all work on both backends through a common `SourceConnector` / `SourceSession` abstraction. Snowflake is gated on the optional `r2g[snowflake]` extra. End-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No MySQL, SQLite, or other source support yet.
+- **PostgreSQL and Snowflake are both supported sources.** Phase 6 shipped: schema introspection, FK inference, CSV dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) all work on both backends through a common `SourceConnector` / `SourceSession` abstraction. Snowflake is gated on the optional `r2g-arango[snowflake]` extra. End-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No MySQL, SQLite, or other source support yet.
 - **Data validation is opt-in** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. Use `validate-data` before import to catch these, but it is not enforced automatically.
 - **Basic incremental support only** -- `stream --since` filters rows by a timestamp column for basic incremental updates, but there is no change tracking, CDC, or diff-based processing yet (see Phases 3-4 in the PRD).
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
