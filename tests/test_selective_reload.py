@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -11,6 +12,11 @@ from r2g.mapping_diff import ReloadAction, ReloadPlan
 from r2g.selective_reload import ReloadReport, SelectiveReloader
 
 runner = CliRunner()
+
+
+def plain_output(result) -> str:
+    """Strip Rich/Typer ANSI styling so help assertions are version-stable."""
+    return click.unstyle(result.output)
 
 
 @pytest.fixture(autouse=True)
@@ -193,19 +199,21 @@ class TestMappingDiffCLI:
     def test_mapping_diff_help(self):
         result = runner.invoke(app, ["mapping-diff", "--help"])
         assert result.exit_code == 0
-        assert "--schema" in result.output
-        assert "--json" in result.output
-        assert "OLD_CONFIG" in result.output
-        assert "NEW_CONFIG" in result.output
+        output = plain_output(result)
+        assert "--schema" in output
+        assert "--json" in output
+        assert "OLD_CONFIG" in output
+        assert "NEW_CONFIG" in output
 
     def test_selective_reload_help(self):
         result = runner.invoke(app, ["selective-reload", "--help"])
         assert result.exit_code == 0
-        assert "--schema" in result.output
-        assert "--dry-run" in result.output
-        assert "--pg-conn" in result.output
-        assert "--endpoint" in result.output
-        assert "--batch-size" in result.output
+        output = plain_output(result)
+        assert "--schema" in output
+        assert "--dry-run" in output
+        assert "--pg-conn" in output
+        assert "--endpoint" in output
+        assert "--batch-size" in output
 
     def test_mapping_diff_identical(self, tmp_path):
         from r2g.config import ConfigManager

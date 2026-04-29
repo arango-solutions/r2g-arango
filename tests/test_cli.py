@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sys
 
+import click
 import pytest
 from typer.testing import CliRunner
 
@@ -22,6 +23,11 @@ from r2g.types import (
 )
 
 runner = CliRunner()
+
+
+def plain_output(result) -> str:
+    """Strip Rich/Typer ANSI styling so help assertions are version-stable."""
+    return click.unstyle(result.output)
 
 
 @pytest.fixture(autouse=True)
@@ -107,71 +113,80 @@ class TestHelp:
     def test_main_help(self):
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "R2G-ETL" in result.output
+        output = plain_output(result)
+        assert "R2G-ETL" in output
 
     def test_stream_help(self):
         result = runner.invoke(app, ["stream", "--help"])
         assert result.exit_code == 0
-        assert "--dry-run" in result.output
-        assert "--workers" in result.output
-        assert "--include-tables" in result.output
-        assert "--exclude-tables" in result.output
-        assert "--on-duplicate" in result.output
-        assert "--since" in result.output
-        assert "--since-column" in result.output
+        output = plain_output(result)
+        assert "--dry-run" in output
+        assert "--workers" in output
+        assert "--include-tables" in output
+        assert "--exclude-tables" in output
+        assert "--on-duplicate" in output
+        assert "--since" in output
+        assert "--since-column" in output
 
     def test_validate_config_help(self):
         result = runner.invoke(app, ["validate-config", "--help"])
         assert result.exit_code == 0
-        assert "--schema" in result.output
+        output = plain_output(result)
+        assert "--schema" in output
 
     def test_diff_schema_help(self):
         result = runner.invoke(app, ["diff-schema", "--help"])
         assert result.exit_code == 0
-        assert "--old" in result.output
-        assert "--new" in result.output
+        output = plain_output(result)
+        assert "--old" in output
+        assert "--new" in output
 
     def test_cdc_setup_help(self):
         result = runner.invoke(app, ["cdc-setup", "--help"])
         assert result.exit_code == 0
-        assert "--pg-conn" in result.output
-        assert "--slot" in result.output
-        assert "--plugin" in result.output
+        output = plain_output(result)
+        assert "--pg-conn" in output
+        assert "--slot" in output
+        assert "--plugin" in output
 
     def test_cdc_teardown_help(self):
         result = runner.invoke(app, ["cdc-teardown", "--help"])
         assert result.exit_code == 0
-        assert "--slot" in result.output
+        output = plain_output(result)
+        assert "--slot" in output
 
     def test_cdc_status_help(self):
         result = runner.invoke(app, ["cdc-status", "--help"])
         assert result.exit_code == 0
-        assert "--slot" in result.output
+        output = plain_output(result)
+        assert "--slot" in output
 
     def test_cdc_start_help(self):
         result = runner.invoke(app, ["cdc-start", "--help"])
         assert result.exit_code == 0
-        assert "--pg-conn" in result.output
-        assert "--slot" in result.output
-        assert "--plugin" in result.output
-        assert "--poll-interval" in result.output
-        assert "--batch-size" in result.output
-        assert "--endpoint" in result.output
-        assert "SCHEMA_FILE" in result.output
-        assert "--conflict-policy" in result.output
+        output = plain_output(result)
+        assert "--pg-conn" in output
+        assert "--slot" in output
+        assert "--plugin" in output
+        assert "--poll-interval" in output
+        assert "--batch-size" in output
+        assert "--endpoint" in output
+        assert "SCHEMA_FILE" in output
+        assert "--conflict-policy" in output
 
     def test_kafka_start_help(self):
         result = runner.invoke(app, ["kafka-start", "--help"])
         assert result.exit_code == 0
-        assert "--brokers" in result.output
-        assert "--topics" in result.output
-        assert "--group-id" in result.output
-        assert "--format" in result.output
-        assert "--offset-reset" in result.output
-        assert "--batch-size" in result.output
-        assert "--endpoint" in result.output
-        assert "--conflict-policy" in result.output
-        assert "SCHEMA_FILE" in result.output
+        output = plain_output(result)
+        assert "--brokers" in output
+        assert "--topics" in output
+        assert "--group-id" in output
+        assert "--format" in output
+        assert "--offset-reset" in output
+        assert "--batch-size" in output
+        assert "--endpoint" in output
+        assert "--conflict-policy" in output
+        assert "SCHEMA_FILE" in output
 
 
 class TestValidateSchema:
@@ -426,8 +441,9 @@ class TestValidateData:
     def test_help(self):
         result = runner.invoke(app, ["validate-data", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
-        assert "--schema" in result.output
+        output = plain_output(result)
+        assert "--data-dir" in output
+        assert "--schema" in output
 
 
 class TestMigrateConfig:
@@ -528,9 +544,10 @@ class TestMigrateConfig:
     def test_help(self):
         result = runner.invoke(app, ["migrate-config", "--help"])
         assert result.exit_code == 0
-        assert "--schema" in result.output
-        assert "--config" in result.output
-        assert "--output" in result.output
+        output = plain_output(result)
+        assert "--schema" in output
+        assert "--config" in output
+        assert "--output" in output
 
 
 class TestDiffSchema:
