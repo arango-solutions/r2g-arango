@@ -1,4 +1,4 @@
-# r2g — Relational-to-Graph for ArangoDB
+# r2g — (Experimental) Relational-to-Graph for ArangoDB
 
 [![CI](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml/badge.svg)](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
