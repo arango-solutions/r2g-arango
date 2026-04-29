@@ -8,6 +8,8 @@
 > materialize via batch ETL, sync via CDC/Kafka, or query interactively
 > through the mapping studio.
 
+![R2G Mapping Studio showing relational source fields mapped to a target graph model](docs/assets/r2g-mapping-studio.png)
+
 `r2g` turns relational schemas into ArangoDB graph schemas mechanically:
 tables become document collections, foreign keys become edges, join tables
 become edges, and types are coerced from PostgreSQL representations into
