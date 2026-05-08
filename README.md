@@ -1,8 +1,15 @@
 # r2g — (Experimental) Relational-to-Graph for ArangoDB
 
+
 [![CI](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml/badge.svg)](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
+> **Purpose.** This repository is primarily an educational reference for
+> understanding relational-to-graph mapping with ArangoDB. It demonstrates
+> common patterns, trade-offs, and implementation techniques for projecting
+> relational and structured data into a graph model; it is not intended to
+> define or supersede any ArangoDB product roadmap.
 
 > Project relational and structured data sources as a graph in ArangoDB —
 > materialize via batch ETL, sync via CDC/Kafka, or query interactively
