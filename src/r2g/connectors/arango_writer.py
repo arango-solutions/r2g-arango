@@ -66,6 +66,28 @@ class ArangoWriter:
         self._client: ArangoClient | None = None
         self._db: StandardDatabase | None = None
 
+    def ensure_database(self) -> None:
+        """Create the target database if it does not already exist.
+
+        Connects to the ``_system`` database with the same credentials to
+        check for and, if necessary, create the target database. No-op when
+        the target is ``_system`` itself (which always exists).
+        """
+        if not self.database_name or self.database_name == "_system":
+            return
+        client = ArangoClient(hosts=self.endpoint)
+        try:
+            sys_db = client.db(
+                "_system",
+                username=self.username,
+                password=self.password,
+            )
+            if not sys_db.has_database(self.database_name):
+                sys_db.create_database(self.database_name)
+                logger.info("arango_database_created", name=self.database_name)
+        finally:
+            client.close()
+
     def connect(self) -> StandardDatabase:
         self._client = ArangoClient(hosts=self.endpoint)
         self._db = self._client.db(

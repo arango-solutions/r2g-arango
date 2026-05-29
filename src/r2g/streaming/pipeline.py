@@ -467,6 +467,8 @@ class StreamingPipeline:
         self._on_progress = on_progress
         self._on_event = on_event
         t0 = time.monotonic()
+        if not self.dry_run:
+            self.writer.ensure_database()
         self.writer.connect()
 
         if self.workers > 1:

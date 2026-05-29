@@ -1,4 +1,25 @@
 services:
+  postgres:
+    # Credentials are hardcoded (not env-substituted) so the repo .env used by
+    # the r2g CLI (PG_USER/PG_PASSWORD/...) can't accidentally override them.
+    image: postgres:16
+    container_name: r2g-test-postgres
+    environment:
+      POSTGRES_USER: r2g
+      POSTGRES_PASSWORD: r2g_test_2026
+      POSTGRES_DB: northwind
+    ports:
+      - "5432:5432"
+    volumes:
+      - r2g-pg-data:/var/lib/postgresql/data
+      - ./docker/northwind/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-r2g} -d ${PG_DB:-northwind}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   arangodb:
     image: ${ARANGO_IMAGE:-arangodb:3.12}
     container_name: ${ARANGO_CONTAINER:-r2g-test-arangodb}
@@ -17,3 +38,4 @@ services:
 
 volumes:
   r2g-arango-data:
+  r2g-pg-data:

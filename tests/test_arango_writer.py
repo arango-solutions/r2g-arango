@@ -122,6 +122,42 @@ class TestImportBatchErrors:
         assert "col" in str(err)
 
 
+class TestEnsureDatabase:
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_creates_missing_database(self, mock_client_cls, writer):
+        mock_client = MagicMock()
+        sys_db = MagicMock()
+        sys_db.has_database.return_value = False
+        mock_client.db.return_value = sys_db
+        mock_client_cls.return_value = mock_client
+
+        writer.ensure_database()
+
+        mock_client.db.assert_called_once_with("_system", username="root", password="secret")
+        sys_db.has_database.assert_called_once_with("test_db")
+        sys_db.create_database.assert_called_once_with("test_db")
+        mock_client.close.assert_called_once()
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_noop_when_database_exists(self, mock_client_cls, writer):
+        mock_client = MagicMock()
+        sys_db = MagicMock()
+        sys_db.has_database.return_value = True
+        mock_client.db.return_value = sys_db
+        mock_client_cls.return_value = mock_client
+
+        writer.ensure_database()
+
+        sys_db.create_database.assert_not_called()
+        mock_client.close.assert_called_once()
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_noop_for_system_database(self, mock_client_cls):
+        sys_writer = ArangoWriter(database="_system", username="root", password="secret")
+        sys_writer.ensure_database()
+        mock_client_cls.assert_not_called()
+
+
 class TestCreateNamedGraph:
     @patch("r2g.connectors.arango_writer.ArangoClient")
     def test_creates_graph(self, mock_client_cls, writer):

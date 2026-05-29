@@ -493,9 +493,13 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         def progress_callback(event_data: dict[str, Any]) -> None:
             progress_queue.put(event_data)
 
+        # Default to a named graph named after the project so the graph is
+        # auto-created in ArangoDB when the caller doesn't specify one.
+        graph_name = body.graph_name or name
+
         def run_pipeline() -> None:
             try:
-                result = pipeline.run(graph_name=body.graph_name, on_event=progress_callback)
+                result = pipeline.run(graph_name=graph_name, on_event=progress_callback)
                 total_rows = sum(r[1] for r in result.get("documents", []))
                 total_rows += sum(r[1] for r in result.get("edges", []))
                 total_errors = sum(len(e) for e in pipeline.errors.values())
