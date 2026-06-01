@@ -1176,6 +1176,42 @@ async function introspectTarget(name) {
 
 // ── Catalog creation forms (Phase 5e.8) ──
 
+// Per-type copy for the "+ New source" connection field. CSV uses a
+// directory path and Kafka uses the broker list rather than a DSN.
+const NS_CONN_META = {
+  postgresql: {
+    label: 'Connection string',
+    placeholder: 'postgresql://user:pass@host:5432/db',
+    hint: 'PostgreSQL: <code>postgresql://user:pass@host:5432/db</code>. Use <code>$ENV_VAR</code> to reference an environment variable.',
+  },
+  snowflake: {
+    label: 'Connection string',
+    placeholder: 'snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&role=R',
+    hint: 'Snowflake (introspect-only): <code>snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&amp;role=R</code>.',
+  },
+  csv: {
+    label: 'Directory path',
+    placeholder: '/path/to/csv/dumps',
+    hint: 'Directory of CSV/TSV files \u2014 one file per table, the filename is the table name and the header row supplies columns. A column named <code>id</code> becomes the primary key.',
+  },
+  kafka: {
+    label: 'Bootstrap servers',
+    placeholder: 'localhost:9092',
+    hint: 'Kafka brokers. Introspection reads the topic value schema from the Schema Registry (Avro or JSON Schema). Batch loads are not supported here \u2014 use <code>r2g kafka-start</code> for continuous sync.',
+  },
+};
+
+function nsTypeChanged() {
+  const type = document.getElementById('ns-type').value;
+  const meta = NS_CONN_META[type] || NS_CONN_META.postgresql;
+  document.getElementById('ns-conn-label').textContent = meta.label;
+  const conn = document.getElementById('ns-conn');
+  conn.placeholder = meta.placeholder;
+  document.getElementById('ns-conn-hint').innerHTML = meta.hint;
+  document.getElementById('ns-csv-params').style.display = type === 'csv' ? '' : 'none';
+  document.getElementById('ns-kafka-params').style.display = type === 'kafka' ? '' : 'none';
+}
+
 function openNewSourceForm() {
   const html = `
     <div class="fc-form">
@@ -1183,20 +1219,38 @@ function openNewSourceForm() {
         <input id="ns-name" placeholder="prod_pg" autocomplete="off" />
       </label>
       <label>Type
-        <select id="ns-type">
+        <select id="ns-type" onchange="nsTypeChanged()">
           <option value="postgresql">PostgreSQL</option>
           <option value="snowflake">Snowflake (introspect-only)</option>
+          <option value="csv">CSV directory</option>
+          <option value="kafka">Kafka topic (introspect-only)</option>
         </select>
-        <span class="hint">Snowflake supports schema capture today; streaming / FK inference land in a later slice. CSV and Kafka source types coming later.</span>
       </label>
-      <label>Connection string
+      <label><span id="ns-conn-label">Connection string</span>
         <input id="ns-conn" placeholder="postgresql://user:pass@host:5432/db" autocomplete="off" />
-        <span class="hint">
+        <span class="hint" id="ns-conn-hint">
           PostgreSQL: <code>postgresql://user:pass@host:5432/db</code>.
-          Snowflake: <code>snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&amp;role=R</code>.
           Use <code>$ENV_VAR</code> to reference an environment variable.
         </span>
       </label>
+      <div id="ns-csv-params" style="display:none">
+        <label>Delimiter
+          <input id="ns-csv-delim" value="," maxlength="3" autocomplete="off" style="width:4em" />
+          <span class="hint">Field separator (use <code>\\t</code> for TSV).</span>
+        </label>
+        <label class="fc-checkbox">
+          <input type="checkbox" id="ns-csv-header" checked /> First row is a header
+        </label>
+      </div>
+      <div id="ns-kafka-params" style="display:none">
+        <label>Schema Registry URL
+          <input id="ns-kafka-registry" placeholder="http://localhost:8081" autocomplete="off" />
+        </label>
+        <label>Topic
+          <input id="ns-kafka-topic" placeholder="orders" autocomplete="off" />
+          <span class="hint">The value subject defaults to <code>&lt;topic&gt;-value</code>.</span>
+        </label>
+      </div>
       <label>Description (optional)
         <input id="ns-desc" placeholder="Production database" autocomplete="off" />
       </label>
@@ -1213,21 +1267,40 @@ function openNewSourceForm() {
       { label: 'Create & snapshot', kind: 'primary', onClick: async () => {
         const name = document.getElementById('ns-name').value.trim();
         const conn = document.getElementById('ns-conn').value.trim();
+        const type = document.getElementById('ns-type').value;
         const errEl = document.getElementById('ns-err');
         errEl.style.display = 'none';
         if (!name || !conn) {
-          errEl.textContent = 'Name and connection string are required.';
+          errEl.textContent = 'Name and ' + (NS_CONN_META[type]?.label || 'connection string').toLowerCase() + ' are required.';
           errEl.style.display = '';
           return;
+        }
+        const sourceParams = {};
+        if (type === 'csv') {
+          let delim = document.getElementById('ns-csv-delim').value || ',';
+          if (delim === '\\t') delim = '\t';
+          sourceParams.delimiter = delim;
+          sourceParams.has_header = document.getElementById('ns-csv-header').checked;
+        } else if (type === 'kafka') {
+          const registry = document.getElementById('ns-kafka-registry').value.trim();
+          const topic = document.getElementById('ns-kafka-topic').value.trim();
+          if (!registry || !topic) {
+            errEl.textContent = 'Kafka sources require a Schema Registry URL and a topic.';
+            errEl.style.display = '';
+            return;
+          }
+          sourceParams.schema_registry_url = registry;
+          sourceParams.topic = topic;
         }
         try {
           await apiFetch('/api/sources', {
             method: 'POST',
             body: JSON.stringify({
               name,
-              source_type: document.getElementById('ns-type').value,
+              source_type: type,
               connection_string: conn,
               description: document.getElementById('ns-desc').value.trim(),
+              source_params: sourceParams,
             }),
           });
         } catch (e) {

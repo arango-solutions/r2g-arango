@@ -84,6 +84,37 @@ class TestSourceEndpoints:
         # connection string should be redacted
         assert "svc:x@" not in body["connection_string"]
 
+    def test_add_csv_source_and_snapshot(self, client, tmp_path):
+        csv_dir = tmp_path / "dumps"
+        csv_dir.mkdir()
+        (csv_dir / "customers.csv").write_text("id,name\n1,Alice\n2,Bob\n", encoding="utf-8")
+        resp = client.post("/api/sources", json={
+            "name": "csv_src",
+            "source_type": "csv",
+            "connection_string": str(csv_dir),
+            "source_params": {"delimiter": ",", "has_header": True},
+        })
+        assert resp.status_code == 201
+        assert resp.json()["source_type"] == "csv"
+
+        snap = client.post("/api/sources/csv_src/snapshot")
+        assert snap.status_code == 200, snap.text
+        assert snap.json()["tables"] == 1
+
+        schema = client.get("/api/sources/csv_src/schema")
+        assert schema.status_code == 200
+        assert "customers" in schema.json()["tables"]
+
+    def test_add_kafka_source_accepted(self, client):
+        resp = client.post("/api/sources", json={
+            "name": "kafka_src",
+            "source_type": "kafka",
+            "connection_string": "localhost:9092",
+            "source_params": {"schema_registry_url": "http://localhost:8081", "topic": "orders"},
+        })
+        assert resp.status_code == 201
+        assert resp.json()["source_type"] == "kafka"
+
     def test_add_source_rejects_unsupported_type(self, client):
         resp = client.post("/api/sources", json={
             "name": "my_mysql",

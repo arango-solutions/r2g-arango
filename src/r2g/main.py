@@ -699,6 +699,7 @@ def stream(
                 source.source_type or "postgresql",
                 source.connection_string,
                 schema_name=pg_schema,
+                source_params=source.source_params,
             )
             source_label = f"{source.source_type} ({source_name})"
         else:
@@ -1733,6 +1734,7 @@ def source_snapshot(
             source.source_type or "postgresql",
             source.connection_string,
             schema_name=pg_schema,
+            source_params=source.source_params,
         )
         schema = connector.get_schema()
         previous = mgr.get_latest_snapshot(name) if compare_last else None
@@ -1821,6 +1823,7 @@ def source_dump(
             source.source_type or "postgresql",
             source.connection_string,
             schema_name=pg_schema,
+            source_params=source.source_params,
         )
     except ImportError as err:
         console.print(f"[red]{err}[/red]")

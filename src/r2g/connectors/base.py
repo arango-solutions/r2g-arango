@@ -60,13 +60,15 @@ class SourceConnector(Protocol):
         ...
 
 
-SUPPORTED_SOURCE_TYPES: tuple[str, ...] = ("postgresql", "snowflake")
+SUPPORTED_SOURCE_TYPES: tuple[str, ...] = ("postgresql", "snowflake", "csv", "kafka")
 
 
 def create_source_connector(
     source_type: str,
     connection_string: str,
     schema_name: str = "public",
+    *,
+    source_params: dict | None = None,
 ) -> SourceConnector:
     """Return a connector matching ``source_type``.
 
@@ -74,9 +76,14 @@ def create_source_connector(
     given source type do not pay for its optional dependency. Unknown /
     unsupported types raise :class:`ValueError`; missing optional deps
     raise :class:`ImportError` with a pip-install hint.
+
+    ``source_params`` carries type-specific configuration (e.g. CSV
+    ``delimiter`` / ``has_header``, Kafka ``schema_registry_url`` /
+    ``topic``). PostgreSQL and Snowflake ignore it.
     """
 
     key = (source_type or "").strip().lower()
+    params = source_params or {}
     if key in ("postgresql", "postgres", "pg"):
         from r2g.connectors.postgres import PostgresConnector
 
@@ -85,6 +92,25 @@ def create_source_connector(
         from r2g.connectors.snowflake import SnowflakeConnector
 
         return SnowflakeConnector(connection_string, schema_name=schema_name)
+    if key == "csv":
+        from r2g.connectors.csv_source import CsvConnector
+
+        return CsvConnector(
+            connection_string,
+            schema_name=schema_name,
+            delimiter=params.get("delimiter", ","),
+            has_header=bool(params.get("has_header", True)),
+        )
+    if key == "kafka":
+        from r2g.connectors.kafka_source import KafkaConnector
+
+        return KafkaConnector(
+            connection_string,
+            schema_registry_url=params.get("schema_registry_url", ""),
+            topic=params.get("topic", ""),
+            subject=params.get("subject"),
+            schema_name=schema_name,
+        )
     raise ValueError(
         f"Unsupported source type '{source_type}'. "
         f"Expected one of: {', '.join(SUPPORTED_SOURCE_TYPES)}."

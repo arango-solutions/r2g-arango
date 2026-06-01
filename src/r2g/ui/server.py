@@ -124,6 +124,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 connection_string=body.connection_string,
                 description=body.description,
                 owner=body.owner,
+                source_params=body.source_params,
             )
             return _redact_source(source.model_dump())
         except ValueError as e:
@@ -161,6 +162,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 source.source_type or "postgresql",
                 source.connection_string,
                 schema_name=pg_schema,
+                source_params=source.source_params,
             )
             schema = connector.get_schema()
             snap = catalog.create_snapshot(name, schema, pg_schema=pg_schema)
@@ -467,6 +469,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 source.source_type or "postgresql",
                 source.connection_string,
                 schema_name=snap.pg_schema,
+                source_params=source.source_params,
             )
         except ImportError as e:
             raise HTTPException(status_code=501, detail=str(e))
@@ -670,6 +673,7 @@ class SourceCreateRequest(BaseModel):
     connection_string: str
     description: str = ""
     owner: str = ""
+    source_params: dict[str, Any] = {}
 
 
 class ProjectCreateRequest(BaseModel):

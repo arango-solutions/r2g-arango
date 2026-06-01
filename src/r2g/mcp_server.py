@@ -218,6 +218,7 @@ def introspect_source_schema(
             source.source_type or "postgresql",
             conn_str,
             schema_name=pg_schema,
+            source_params=source.source_params,
         )
         schema = connector.get_schema()
 

@@ -131,7 +131,7 @@ class TestSourceDump:
     def test_dumps_all_snapshot_tables(self, catalog_with_source, tmp_path):
         captured: list[_FakeConnector] = []
 
-        def _factory(source_type, connection_string, schema_name="public"):
+        def _factory(source_type, connection_string, schema_name="public", **kwargs):
             conn = _FakeConnector()
             captured.append(conn)
             return conn
