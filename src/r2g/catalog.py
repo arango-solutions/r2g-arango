@@ -73,6 +73,8 @@ class Project(BaseModel):
     arango_endpoint: str = "http://localhost:8529"
     arango_database: str = "_system"
     target_name: str | None = None
+    mapping_name: str = ""
+    mapping_description: str = ""
     created_at: datetime
     updated_at: datetime
 
@@ -278,6 +280,8 @@ class CatalogManager:
         mapping_config_path: str,
         arango_endpoint: str = "http://localhost:8529",
         arango_database: str = "_system",
+        mapping_name: str = "",
+        mapping_description: str = "",
     ) -> Project:
         catalog = self._load()
         if source_name not in catalog.sources:
@@ -292,6 +296,8 @@ class CatalogManager:
             mapping_config_path=mapping_config_path,
             arango_endpoint=arango_endpoint,
             arango_database=arango_database,
+            mapping_name=mapping_name,
+            mapping_description=mapping_description,
             created_at=now,
             updated_at=now,
         )
@@ -304,6 +310,34 @@ class CatalogManager:
 
     def get_project(self, name: str) -> Project | None:
         return self._load().projects.get(name)
+
+    def update_project(self, name: str, /, **kwargs: Any) -> Project:
+        """Update fields on an existing project and bump ``updated_at``.
+
+        Accepts any :class:`Project` field (e.g. ``mapping_name``,
+        ``mapping_description``, ``target_name``). ``name`` is immutable
+        here and silently ignored if passed.
+        """
+        catalog = self._load()
+        if name not in catalog.projects:
+            raise ValueError(f"Project '{name}' not found")
+        project = catalog.projects[name]
+        update_data = project.model_dump()
+        kwargs.pop("name", None)
+        update_data.update(kwargs)
+        update_data["updated_at"] = _now()
+        catalog.projects[name] = Project.model_validate(update_data)
+        self._save(catalog)
+        logger.info("project_updated", name=name, fields=list(kwargs.keys()))
+        return catalog.projects[name]
+
+    def touch_project(self, name: str) -> None:
+        """Bump a project's ``updated_at`` timestamp (e.g. after a mapping save)."""
+        catalog = self._load()
+        if name not in catalog.projects:
+            return
+        catalog.projects[name].updated_at = _now()
+        self._save(catalog)
 
     # ── Load history ─────────────────────────────────────────────────
 

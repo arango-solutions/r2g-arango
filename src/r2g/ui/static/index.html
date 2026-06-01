@@ -346,16 +346,39 @@
     border: 1px solid var(--border);
   }
   .expr-source-chip.active { background: var(--accent); color: #000; border-color: var(--accent); }
-  .expr-textarea {
-    flex: 1; min-height: 120px;
-    background: var(--bg); color: var(--green); border: 1px solid var(--border);
+  .expr-editor-wrap { position: relative; flex: 1; min-height: 120px; }
+  .expr-textarea, .expr-highlight {
+    box-sizing: border-box;
+    margin: 0;
+    border: 1px solid var(--border);
     border-radius: 6px; padding: 10px 12px;
     font-family: 'SF Mono','Fira Code',monospace; font-size: 12px;
+    line-height: 1.5;
+    letter-spacing: normal;
+    white-space: pre-wrap; word-break: break-word; overflow-wrap: break-word;
+    tab-size: 2;
+  }
+  .expr-textarea {
+    position: relative; z-index: 2;
+    width: 100%; min-height: 120px; height: 100%;
+    background: transparent; color: transparent; caret-color: var(--green);
     resize: vertical; outline: none;
+  }
+  .expr-highlight {
+    position: absolute; inset: 0; z-index: 1;
+    background: var(--bg); color: var(--text);
+    overflow: hidden; pointer-events: none;
+    border-color: transparent;
   }
   .expr-textarea:focus { border-color: var(--accent); }
   .expr-textarea.expr-invalid { border-color: var(--danger, #d85); }
   .expr-textarea.expr-valid { border-color: var(--success, #4caf50); }
+  .expr-highlight .tok-fn { color: var(--accent, #6cf); font-weight: 600; }
+  .expr-highlight .tok-bind { color: var(--green, #6c9); }
+  .expr-highlight .tok-str { color: var(--yellow, #d9a857); }
+  .expr-highlight .tok-num { color: #c792ea; }
+  .expr-highlight .tok-kw { color: #ff9d6b; font-weight: 600; }
+  .expr-highlight .tok-op { color: var(--text-muted); }
   .expr-status {
     font-family: 'SF Mono','Fira Code',monospace; font-size: 11px;
     margin-top: 4px; min-height: 14px;
@@ -363,6 +386,18 @@
   .expr-status.expr-ok { color: var(--success, #4caf50); }
   .expr-status.expr-err { color: var(--danger, #d85); }
   .expr-status.expr-muted { color: var(--text-muted); }
+  .expr-preview {
+    font-family: 'SF Mono','Fira Code',monospace; font-size: 11px;
+    margin-top: 4px; padding: 6px 8px; border-radius: 4px;
+    background: var(--surface2, rgba(255,255,255,.04)); color: var(--text);
+    border: 1px dashed var(--border);
+  }
+  .expr-preview .expr-preview-label {
+    color: var(--text-muted); text-transform: uppercase; font-size: 9px;
+    letter-spacing: .5px; margin-right: 6px;
+  }
+  .expr-preview .expr-preview-val { color: var(--accent); }
+  .expr-preview.expr-preview-err .expr-preview-val { color: var(--danger, #d85); }
   .expr-desc-input {
     background: var(--bg); color: var(--text); border: 1px solid var(--border);
     border-radius: 6px; padding: 6px 10px; font-family: inherit; font-size: 12px;
@@ -964,8 +999,12 @@
 
     <div class="expr-modal-row">
       <div class="expr-modal-field-label">Expression</div>
-      <textarea class="expr-textarea" id="expr-textarea" placeholder='e.g. CONCAT(@first_name, " ", @last_name)'></textarea>
+      <div class="expr-editor-wrap">
+        <pre class="expr-highlight" id="expr-highlight" aria-hidden="true"></pre>
+        <textarea class="expr-textarea" id="expr-textarea" spellcheck="false" placeholder='e.g. CONCAT(@first_name, " ", @last_name)'></textarea>
+      </div>
       <div class="expr-status" id="expr-status" aria-live="polite"></div>
+      <div class="expr-preview" id="expr-preview" aria-live="polite" style="display:none"></div>
       <div class="expr-hint">
         Leave empty to pass the (single) source column through unchanged.
         <span id="expr-fns-hint" class="muted"></span>
@@ -1427,6 +1466,9 @@ function openNewProjectForm() {
         <input id="np-mapping-path" placeholder="${defaultMappingPath}" autocomplete="off" />
         <span class="hint">Leave blank to use the default location under <code>~/.r2g/projects</code>.</span>
       </label>
+      <label>Mapping description <span class="hint">optional</span>
+        <input id="np-mapping-desc" placeholder="What this mapping represents" autocomplete="off" />
+      </label>
       <div class="err" id="np-err" style="display:none"></div>
     </div>
   `;
@@ -1443,6 +1485,7 @@ function openNewProjectForm() {
         const arango_endpoint = document.getElementById('np-endpoint').value.trim();
         const arango_database = document.getElementById('np-database').value.trim();
         let mapping_config_path = document.getElementById('np-mapping-path').value.trim();
+        const mapping_description = document.getElementById('np-mapping-desc').value.trim();
         const errEl = document.getElementById('np-err');
         errEl.style.display = 'none';
         if (!name || !source_name) {
@@ -1461,6 +1504,7 @@ function openNewProjectForm() {
               mapping_config_path,
               arango_endpoint: arango_endpoint || 'http://localhost:8529',
               arango_database: arango_database || '_system',
+              mapping_description,
             }),
           });
         } catch (e) {
@@ -1560,6 +1604,7 @@ document.getElementById('project-select').addEventListener('change', e => {
 
 async function selectProject(name) {
   currentProject = name;
+  for (const k of Object.keys(_exprSampleRowCache)) delete _exprSampleRowCache[k];
   setActionButtons(true);
   toast('Loading project ' + name + '\u2026', 'info');
   try {
@@ -2580,6 +2625,7 @@ function openExpressionEditor(collKey, targetProp) {
   });
 
   renderExprSources();
+  highlightExpr();
   modal.classList.add('visible');
   setTimeout(() => document.getElementById('expr-textarea').focus(), 50);
   scheduleExprCompile();
@@ -2598,11 +2644,13 @@ function scheduleExprCompile() {
   if (engine !== 'aql') {
     status.className = 'expr-status expr-muted';
     status.textContent = `${engine.toUpperCase()} expressions are delegated at load time; parse-check is unavailable in the browser.`;
+    hideExprPreview();
     return;
   }
   if (!expr.trim()) {
     status.className = 'expr-status expr-muted';
     status.textContent = 'Identity mapping (pass-through).';
+    hideExprPreview();
     return;
   }
   status.className = 'expr-status expr-muted';
@@ -2633,17 +2681,87 @@ function scheduleExprCompile() {
             }
           }
         }
+        runExprPreview(expr, engine, seq);
       } else {
         ta.classList.add('expr-invalid');
         status.className = 'expr-status expr-err';
         status.textContent = data.error || 'Invalid expression';
+        hideExprPreview();
       }
     } catch (e) {
       if (seq !== _exprCompileSeq) return;
       status.className = 'expr-status expr-muted';
       status.textContent = '';
+      hideExprPreview();
     }
   }, 250);
+}
+
+const _exprSampleRowCache = {};
+
+function hideExprPreview() {
+  const el = document.getElementById('expr-preview');
+  if (el) el.style.display = 'none';
+}
+
+function _fmtPreviewValue(v) {
+  if (v === null || v === undefined) return 'null';
+  if (typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+async function _getExprSampleRow(sourceTable) {
+  if (sourceTable in _exprSampleRowCache) return _exprSampleRowCache[sourceTable];
+  let row = {};
+  try {
+    const data = await apiFetch(
+      `/api/sources/${encodeURIComponent(currentSourceName)}/preview/${encodeURIComponent(sourceTable)}?limit=1`
+    );
+    const rows = Array.isArray(data) ? data : (data.rows || data.data || []);
+    if (rows.length) row = rows[0];
+  } catch (e) {
+    row = null;  // sample unavailable (e.g. source offline); cache the miss
+  }
+  _exprSampleRowCache[sourceTable] = row;
+  return row;
+}
+
+async function runExprPreview(expr, engine, seq) {
+  const el = document.getElementById('expr-preview');
+  if (!el || !exprEditorState) return;
+  const row = await _getExprSampleRow(exprEditorState.sourceTable);
+  if (seq !== _exprCompileSeq) return;
+  if (row === null) {
+    el.className = 'expr-preview expr-preview-err';
+    el.style.display = '';
+    el.innerHTML = '<span class="expr-preview-label">Preview</span>'
+      + '<span class="expr-preview-val">sample row unavailable</span>';
+    return;
+  }
+  try {
+    const resp = await fetch('/api/expressions/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expression: expr, engine, row }),
+    });
+    const data = await resp.json();
+    if (seq !== _exprCompileSeq) return;
+    if (!data.valid) { hideExprPreview(); return; }
+    el.style.display = '';
+    if (data.runtime_error) {
+      el.className = 'expr-preview expr-preview-err';
+      el.innerHTML = '<span class="expr-preview-label">Preview</span>'
+        + `<span class="expr-preview-val">${escHtml(data.runtime_error)}</span>`;
+    } else {
+      el.className = 'expr-preview';
+      el.innerHTML = '<span class="expr-preview-label">Preview</span>'
+        + `<span class="expr-preview-val">${escHtml(_fmtPreviewValue(data.result))}</span>`;
+    }
+  } catch (e) {
+    if (seq !== _exprCompileSeq) return;
+    hideExprPreview();
+  }
 }
 
 function renderExprSources() {
@@ -2738,13 +2856,99 @@ function initExpressionEditor() {
     });
   });
   const ta = document.getElementById('expr-textarea');
-  if (ta) ta.addEventListener('input', scheduleExprCompile);
+  if (ta) {
+    ta.addEventListener('input', () => { highlightExpr(); scheduleExprCompile(); });
+    ta.addEventListener('scroll', syncExprHighlightScroll);
+  }
 
   fetch('/api/expressions/functions').then(r => r.json()).then(data => {
     const hint = document.getElementById('expr-fns-hint');
+    if (data && Array.isArray(data.functions)) {
+      _exprKnownFns = new Set(data.functions.map(f => f.toUpperCase()));
+    }
     if (!hint || !data || !Array.isArray(data.functions)) return;
     hint.textContent = ` Available functions: ${data.functions.join(', ')}.`;
   }).catch(() => {});
+}
+
+// ── Expression syntax highlighting ──
+let _exprKnownFns = new Set();
+const _EXPR_KEYWORDS = new Set(['TRUE', 'FALSE', 'NULL', 'AND', 'OR', 'NOT']);
+
+function syncExprHighlightScroll() {
+  const ta = document.getElementById('expr-textarea');
+  const hl = document.getElementById('expr-highlight');
+  if (!ta || !hl) return;
+  hl.scrollTop = ta.scrollTop;
+  hl.scrollLeft = ta.scrollLeft;
+}
+
+function _exprTokenHtml(cls, text) {
+  return `<span class="${cls}">${escHtml(text)}</span>`;
+}
+
+function highlightExpr() {
+  const ta = document.getElementById('expr-textarea');
+  const hl = document.getElementById('expr-highlight');
+  if (!ta || !hl) return;
+  const src = ta.value || '';
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === '"' || c === "'") {
+      const quote = c;
+      let j = i + 1;
+      while (j < n && src[j] !== quote) {
+        if (src[j] === '\\' && j + 1 < n) j += 2; else j += 1;
+      }
+      j = Math.min(j + 1, n);
+      out += _exprTokenHtml('tok-str', src.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (c === '@') {
+      let j = i + 1;
+      while (j < n && /[A-Za-z0-9_]/.test(src[j])) j += 1;
+      out += _exprTokenHtml('tok-bind', src.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (/[0-9]/.test(c) || (c === '.' && i + 1 < n && /[0-9]/.test(src[i + 1]))) {
+      let j = i;
+      let dot = false;
+      while (j < n && (/[0-9]/.test(src[j]) || (src[j] === '.' && !dot))) {
+        if (src[j] === '.') dot = true;
+        j += 1;
+      }
+      out += _exprTokenHtml('tok-num', src.slice(i, j));
+      i = j;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      let j = i;
+      while (j < n && /[A-Za-z0-9_]/.test(src[j])) j += 1;
+      const word = src.slice(i, j);
+      const up = word.toUpperCase();
+      let k = j;
+      while (k < n && /\s/.test(src[k])) k += 1;
+      if (_EXPR_KEYWORDS.has(up)) out += _exprTokenHtml('tok-kw', word);
+      else if (src[k] === '(' || _exprKnownFns.has(up)) out += _exprTokenHtml('tok-fn', word);
+      else out += escHtml(word);
+      i = j;
+      continue;
+    }
+    if ('+-*/%<>=!&|?:,()'.includes(c)) {
+      out += _exprTokenHtml('tok-op', c);
+      i += 1;
+      continue;
+    }
+    out += escHtml(c);
+    i += 1;
+  }
+  hl.innerHTML = out + '\n';
+  syncExprHighlightScroll();
 }
 
 // ── Keyboard shortcuts ──

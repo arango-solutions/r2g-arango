@@ -69,6 +69,33 @@ class TestEnsureCollection:
         mock_db.create_collection.assert_not_called()
 
 
+class TestExecuteAql:
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_executes_query_and_returns_list(self, mock_client_cls, writer):
+        mock_db = MagicMock()
+        mock_db.aql.execute.return_value = iter([{"slug": "a-b"}, {"slug": "c-d"}])
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        writer.connect()
+        out = writer.execute_aql("FOR row IN @rows RETURN row", {"rows": [1, 2]})
+
+        assert out == [{"slug": "a-b"}, {"slug": "c-d"}]
+        mock_db.aql.execute.assert_called_once_with(
+            "FOR row IN @rows RETURN row", bind_vars={"rows": [1, 2]}
+        )
+
+    @patch("r2g.connectors.arango_writer.ArangoClient")
+    def test_defaults_bind_vars_to_empty(self, mock_client_cls, writer):
+        mock_db = MagicMock()
+        mock_db.aql.execute.return_value = iter([])
+        mock_client_cls.return_value.db.return_value = mock_db
+
+        writer.connect()
+        writer.execute_aql("RETURN 1")
+
+        mock_db.aql.execute.assert_called_once_with("RETURN 1", bind_vars={})
+
+
 class TestImportBatch:
     @patch("r2g.connectors.arango_writer.ArangoClient")
     def test_imports_documents(self, mock_client_cls, writer):

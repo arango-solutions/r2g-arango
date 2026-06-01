@@ -643,4 +643,73 @@ def evaluate(expr: str, env: dict[str, Any]) -> Any:
     return compile_expression(expr).evaluate(env)
 
 
+# ── Server-side (AQL) delegation helpers ─────────────────────────────────
+#
+# Expressions that fall outside the local subset (P5c.1.5) are pushed down to
+# ArangoDB. The only rewriting the server query needs is turning our ``@col``
+# bind-parameter syntax into a reference against the per-row FOR variable
+# (e.g. ``row.`col```). Everything else is left verbatim so the full AQL
+# function library is available server-side.
+
+
+def _scan_bind_params(expr: str):
+    """Yield ``(start, end, name)`` for each ``@name`` token outside strings.
+
+    A quote-aware scan (single and double quotes, with backslash escapes) so
+    that an ``@`` appearing inside a string literal is never treated as a
+    bind parameter. Independent of the parser, so it works even for AQL that
+    the local evaluator cannot compile.
+    """
+    i, n = 0, len(expr)
+    while i < n:
+        c = expr[i]
+        if c == '"' or c == "'":
+            quote = c
+            j = i + 1
+            while j < n and expr[j] != quote:
+                if expr[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                j += 1
+            i = j + 1
+            continue
+        if c == "@":
+            j = i + 1
+            if j < n and (expr[j].isalpha() or expr[j] == "_"):
+                while j < n and (expr[j].isalnum() or expr[j] == "_"):
+                    j += 1
+                yield (i, j, expr[i + 1:j])
+                i = j
+                continue
+        i += 1
+
+
+def extract_bind_references(expr: str) -> list[str]:
+    """Return the distinct bind-parameter names referenced by ``expr``.
+
+    Works for any expression text, including AQL outside the local subset.
+    Order-preserving and de-duplicated.
+    """
+    seen: dict[str, None] = {}
+    for _start, _end, name in _scan_bind_params(expr or ""):
+        seen.setdefault(name, None)
+    return list(seen.keys())
+
+
+def rewrite_bind_params(expr: str, var: str = "row") -> str:
+    """Rewrite ``@col`` bind references to ``<var>.`col``` for server-side AQL.
+
+    The attribute name is backtick-quoted so column names that collide with
+    AQL keywords or contain unusual characters remain valid.
+    """
+    out: list[str] = []
+    last = 0
+    for start, end, name in _scan_bind_params(expr or ""):
+        out.append(expr[last:start])
+        out.append(f"{var}.`{name}`")
+        last = end
+    out.append(expr[last:])
+    return "".join(out)
+
+
 SUPPORTED_FUNCTIONS: tuple[str, ...] = tuple(sorted(_FUNCS.keys()))

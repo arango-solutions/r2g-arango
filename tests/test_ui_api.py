@@ -265,6 +265,53 @@ class TestProjectEndpoints:
         })
         assert resp.status_code == 400
 
+    def test_create_project_with_metadata(self, client, tmp_path):
+        self._add_source(client)
+        mapping_path = str(tmp_path / "mapping.yaml")
+        ConfigManager.save_config(MappingConfig(), mapping_path)
+        resp = client.post("/api/projects", json={
+            "name": "meta_proj",
+            "source_name": "src",
+            "mapping_config_path": mapping_path,
+            "mapping_description": "A described mapping",
+        })
+        assert resp.status_code == 201
+        assert resp.json()["mapping_description"] == "A described mapping"
+
+    def test_patch_project_metadata(self, client, tmp_path):
+        self._add_source(client)
+        mapping_path = str(tmp_path / "mapping.yaml")
+        ConfigManager.save_config(MappingConfig(), mapping_path)
+        client.post("/api/projects", json={
+            "name": "patch_proj",
+            "source_name": "src",
+            "mapping_config_path": mapping_path,
+        })
+        resp = client.patch("/api/projects/patch_proj", json={
+            "mapping_name": "Renamed",
+            "mapping_description": "new desc",
+        })
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["mapping_name"] == "Renamed"
+        assert body["mapping_description"] == "new desc"
+
+    def test_patch_project_not_found(self, client):
+        resp = client.patch("/api/projects/nope", json={"mapping_name": "x"})
+        assert resp.status_code == 404
+
+    def test_patch_project_no_fields(self, client, tmp_path):
+        self._add_source(client)
+        mapping_path = str(tmp_path / "mapping.yaml")
+        ConfigManager.save_config(MappingConfig(), mapping_path)
+        client.post("/api/projects", json={
+            "name": "empty_patch",
+            "source_name": "src",
+            "mapping_config_path": mapping_path,
+        })
+        resp = client.patch("/api/projects/empty_patch", json={})
+        assert resp.status_code == 400
+
 
 class TestMappingEndpoints:
     def _setup_project(self, client, tmp_path, catalog_dir):
@@ -419,6 +466,48 @@ class TestExpressionEndpoints:
         resp = client.post(
             "/api/expressions/compile",
             json={"expression": "@a + 1", "engine": "python"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["valid"] is False
+
+    def test_preview_evaluates_against_sample_row(self, client):
+        resp = client.post(
+            "/api/expressions/preview",
+            json={
+                "expression": 'CONCAT(UPPER(@first), " ", @last)',
+                "row": {"first": "ada", "last": "Lovelace"},
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valid"] is True
+        assert body["result"] == "ADA Lovelace"
+        assert body["references"] == ["first", "last"]
+
+    def test_preview_invalid_expression_returns_error(self, client):
+        resp = client.post(
+            "/api/expressions/preview",
+            json={"expression": "UNKNOWN_FN(@a)", "row": {}},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valid"] is False
+        assert "UNKNOWN_FN" in body["error"]
+
+    def test_preview_missing_row_yields_null_passthrough(self, client):
+        resp = client.post(
+            "/api/expressions/preview",
+            json={"expression": "@missing"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["valid"] is True
+        assert body["result"] is None
+
+    def test_preview_rejects_non_aql_engine(self, client):
+        resp = client.post(
+            "/api/expressions/preview",
+            json={"expression": "@a", "engine": "python", "row": {}},
         )
         assert resp.status_code == 200
         assert resp.json()["valid"] is False

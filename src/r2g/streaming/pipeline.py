@@ -11,6 +11,8 @@ does not break read consistency.
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Optional
@@ -28,6 +30,28 @@ logger = get_logger(__name__)
 
 ProgressFn = Callable[[str, str, int, int | None], None]
 EventFn = Callable[[dict[str, Any]], None]
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce a raw source value into something AQL/JSON can carry.
+
+    Used when projecting source rows for server-side expression delegation:
+    dates become ISO strings (AQL date functions accept these), decimals
+    become floats, and any other exotic type falls back to ``str``.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value.isoformat()
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", "replace")
+    return str(value)
 
 
 class StreamingPipeline:
@@ -180,6 +204,40 @@ class StreamingPipeline:
                 total_count=exc.total_count,
             )
 
+    def _apply_delegation(
+        self,
+        writer: ArangoWriter,
+        query: str,
+        docs: list[dict[str, Any]],
+        raw_rows: list[dict[str, Any]],
+        collection: str,
+    ) -> None:
+        """Fill server-delegated expression fields for a batch in place.
+
+        Runs the delegated-expression AQL query over the projected source
+        rows and merges each returned object into the matching document. On
+        failure the batch is imported without the delegated fields rather than
+        aborting the load.
+        """
+        if not raw_rows:
+            return
+        try:
+            results = writer.execute_aql(query, {"rows": raw_rows})
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                errs = self.errors.setdefault(collection, [])
+                if len(errs) < 50:
+                    errs.append(f"AQL delegation failed: {exc}")
+            logger.warning(
+                "aql_delegation_failed",
+                collection=collection,
+                error=str(exc),
+            )
+            return
+        for doc, computed in zip(docs, results):
+            if isinstance(computed, dict):
+                doc.update(computed)
+
     def _notify(self, event: str, name: str, current: int, total: int | None) -> None:
         if self._on_progress is not None:
             self._on_progress(event, name, current, total)
@@ -242,6 +300,13 @@ class StreamingPipeline:
             since_value=self.since if since_col else None,
         )
 
+        delegate = transformer.has_delegated_expressions and not self.dry_run
+        delegation_query = transformer.build_delegation_query() if delegate else ""
+        ref_cols = transformer.delegated_reference_columns() if delegate else set()
+        raw_batch: list[dict[str, Any]] = []
+        if delegate:
+            logger.info("aql_delegation_enabled", target=target, query=delegation_query)
+
         logger.info("stream_documents_start", table=table_name, target=target, rows=row_estimate)
         self._notify("start", target, 0, row_estimate)
         self._emit({"event": "start", "collection": target, "type": "document", "estimated_rows": row_estimate})
@@ -256,16 +321,23 @@ class StreamingPipeline:
             if len(samples) < self.PREVIEW_LIMIT:
                 samples.append(doc)
             batch.append(doc)
+            if delegate:
+                raw_batch.append({c: _json_safe(row.get(c)) for c in ref_cols})
             if len(batch) >= self.batch_size:
                 if not self.dry_run:
+                    if delegate:
+                        self._apply_delegation(w, delegation_query, batch, raw_batch, target)
                     self._flush_batch(w, target, batch)
                 total += len(batch)
                 batch.clear()
+                raw_batch.clear()
                 self._notify("progress", target, total, row_estimate)
                 self._emit({"event": "progress", "collection": target, "rows": total, "estimated_rows": row_estimate})
 
         if batch:
             if not self.dry_run:
+                if delegate:
+                    self._apply_delegation(w, delegation_query, batch, raw_batch, target)
                 self._flush_batch(w, target, batch)
             total += len(batch)
 

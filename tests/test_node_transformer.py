@@ -310,7 +310,10 @@ class TestFieldExpressions:
 
         assert result["age"] == 42
 
-    def test_uncompilable_expression_falls_back_to_source_pass_through(self):
+    def test_uncompilable_aql_expression_is_delegated_not_passed_through(self):
+        # An aql expression the local evaluator can't compile (unknown function)
+        # is pushed down to ArangoDB (P5c.1.5): transform_row omits the target
+        # so the pipeline can fill it from the server result.
         table = self._people_table()
         mapping = CollectionMapping(
             source_table="people",
@@ -324,11 +327,87 @@ class TestFieldExpressions:
             ],
         )
         transformer = NodeTransformer(table, collection_mapping=mapping)
+        assert transformer.has_delegated_expressions is True
         result = transformer.transform_row(
             {"id": 1, "first_name": "Ada", "last_name": "L", "age": "42"}
         )
 
-        assert result["age_note"] == 42
+        assert "age_note" not in result
+        # the source column itself is still carried through under its own name
+        assert result["age"] == 42
+
+
+class TestAqlDelegation:
+    """Server-side delegation of expressions outside the local subset (P5c.1.5)."""
+
+    def _people_table(self):
+        return Table(
+            name="people",
+            columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="first_name", data_type="text"),
+                Column(name="last_name", data_type="text"),
+            ],
+            primary_key=["id"],
+        )
+
+    def _delegated_mapping(self):
+        return CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="slug",
+                    sources=["first_name"],
+                    expression="REGEX_REPLACE(@first_name, '\\\\s+', '-')",
+                )
+            ],
+        )
+
+    def test_no_delegation_for_local_subset(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="full", sources=["first_name"], expression="UPPER(@first_name)"
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        assert transformer.has_delegated_expressions is False
+
+    def test_delegated_reference_columns_union_sources_and_binds(self):
+        transformer = NodeTransformer(
+            self._people_table(), collection_mapping=self._delegated_mapping()
+        )
+        assert transformer.delegated_reference_columns() == {"first_name"}
+
+    def test_build_delegation_query_rewrites_binds_and_target(self):
+        transformer = NodeTransformer(
+            self._people_table(), collection_mapping=self._delegated_mapping()
+        )
+        query = transformer.build_delegation_query()
+        assert "FOR row IN @rows" in query
+        assert "row.`first_name`" in query
+        assert '"slug":' in query
+        assert "@first_name" not in query
+
+    def test_non_aql_engine_is_not_delegated(self):
+        table = self._people_table()
+        mapping = CollectionMapping(
+            source_table="people",
+            target_collection="people",
+            field_expressions=[
+                FieldExpression(
+                    target="x", sources=["first_name"],
+                    expression="first_name.upper()", engine="python",
+                )
+            ],
+        )
+        transformer = NodeTransformer(table, collection_mapping=mapping)
+        assert transformer.has_delegated_expressions is False
 
     def test_non_aql_engine_falls_back_to_identity(self):
         table = self._people_table()

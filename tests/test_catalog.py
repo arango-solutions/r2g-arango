@@ -134,6 +134,55 @@ class TestProjectCRUD:
         assert proj is not None
         assert proj.name == "proj"
 
+    def test_create_project_with_metadata(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.add_source("pg1", "postgresql", "conn")
+        proj = mgr.create_project(
+            "proj", "pg1", "mapping.yaml",
+            mapping_name="Customer 360",
+            mapping_description="People + orders graph",
+        )
+        assert proj.mapping_name == "Customer 360"
+        assert proj.mapping_description == "People + orders graph"
+
+    def test_update_project_metadata_bumps_updated_at(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.add_source("pg1", "postgresql", "conn")
+        created = mgr.create_project("proj", "pg1", "mapping.yaml")
+        updated = mgr.update_project(
+            "proj", mapping_name="Renamed", mapping_description="desc"
+        )
+        assert updated.mapping_name == "Renamed"
+        assert updated.mapping_description == "desc"
+        assert updated.updated_at >= created.updated_at
+        # name is immutable through update_project
+        assert updated.name == "proj"
+
+    def test_update_project_ignores_name_kwarg(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.add_source("pg1", "postgresql", "conn")
+        mgr.create_project("proj", "pg1", "mapping.yaml")
+        updated = mgr.update_project("proj", name="hacked", mapping_name="ok")
+        assert updated.name == "proj"
+        assert updated.mapping_name == "ok"
+
+    def test_update_project_missing_raises(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        with pytest.raises(ValueError, match="not found"):
+            mgr.update_project("nope", mapping_name="x")
+
+    def test_touch_project_updates_timestamp(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.add_source("pg1", "postgresql", "conn")
+        created = mgr.create_project("proj", "pg1", "mapping.yaml")
+        mgr.touch_project("proj")
+        touched = mgr.get_project("proj")
+        assert touched.updated_at >= created.updated_at
+
+    def test_touch_project_missing_is_noop(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.touch_project("nope")  # should not raise
+
     def test_get_project_missing(self, tmp_path):
         mgr = CatalogManager(catalog_dir=tmp_path)
         assert mgr.get_project("missing") is None

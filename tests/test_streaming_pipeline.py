@@ -289,6 +289,86 @@ class TestRunPipeline:
         assert len(connector.sessions_opened) == 1
         assert connector.sessions_opened[0].closed is True
 
+    def test_aql_delegation_merges_server_results(self, simple_schema, mock_writer):
+        # A field expression outside the local subset is delegated to ArangoDB;
+        # the pipeline must run the AQL query and merge results into the docs.
+        from r2g.types import FieldExpression
+
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    field_expressions=[
+                        FieldExpression(
+                            target="slug",
+                            sources=["name"],
+                            expression="REGEX_REPLACE(@name, '\\\\s+', '-')",
+                        )
+                    ],
+                ),
+            },
+            edges=[],
+        )
+        connector = FakeConnector({
+            "users": [
+                {"id": 1, "name": "Ada Lovelace", "email": "a@b.com"},
+                {"id": 2, "name": "Alan Turing", "email": "t@b.com"},
+            ],
+        })
+        # Server returns one computed object per row, in order.
+        mock_writer.execute_aql.return_value = [
+            {"slug": "Ada-Lovelace"},
+            {"slug": "Alan-Turing"},
+        ]
+        pipeline = _pipeline(
+            source_connector=connector,
+            arango_writer=mock_writer,
+            schema=Schema(tables={"users": simple_schema.tables["users"]}),
+            config=config,
+        )
+        pipeline.run()
+
+        mock_writer.execute_aql.assert_called_once()
+        # The bound rows project only the referenced column.
+        _query, bind = mock_writer.execute_aql.call_args[0]
+        assert bind == {"rows": [{"name": "Ada Lovelace"}, {"name": "Alan Turing"}]}
+        # Imported docs carry the server-computed field.
+        imported = mock_writer.import_batch.call_args[0][1]
+        slugs = {d["_key"]: d.get("slug") for d in imported}
+        assert slugs == {"1": "Ada-Lovelace", "2": "Alan-Turing"}
+
+    def test_aql_delegation_failure_still_imports(self, simple_schema, mock_writer):
+        from r2g.types import FieldExpression
+
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    field_expressions=[
+                        FieldExpression(
+                            target="slug", sources=["name"],
+                            expression="REGEX_REPLACE(@name, 'x', 'y')",
+                        )
+                    ],
+                ),
+            },
+            edges=[],
+        )
+        connector = FakeConnector({"users": [{"id": 1, "name": "Ada", "email": "a@b"}]})
+        mock_writer.execute_aql.side_effect = RuntimeError("AQL boom")
+        pipeline = _pipeline(
+            source_connector=connector,
+            arango_writer=mock_writer,
+            schema=Schema(tables={"users": simple_schema.tables["users"]}),
+            config=config,
+        )
+        result = pipeline.run()
+        # Import still happens (without the delegated field), and the error is recorded.
+        mock_writer.import_batch.assert_called()
+        assert "errors" in result
+
     def test_run_with_graph_creates_graph(self, simple_schema, simple_config, mock_writer):
         connector = FakeConnector({"users": [], "orders": []})
         pipeline = _pipeline(

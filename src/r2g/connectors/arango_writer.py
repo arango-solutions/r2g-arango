@@ -301,6 +301,19 @@ class ArangoWriter:
             if delta.effective_key:
                 self.delete_document(delta.collection, delta.effective_key)
 
+    def execute_aql(
+        self,
+        query: str,
+        bind_vars: dict[str, Any] | None = None,
+    ) -> list[Any]:
+        """Execute a read-only AQL query and return all results as a list.
+
+        Used by the streaming pipeline to delegate per-row field expressions
+        that fall outside the local evaluator's subset (P5c.1.5).
+        """
+        cursor = self.db.aql.execute(query, bind_vars=bind_vars or {})
+        return list(cursor)
+
     def create_named_graph(
         self,
         graph_name: str,

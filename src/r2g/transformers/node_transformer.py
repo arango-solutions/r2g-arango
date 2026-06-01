@@ -4,7 +4,13 @@ import json
 from typing import Any, Dict, Optional
 
 from r2g.config import pg_type_to_json_type
-from r2g.expressions import CompiledExpression, ExpressionError, compile_expression
+from r2g.expressions import (
+    CompiledExpression,
+    ExpressionError,
+    compile_expression,
+    extract_bind_references,
+    rewrite_bind_params,
+)
 from r2g.log import get_logger
 from r2g.types import CollectionMapping, Column, FieldExpression, Table
 
@@ -24,6 +30,12 @@ class NodeTransformer:
         self.key_separator = key_separator
         self._type_overrides = type_overrides or {}
         self._compiled_expressions: list[tuple[FieldExpression, Optional[CompiledExpression]]] = []
+        # Expressions that compile-fail locally but are valid AQL are pushed
+        # down to ArangoDB per batch (P5c.1.5). They are *not* added to
+        # ``_compiled_expressions`` — :meth:`transform_row` leaves their target
+        # field unset so the pipeline can fill it from the server result.
+        self._delegated: list[FieldExpression] = []
+        self._delegated_targets: set[str] = set()
         if collection_mapping is not None:
             for fx in collection_mapping.field_expressions:
                 if fx.is_identity or not fx.expression.strip():
@@ -40,15 +52,43 @@ class NodeTransformer:
                 try:
                     compiled = compile_expression(fx.expression)
                 except ExpressionError as err:
-                    logger.warning(
-                        "field_expression_compile_failed",
+                    logger.info(
+                        "field_expression_delegated_to_aql",
                         target=fx.target,
                         engine=fx.engine,
-                        error=str(err),
+                        reason=str(err),
                     )
-                    self._compiled_expressions.append((fx, None))
+                    self._delegated.append(fx)
+                    self._delegated_targets.add(fx.target)
                     continue
                 self._compiled_expressions.append((fx, compiled))
+
+    @property
+    def has_delegated_expressions(self) -> bool:
+        """True when one or more expressions must be evaluated server-side."""
+        return bool(self._delegated)
+
+    def delegated_reference_columns(self) -> set[str]:
+        """Source columns the delegated expressions read (for row projection)."""
+        cols: set[str] = set()
+        for fx in self._delegated:
+            cols.update(fx.sources or [])
+            cols.update(extract_bind_references(fx.expression))
+        return cols
+
+    def build_delegation_query(self) -> str:
+        """Build an AQL query computing all delegated targets for a row batch.
+
+        The query takes a ``@rows`` bind parameter (a list of projected source
+        rows) and returns one object per row with each delegated target mapped
+        to its server-evaluated value, in input order.
+        """
+        parts = []
+        for fx in self._delegated:
+            key = json.dumps(fx.target)
+            parts.append(f"    {key}: {rewrite_bind_params(fx.expression)}")
+        body = ",\n".join(parts)
+        return f"FOR row IN @rows\n  RETURN {{\n{body}\n  }}"
 
     def _json_type_for_column(self, column: Column) -> str:
         if column.name in self._type_overrides:
@@ -134,7 +174,9 @@ class NodeTransformer:
             names &= set(self._mapping.include_fields)
         names -= set(self._mapping.exclude_fields)
 
-        expression_targets = {fx.target for fx, _ in self._compiled_expressions}
+        expression_targets = {
+            fx.target for fx, _ in self._compiled_expressions
+        } | self._delegated_targets
 
         ordered_names = [k for k in row if k in names]
         doc: Dict[str, Any] = {}

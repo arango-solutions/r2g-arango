@@ -108,6 +108,44 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
             return {"valid": False, "error": str(err)}
         return {"valid": True, "references": list(compiled.references)}
 
+    @app.post("/api/expressions/preview")
+    async def preview_expression_endpoint(body: dict[str, Any]):
+        """Compile and evaluate an expression against a sample row.
+
+        Body: ``{"expression": "...", "engine": "aql", "row": {...}}``.
+        Returns ``{"valid": true, "result": <value>, "references": [...]}``
+        on success, or ``{"valid": false, "error": "..."}`` when the
+        expression cannot be compiled. Evaluation errors (e.g. a referenced
+        column missing from the sample row) are reported via ``runtime_error``
+        rather than failing the request, so the editor can show a live result.
+        """
+        from r2g.expressions import ExpressionError, compile_expression
+
+        engine = (body.get("engine") or "aql").lower()
+        expr = body.get("expression") or ""
+        row = body.get("row")
+        if not isinstance(row, dict):
+            row = {}
+        if engine != "aql":
+            return {"valid": False, "error": f"engine '{engine}' is not supported"}
+        try:
+            compiled = compile_expression(expr)
+        except ExpressionError as err:
+            return {"valid": False, "error": str(err)}
+        try:
+            result = compiled.evaluate(row)
+        except ExpressionError as err:
+            return {
+                "valid": True,
+                "references": list(compiled.references),
+                "runtime_error": str(err),
+            }
+        return {
+            "valid": True,
+            "references": list(compiled.references),
+            "result": result,
+        }
+
     # ── Source endpoints ──────────────────────────────────────────────
 
     @app.get("/api/sources")
@@ -293,10 +331,26 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 mapping_config_path=body.mapping_config_path,
                 arango_endpoint=body.arango_endpoint,
                 arango_database=body.arango_database,
+                mapping_name=body.mapping_name,
+                mapping_description=body.mapping_description,
             )
             return project.model_dump()
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+
+    @app.patch("/api/projects/{name}")
+    async def update_project_metadata(name: str, body: ProjectUpdateRequest):
+        """Update editable project metadata (mapping name / description)."""
+        if catalog.get_project(name) is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        fields = {k: v for k, v in body.model_dump(exclude_none=True).items()}
+        if not fields:
+            raise HTTPException(status_code=400, detail="No updatable fields provided")
+        try:
+            project = catalog.update_project(name, **fields)
+            return project.model_dump()
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
 
     @app.get("/api/projects/{name}/mapping")
     async def get_mapping(name: str):
@@ -317,6 +371,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         try:
             config = MappingConfig.model_validate(body)
             ConfigManager.save_config(config, project.mapping_config_path)
+            catalog.touch_project(name)
             return {"saved": True, "collections": len(config.collections), "edges": len(config.edges)}
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -682,6 +737,16 @@ class ProjectCreateRequest(BaseModel):
     mapping_config_path: str
     arango_endpoint: str = "http://localhost:8529"
     arango_database: str = "_system"
+    mapping_name: str = ""
+    mapping_description: str = ""
+
+
+class ProjectUpdateRequest(BaseModel):
+    """Editable project metadata. Only provided fields are updated."""
+
+    mapping_name: str | None = None
+    mapping_description: str | None = None
+    target_name: str | None = None
 
 
 class LoadRequest(BaseModel):

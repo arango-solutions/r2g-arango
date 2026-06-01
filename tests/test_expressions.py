@@ -7,6 +7,8 @@ from r2g.expressions import (
     ExpressionError,
     compile_expression,
     evaluate,
+    extract_bind_references,
+    rewrite_bind_params,
 )
 
 
@@ -183,6 +185,35 @@ class TestParseErrors:
     def test_trailing_tokens(self):
         with pytest.raises(ExpressionError):
             compile_expression("@a @b")
+
+
+class TestBindParamHelpers:
+    """Helpers used to push unsupported expressions down to ArangoDB (P5c.1.5)."""
+
+    def test_extract_bind_references_distinct_in_order(self):
+        assert extract_bind_references("CONCAT(@last, @first, @last)") == ["last", "first"]
+
+    def test_extract_ignores_at_inside_strings(self):
+        assert extract_bind_references('CONCAT(@user, "@example.com")') == ["user"]
+
+    def test_extract_empty(self):
+        assert extract_bind_references("") == []
+        assert extract_bind_references("UPPER('x')") == []
+
+    def test_rewrite_bind_params_to_row_refs(self):
+        assert rewrite_bind_params("@first") == "row.`first`"
+
+    def test_rewrite_preserves_surrounding_aql(self):
+        # An expression outside the local subset (REGEX_REPLACE) still rewrites cleanly.
+        out = rewrite_bind_params("REGEX_REPLACE(@name, '\\\\s+', '_')")
+        assert out == "REGEX_REPLACE(row.`name`, '\\\\s+', '_')"
+
+    def test_rewrite_does_not_touch_at_in_strings(self):
+        out = rewrite_bind_params('CONCAT(@user, "@host")')
+        assert out == 'CONCAT(row.`user`, "@host")'
+
+    def test_rewrite_custom_var(self):
+        assert rewrite_bind_params("@x + @y", var="doc") == "doc.`x` + doc.`y`"
 
 
 class TestCompiledExpression:
