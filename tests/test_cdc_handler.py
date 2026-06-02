@@ -120,6 +120,65 @@ class TestHandleEvent:
         assert deltas[0].operation == ArangoOperation.DELETE
 
 
+class TestTemporalMode:
+    @pytest.fixture
+    def temporal_writer(self):
+        w = MagicMock(spec=ArangoWriter)
+        w.ensure_collection = MagicMock()
+        w.import_batch = MagicMock(return_value={"created": 1, "errors": 0})
+        w.execute_aql = MagicMock(return_value=[])
+        w.db = MagicMock()
+        return w
+
+    def _imports(self, writer):
+        out: dict[str, list] = {}
+        for call in writer.import_batch.call_args_list:
+            out.setdefault(call.args[0], []).extend(call.args[1])
+        return out
+
+    def test_insert_routes_through_temporal_applier(self, schema, config, temporal_writer):
+        handler = CDCHandler(temporal_writer, schema, config, temporal=True)
+        evt = ChangeEvent(
+            operation=ChangeOperation.INSERT,
+            table_name="users",
+            new_row={"id": 1, "name": "Alice"},
+        )
+        handler.handle_event(evt)
+        imports = self._imports(temporal_writer)
+        # versioned entity + proxies written
+        assert imports["users"][0]["_key"] == "1-0"
+        assert "usersProxyIn" in imports
+        assert "usersProxyOut" in imports
+
+    def test_edge_upsert_attaches_to_proxies(self, schema, config, temporal_writer):
+        handler = CDCHandler(temporal_writer, schema, config, temporal=True)
+        evt = ChangeEvent(
+            operation=ChangeOperation.INSERT,
+            table_name="orders",
+            new_row={"id": 5, "user_id": 1, "total": 99.99},
+        )
+        handler.handle_event(evt)
+        imports = self._imports(temporal_writer)
+        edges = imports.get("orders_to_users", [])
+        assert edges, "expected a topology edge"
+        edge = edges[0]
+        assert edge["_from"].startswith("ordersProxyOut/")
+        assert edge["_to"].startswith("usersProxyIn/")
+
+    def test_edge_delete_is_preserved_not_applied(self, schema, config, temporal_writer):
+        handler = CDCHandler(temporal_writer, schema, config, temporal=True)
+        evt = ChangeEvent(
+            operation=ChangeOperation.DELETE,
+            table_name="orders",
+            old_row={"id": 5, "user_id": 1, "total": 99.99},
+        )
+        handler.handle_event(evt)
+        # the topology edge must NOT be imported on delete (soft-delete only)
+        imports = self._imports(temporal_writer)
+        assert "orders_to_users" not in imports
+        assert handler.stats.deltas_skipped >= 1
+
+
 class TestHandleEvents:
     def test_multiple_events(self, schema, config, mock_writer):
         handler = CDCHandler(mock_writer, schema, config)

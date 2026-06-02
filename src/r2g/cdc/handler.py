@@ -9,7 +9,7 @@ consumer, Kafka consumer, test harness, etc.).
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from r2g.cdc.conflict import ConflictPolicy, ConflictResolver
 from r2g.cdc.delta_transformer import DeltaTransformer
@@ -22,6 +22,9 @@ from r2g.cdc.models import (
 from r2g.connectors.arango_writer import ArangoWriter
 from r2g.log import get_logger
 from r2g.types import MappingConfig, Schema
+
+if TYPE_CHECKING:
+    from r2g.temporal.models import TemporalConfig
 
 logger = get_logger(__name__)
 
@@ -73,15 +76,25 @@ class CDCHandler:
         config: MappingConfig,
         on_progress: ProgressFn | None = None,
         conflict_policy: ConflictPolicy = ConflictPolicy.SOURCE_WINS,
+        temporal: bool = False,
+        temporal_config: "TemporalConfig | None" = None,
     ) -> None:
         self.writer = writer
         self.transformer = DeltaTransformer(schema, config)
         self._on_progress = on_progress
         self.stats = CDCStats()
         self.resolver = ConflictResolver(policy=conflict_policy)
+        self.temporal = temporal
+        self._temporal_applier = None
+        if temporal:
+            from r2g.temporal.applier import TemporalApplier
+
+            self._temporal_applier = TemporalApplier(writer, temporal_config)
 
     def _apply_delta(self, delta: ArangoDelta, lsn: str | None = None) -> bool:
         """Apply a single delta with conflict resolution. Returns True on success."""
+        if self.temporal:
+            return self._apply_delta_temporal(delta)
         try:
             self.writer.ensure_collection(delta.collection, edge=delta.is_edge)
 
@@ -118,6 +131,66 @@ class CDCHandler:
             if self.resolver.policy == ConflictPolicy.FAIL:
                 raise
             return False
+
+    def _apply_delta_temporal(self, delta: ArangoDelta) -> bool:
+        """Apply a delta using the immutable-proxy temporal strategy (P5.1).
+
+        Document operations are versioned via the :class:`TemporalApplier`.
+        Topology (edge) upserts are rewritten to attach to the stable proxies
+        rather than to a specific entity version, and edge deletes are dropped
+        because temporal mode preserves topology (soft-delete only).
+        """
+        applier = self._temporal_applier
+        assert applier is not None
+        try:
+            if delta.is_edge:
+                if delta.operation == ArangoOperation.DELETE:
+                    self.stats.deltas_skipped += 1
+                    return True
+                edge = self._proxify_edge(delta.document)
+                applier.writer.ensure_collection(delta.collection, edge=True)
+                applier.writer.import_batch(delta.collection, [edge], on_duplicate="ignore")
+                self.stats.deltas_applied += 1
+                return True
+
+            if delta.operation == ArangoOperation.INSERT:
+                applier.apply_insert(delta.collection, delta.document)
+            elif delta.operation == ArangoOperation.REPLACE:
+                applier.apply_update(delta.collection, delta.document)
+            elif delta.operation == ArangoOperation.DELETE:
+                applier.apply_delete(delta.collection, delta.effective_key)
+            self.stats.deltas_applied += 1
+            return True
+        except Exception as exc:
+            self.stats.deltas_failed += 1
+            logger.warning(
+                "cdc_temporal_delta_failed",
+                collection=delta.collection,
+                operation=delta.operation.value,
+                key=delta.effective_key,
+                error=str(exc),
+            )
+            if self.resolver.policy == ConflictPolicy.FAIL:
+                raise
+            return False
+
+    @staticmethod
+    def _proxify_edge(edge: dict[str, Any]) -> dict[str, Any]:
+        """Rewrite an edge's endpoints from entity collections to proxies.
+
+        ``_from`` attaches to the source's ``ProxyOut`` and ``_to`` to the
+        target's ``ProxyIn`` so the relationship survives entity versioning.
+        """
+        out = dict(edge)
+        frm = edge.get("_from", "")
+        to = edge.get("_to", "")
+        if "/" in frm:
+            coll, key = frm.split("/", 1)
+            out["_from"] = f"{coll}ProxyOut/{key}"
+        if "/" in to:
+            coll, key = to.split("/", 1)
+            out["_to"] = f"{coll}ProxyIn/{key}"
+        return out
 
     def handle_event(self, event: ChangeEvent) -> list[ArangoDelta]:
         """Process a single change event end-to-end.
