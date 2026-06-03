@@ -1,0 +1,78 @@
+---
+alwaysApply: true
+description: Arango specific UI design pattern 
+---
+
+# Arango AI Front-End Design Rules
+
+This document defines the agent rules and front-end design patterns for Arango AI applications. All interface generations, components, and styling configurations must strictly adhere to these specifications to align with the ArangoDB web platform (Agentic AI Suite, chat, GraphRAG, etc.).
+
+## 1. Brand & Visual Hierarchy
+
+* **General Aesthetic:** Clean and professional with an abundance of white space.
+* **Main Action Color:** Arango Green (used for primary buttons, links, checkmarks, and active/selected states).
+* **Text/Background Contrast:** Dark gray text on white backgrounds for the main content areas.
+* **Side Menu:** Solid black background with white icons and labels.
+* **Errors & Deletions:** Bright red, to be used very sparingly.
+
+## 2. Typography
+
+* **Global Font:** Use **Inter** (available freely via Google Fonts) globally across the entire application. Avoid decorative or fancy fonts.
+* **Headings:** Inter, semi-bold. Always maintain a clear typographic hierarchy where headings are noticeably larger than body text.
+* **Body Text:** Inter, regular. Used for all paragraphs, labels, and descriptions.
+* **Technical Content:** A simple monospace font (e.g., **Courier**) for code snippets, technical blocks, or inline variables.
+
+## 3. Color Specifications
+
+Do not introduce custom shades outside of these strictly defined color groups.
+
+### Greens (Primary & Actions)
+| Color Name | Hex / Value | Usage |
+| :--- | :--- | :--- |
+| **Light green background** | `#f4fef2` | Selected tabs, chips, or pills |
+| **Arango green (main)** | `#006532` | Primary buttons, checkmarks, links, active states |
+| **Dark green hover** | `#005329` | Hover states for primary green buttons |
+| **Brand green** | `#007339` | Brand logo representations and charts |
+
+### Grays (Text & Layout Backgrounds)
+| Color Name | Hex / Value | Usage |
+| :--- | :--- | :--- |
+| **Page background** | `#ffffff` | Main content background area |
+| **Light gray background** | `#f8f8f8` | Panels, tables, and code blocks |
+| **Borders** | `#e5e5e5` | Subtle separator lines between sections |
+| **Body text** | `#282828` | Main paragraphs, labels, and standard text |
+| **Muted text** | `#9a9a9a` | Helper text, hints, and secondary information |
+
+### Interface Specifics (Alerts & Layouts)
+| Color Name | Hex / Value | Usage |
+| :--- | :--- | :--- |
+| **Error / delete** | `#da1a20` | Error messages, destructive action/delete buttons |
+| **Left menu** | `#000000` | Black background for the narrow sidebar layout |
+| **Menu hover** | `white @ 15-20% opacity` | Visual highlight when hovering over side menu items |
+
+## 4. Brand Assets & Logos
+
+* **Avocado Icon:** The square mark asset only. Use exclusively in the narrow left side menu or as the application icon.
+* **Full Logo:** The Avocado icon combined with the "ArangoDB" wordmark in dark text. Use only on full white or pale pages.
+
+## 5. Screen-Specific Layout Patterns
+
+### Home / AI Suite Landing
+* **Background:** White or soft background image.
+* **Title:** Must display the exact text `"Arango Agentic AI Suite"`.
+* **Components:** Layout structured with clean cards containing short feature descriptions and prominent Arango Green `"Run"` buttons.
+
+### Chat Interfaces (GraphRAG, Ada, etc.)
+* **Layout:** White chat canvas area.
+* **Inputs:** A textual input box bounded by thin gray borders.
+* **Actions:** Arango Green used for send and success interaction elements.
+* **Message Formatting:** Render responses using clean, simple markdown containing appropriate headings, bulleted lists, and light gray styled code boxes.
+
+### Forms and Settings
+* **Background:** Clean white background layout.
+* **Labels:** Highly readable, dark gray, descriptive labels placed above or beside inputs.
+* **Buttons:** A primary Arango Green button for confirmations/submitions alongside a secondary gray cancel button.
+
+### Data Visualizations & Graphs
+* **Canvas:** Light gray workspace or background canvas.
+* **Accents:** Arango Green accents applied specifically for highlighting selected data nodes or paths. Ensure nodes and typographic text labels remain completely legible against the canvas.

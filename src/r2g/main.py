@@ -1220,6 +1220,10 @@ def cdc_start(
         30 * 24 * 60 * 60, "--ttl-seconds",
         help="Retention (seconds) for historical versions before TTL GC (temporal mode)",
     ),
+    smart_field: str = typer.Option(
+        "", "--smart-field",
+        help="Shard-key attribute for SmartGraph key prefixes (temporal mode, P5.8)",
+    ),
 ) -> None:
     """Start the CDC listener (continuous polling for PostgreSQL changes).
 
@@ -1255,7 +1259,10 @@ def cdc_start(
         )
         raise typer.Exit(code=1)
 
-    temporal_config = TemporalConfig(ttl_retain_seconds=ttl_seconds) if temporal else None
+    temporal_config = (
+        TemporalConfig(ttl_retain_seconds=ttl_seconds, smart_field=smart_field or None)
+        if temporal else None
+    )
 
     try:
         schema = Schema.load_from_file(schema_file)
@@ -1277,7 +1284,8 @@ def cdc_start(
         if temporal:
             console.print(
                 f"[cyan]Temporal mode enabled[/cyan] "
-                f"(versioned writes, ttl={ttl_seconds}s)"
+                f"(versioned writes, ttl={ttl_seconds}s"
+                + (f", smart_field={smart_field}" if smart_field else "") + ")"
             )
         listener = PGReplicationListener(
             pg_conn_string=pg_conn,
@@ -1377,6 +1385,10 @@ def kafka_start(
         30 * 24 * 60 * 60, "--ttl-seconds",
         help="Retention (seconds) for historical versions before TTL GC (temporal mode)",
     ),
+    smart_field: str = typer.Option(
+        "", "--smart-field",
+        help="Shard-key attribute for SmartGraph key prefixes (temporal mode, P5.8)",
+    ),
 ) -> None:
     """Start the Kafka CDC consumer (Debezium or flat JSON messages).
 
@@ -1405,7 +1417,10 @@ def kafka_start(
         )
         raise typer.Exit(code=1)
 
-    temporal_config = TemporalConfig(ttl_retain_seconds=ttl_seconds) if temporal else None
+    temporal_config = (
+        TemporalConfig(ttl_retain_seconds=ttl_seconds, smart_field=smart_field or None)
+        if temporal else None
+    )
 
     try:
         from r2g.cdc.kafka_consumer import KafkaConsumer
@@ -1436,7 +1451,8 @@ def kafka_start(
         if temporal:
             console.print(
                 f"[cyan]Temporal mode enabled[/cyan] "
-                f"(versioned writes, ttl={ttl_seconds}s)"
+                f"(versioned writes, ttl={ttl_seconds}s"
+                + (f", smart_field={smart_field}" if smart_field else "") + ")"
             )
 
         topic_list = [t.strip() for t in topics.split(",") if t.strip()]

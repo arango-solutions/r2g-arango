@@ -111,6 +111,21 @@ class TestApplyInsert:
                 assert call.kwargs.get("on_duplicate") == "ignore"
 
 
+class TestSmartField:
+    def test_insert_prefixes_keys_and_carries_shard_attr(self, writer):
+        applier = TemporalApplier(writer, TemporalConfig(smart_field="tenant"))
+        applier.apply_insert("Person", {"_key": "42", "tenant": "acme", "name": "Ada"}, now=1.0)
+        imports = _imports_by_collection(writer)
+        # proxies + entity use the shard-prefixed keys and proxy carries the attr
+        assert imports["PersonProxyIn"][0]["_key"] == "acme:42"
+        assert imports["PersonProxyIn"][0]["tenant"] == "acme"
+        ent = imports["Person"][0]
+        assert ent["_key"] == "acme:42-0"
+        assert ent["_proxy"] == "acme:42"
+        in_edge = next(e for e in imports["hasVersion"] if e["_key"].endswith("-in"))
+        assert in_edge["_from"] == "PersonProxyIn/acme:42"
+
+
 class TestApplyUpdate:
     def test_expires_current_and_writes_next_version(self, writer):
         # find_current returns version 0; expiry queries return [].
