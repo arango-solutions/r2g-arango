@@ -63,24 +63,66 @@ class TemporalApplier:
         self.ensure_temporal_indexes(entity_collection)
         self._ensured.add(entity_collection)
 
+    # Index types tried, in order, for the temporal interval index. ``mdi`` is
+    # the 3.12+ name for the multi-dimensional index (formerly ``zkd``);
+    # ``persistent`` is the universal fallback.
+    _INTERVAL_INDEX_TYPES = ("mdi", "zkd", "persistent")
+    _INTERVAL_INDEX_NAME = "temporal_interval"
+    _TTL_INDEX_NAME = "temporal_ttl"
+
     def ensure_temporal_indexes(self, entity_collection: str) -> None:
         """Add interval + TTL indexes on the entity and version collections.
 
-        TTL index (P5.5) is sparse so only expired documents (which carry
-        ``ttlExpireAt``) are aged out. A persistent index on
-        ``[created, expired]`` (P5.6) accelerates point-in-time queries.
+        - Interval index (P5.6): a multi-dimensional ``mdi`` index on
+          ``[created, expired]`` (falling back to ``zkd`` then ``persistent``)
+          to accelerate point-in-time and interval-intersection queries.
+        - TTL index (P5.5): sparse on ``ttlExpireAt`` so only expired
+          documents (which carry that field) are aged out; current versions
+          are skipped.
+
         Failures are logged and swallowed so a missing index never blocks a
-        load (e.g. against older ArangoDB builds).
+        load (e.g. against an ArangoDB build lacking a given index type).
         """
         for name in (entity_collection, self.naming.has_version):
+            self._ensure_interval_index(name)
+            self._ensure_ttl_index(name)
+
+    def _ensure_interval_index(self, collection: str) -> str | None:
+        coll = self.writer.db.collection(collection)
+        last_exc: Exception | None = None
+        for idx_type in self._INTERVAL_INDEX_TYPES:
+            payload: dict[str, Any] = {
+                "type": idx_type,
+                "fields": [FIELD_CREATED, FIELD_EXPIRED],
+                "name": self._INTERVAL_INDEX_NAME,
+            }
+            if idx_type in ("mdi", "zkd"):
+                payload["fieldValueTypes"] = "double"
             try:
-                coll = self.writer.db.collection(name)
-                coll.add_persistent_index(
-                    fields=[FIELD_CREATED, FIELD_EXPIRED], sparse=False
-                )
-                coll.add_ttl_index(fields=[FIELD_TTL], expiry_time=0)
+                coll.add_index(payload)
+                logger.info("temporal_interval_index", collection=collection, type=idx_type)
+                return idx_type
             except Exception as exc:  # noqa: BLE001
-                logger.warning("temporal_index_failed", collection=name, error=str(exc))
+                last_exc = exc
+        logger.warning(
+            "temporal_interval_index_failed", collection=collection, error=str(last_exc)
+        )
+        return None
+
+    def _ensure_ttl_index(self, collection: str) -> bool:
+        coll = self.writer.db.collection(collection)
+        try:
+            coll.add_index({
+                "type": "ttl",
+                "fields": [FIELD_TTL],
+                "expireAfter": 0,
+                "sparse": True,
+                "name": self._TTL_INDEX_NAME,
+            })
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("temporal_ttl_index_failed", collection=collection, error=str(exc))
+            return False
 
     # ── Public operations (P5.1) ──────────────────────────────────────
 

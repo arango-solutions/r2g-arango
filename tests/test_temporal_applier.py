@@ -44,6 +44,33 @@ class TestEnsureCollections:
         assert writer.ensure_collection.call_count == n  # cached, no extra calls
 
 
+class TestTemporalIndexes:
+    def _index_payloads(self, writer):
+        coll = writer.db.collection.return_value
+        return [c.args[0] for c in coll.add_index.call_args_list]
+
+    def test_creates_mdi_interval_and_sparse_ttl(self, writer):
+        applier = TemporalApplier(writer)
+        applier.ensure_temporal_collections("Person")
+        payloads = self._index_payloads(writer)
+        interval = [p for p in payloads if p.get("name") == "temporal_interval"]
+        ttl = [p for p in payloads if p.get("name") == "temporal_ttl"]
+        assert interval and interval[0]["type"] == "mdi"
+        assert interval[0]["fields"] == ["created", "expired"]
+        assert interval[0]["fieldValueTypes"] == "double"
+        assert ttl and ttl[0]["type"] == "ttl"
+        assert ttl[0]["sparse"] is True
+        assert ttl[0]["fields"] == ["ttlExpireAt"]
+
+    def test_interval_index_falls_back_when_mdi_unsupported(self, writer):
+        coll = writer.db.collection.return_value
+        # First call (mdi) raises; zkd succeeds.
+        coll.add_index.side_effect = [RuntimeError("no mdi"), {"id": "ok"}, {"id": "ttl"}]
+        applier = TemporalApplier(writer)
+        result = applier._ensure_interval_index("Person")
+        assert result == "zkd"
+
+
 class TestApplyInsert:
     def test_writes_proxies_entity_and_edges(self, writer):
         applier = TemporalApplier(writer)
