@@ -1212,6 +1212,14 @@ def cdc_start(
         "source_wins", "--conflict-policy",
         help="Conflict resolution policy: source_wins, last_write_wins, log_and_skip, fail",
     ),
+    temporal: bool = typer.Option(
+        False, "--temporal/--no-temporal",
+        help="Use temporal (immutable-proxy) versioned writes instead of direct replace/delete",
+    ),
+    ttl_seconds: int = typer.Option(
+        30 * 24 * 60 * 60, "--ttl-seconds",
+        help="Retention (seconds) for historical versions before TTL GC (temporal mode)",
+    ),
 ) -> None:
     """Start the CDC listener (continuous polling for PostgreSQL changes).
 
@@ -1225,12 +1233,18 @@ def cdc_start(
       log_and_skip    - log conflicts, skip writes
       fail            - raise on any conflict
 
+    With ``--temporal`` each change is applied as a versioned write using the
+    immutable-proxy pattern (ProxyIn/Entity/ProxyOut + hasVersion edges) so
+    full history and point-in-time queries are preserved; deletes become soft
+    deletes and historical versions age out after ``--ttl-seconds``.
+
     Press Ctrl+C to stop gracefully.
     """
     from r2g.cdc.conflict import ConflictPolicy
     from r2g.cdc.handler import CDCHandler
     from r2g.cdc.pg_listener import PGReplicationListener
     from r2g.connectors.arango_writer import ArangoWriter
+    from r2g.temporal.models import TemporalConfig
 
     try:
         policy = ConflictPolicy(conflict_policy)
@@ -1240,6 +1254,8 @@ def cdc_start(
             f"Choose from: source_wins, last_write_wins, log_and_skip, fail"
         )
         raise typer.Exit(code=1)
+
+    temporal_config = TemporalConfig(ttl_retain_seconds=ttl_seconds) if temporal else None
 
     try:
         schema = Schema.load_from_file(schema_file)
@@ -1251,9 +1267,18 @@ def cdc_start(
             username=username,
             password=password,
         )
+        writer.ensure_database()
         writer.connect()
 
-        handler = CDCHandler(writer, schema, mapping, conflict_policy=policy)
+        handler = CDCHandler(
+            writer, schema, mapping, conflict_policy=policy,
+            temporal=temporal, temporal_config=temporal_config,
+        )
+        if temporal:
+            console.print(
+                f"[cyan]Temporal mode enabled[/cyan] "
+                f"(versioned writes, ttl={ttl_seconds}s)"
+            )
         listener = PGReplicationListener(
             pg_conn_string=pg_conn,
             handler=handler,
@@ -1344,6 +1369,14 @@ def kafka_start(
         "source_wins", "--conflict-policy",
         help="Conflict resolution: source_wins, last_write_wins, log_and_skip, fail",
     ),
+    temporal: bool = typer.Option(
+        False, "--temporal/--no-temporal",
+        help="Use temporal (immutable-proxy) versioned writes instead of direct replace/delete",
+    ),
+    ttl_seconds: int = typer.Option(
+        30 * 24 * 60 * 60, "--ttl-seconds",
+        help="Retention (seconds) for historical versions before TTL GC (temporal mode)",
+    ),
 ) -> None:
     """Start the Kafka CDC consumer (Debezium or flat JSON messages).
 
@@ -1353,11 +1386,15 @@ def kafka_start(
 
     Requires confluent-kafka: pip install 'r2g-arango[kafka]'
 
+    With ``--temporal`` each change is applied as a versioned write using the
+    immutable-proxy pattern, preserving full history and point-in-time queries.
+
     Press Ctrl+C to stop gracefully.
     """
     from r2g.cdc.conflict import ConflictPolicy
     from r2g.cdc.handler import CDCHandler
     from r2g.connectors.arango_writer import ArangoWriter
+    from r2g.temporal.models import TemporalConfig
 
     try:
         policy = ConflictPolicy(conflict_policy)
@@ -1367,6 +1404,8 @@ def kafka_start(
             "Choose from: source_wins, last_write_wins, log_and_skip, fail"
         )
         raise typer.Exit(code=1)
+
+    temporal_config = TemporalConfig(ttl_retain_seconds=ttl_seconds) if temporal else None
 
     try:
         from r2g.cdc.kafka_consumer import KafkaConsumer
@@ -1387,9 +1426,18 @@ def kafka_start(
             username=username,
             password=password,
         )
+        writer.ensure_database()
         writer.connect()
 
-        handler = CDCHandler(writer, schema, mapping, conflict_policy=policy)
+        handler = CDCHandler(
+            writer, schema, mapping, conflict_policy=policy,
+            temporal=temporal, temporal_config=temporal_config,
+        )
+        if temporal:
+            console.print(
+                f"[cyan]Temporal mode enabled[/cyan] "
+                f"(versioned writes, ttl={ttl_seconds}s)"
+            )
 
         topic_list = [t.strip() for t in topics.split(",") if t.strip()]
         if not topic_list:

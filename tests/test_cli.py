@@ -173,6 +173,8 @@ class TestHelp:
         assert "--endpoint" in output
         assert "SCHEMA_FILE" in output
         assert "--conflict-policy" in output
+        assert "--temporal" in output
+        assert "--ttl-seconds" in output
 
     def test_kafka_start_help(self):
         result = runner.invoke(app, ["kafka-start", "--help"])
@@ -187,6 +189,8 @@ class TestHelp:
         assert "--endpoint" in output
         assert "--conflict-policy" in output
         assert "SCHEMA_FILE" in output
+        assert "--temporal" in output
+        assert "--ttl-seconds" in output
 
 
 class TestValidateSchema:
