@@ -453,9 +453,9 @@
   .func-circle.identity:hover .fn-fx { opacity: 1; }
   /* `_key` is system-derived from the primary key, not an editable mapping (P5g.10):
      mute + dash it and use a help cursor so it reads as informational, not editable. */
-  .func-circle.keynode { cursor: help; }
-  .func-circle.keynode circle { stroke: var(--muted); stroke-dasharray: 2.5 1.5; opacity: .75; }
-  .func-circle.keynode .fn-fx { fill: var(--muted); }
+  .func-circle.keynode { cursor: default; }
+  .func-circle.keynode circle { stroke: var(--text-muted); stroke-dasharray: 2.5 1.5; opacity: 1; }
+  .func-circle.keynode .fn-fx { fill: var(--text-muted); opacity: 1; }
   .func-circle.expr circle { fill: var(--yellow); stroke: #000; stroke-width: 1.2; r: 7; }
   .func-circle.expr.aql circle { fill: var(--accent2); }
   .func-circle.expr.ksql circle { fill: var(--pink); }
