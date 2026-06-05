@@ -337,17 +337,41 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         source = catalog.get_source(name)
         if source is None:
             raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
+        stype = (source.source_type or "postgresql").lower()
+        if stype not in ("postgresql", "postgres", "pg"):
+            raise HTTPException(
+                status_code=501,
+                detail=f"Data preview is only supported for PostgreSQL sources (got '{stype}')",
+            )
+        # Validate the table name against the latest snapshot so we never
+        # interpolate an unvetted identifier into SQL.
+        snap = catalog.get_latest_snapshot(name)
+        if snap is None or table not in snap.schema_data.tables:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Table '{table}' is not in the latest snapshot of source '{name}'",
+            )
+        limit = max(1, min(int(limit), 1000))
         try:
             import psycopg
+            from psycopg import sql
             from psycopg.rows import dict_row
 
+            schema_name = snap.pg_schema or "public"
+            query = sql.SQL("SELECT * FROM {}.{} LIMIT %s").format(
+                sql.Identifier(schema_name),
+                sql.Identifier(table),
+            )
             with psycopg.connect(source.connection_string, row_factory=dict_row) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(f"SELECT * FROM {table} LIMIT %s", (limit,))
+                    cur.execute(query, (limit,))
                     rows = cur.fetchall()
             return {"table": table, "rows": _serialize_rows(rows), "count": len(rows)}
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.warning("preview_table_failed", source=name, table=table, error=str(e))
+            raise HTTPException(status_code=500, detail="Failed to preview table data")
 
     # ── Project endpoints ─────────────────────────────────────────────
 
@@ -677,6 +701,8 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+        from r2g.dlq import DeadLetterQueue
+
         pipeline = StreamingPipeline(
             source_connector=source_connector,
             arango_writer=writer,
@@ -690,6 +716,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
             workers=body.workers,
             include_tables=set(body.include_tables) if body.include_tables else None,
             exclude_tables=set(body.exclude_tables) if body.exclude_tables else None,
+            dlq=DeadLetterQueue(load_id),
         )
 
         progress_queue: queue.Queue[dict[str, Any]] = queue.Queue()

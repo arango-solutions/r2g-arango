@@ -15,9 +15,12 @@ import datetime
 import decimal
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
+
+if TYPE_CHECKING:
+    from r2g.dlq import DeadLetterQueue
 from r2g.connectors.base import SourceConnector
 from r2g.connectors.session import SourceSession
 from r2g.log import get_logger
@@ -102,6 +105,7 @@ class StreamingPipeline:
         skip_existing: bool = False,
         since: str | None = None,
         since_column: str | None = None,
+        dlq: "DeadLetterQueue | None" = None,
     ) -> None:
         if source_connector is None and pg_conn_string is None:
             raise ValueError(
@@ -133,6 +137,7 @@ class StreamingPipeline:
         self.skip_existing = skip_existing
         self.since = since
         self.since_column = since_column
+        self.dlq = dlq
         self.skipped: list[str] = []
         self.previews: dict[str, list[dict[str, Any]]] = {}
         self.errors: dict[str, list[str]] = {}
@@ -185,6 +190,20 @@ class StreamingPipeline:
 
     # ── Write path ─────────────────────────────────────────────────
 
+    def _record_dlq(self, collection: str, details: list[str]) -> None:
+        """Persist per-record failure details to the dead-letter queue.
+
+        No-op when no DLQ is attached. Writing must never abort the load,
+        so any failure to record is swallowed and logged.
+        """
+        if self.dlq is None or not details:
+            return
+        try:
+            for detail in details:
+                self.dlq.record_failure(collection, {}, str(detail))
+        except Exception:  # noqa: BLE001
+            logger.warning("dlq_record_failed", collection=collection)
+
     def _flush_batch(
         self,
         writer: ArangoWriter,
@@ -197,6 +216,7 @@ class StreamingPipeline:
             with self._lock:
                 errs = self.errors.setdefault(collection, [])
                 errs.extend(exc.details[: 50 - len(errs)])
+            self._record_dlq(collection, exc.details)
             logger.warning(
                 "import_batch_partial_errors",
                 collection=collection,
@@ -228,6 +248,7 @@ class StreamingPipeline:
                 errs = self.errors.setdefault(collection, [])
                 if len(errs) < 50:
                     errs.append(f"AQL delegation failed: {exc}")
+            self._record_dlq(collection, [f"AQL delegation failed: {exc}"])
             logger.warning(
                 "aql_delegation_failed",
                 collection=collection,

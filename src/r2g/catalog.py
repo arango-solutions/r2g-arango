@@ -144,6 +144,11 @@ class CatalogManager:
             if pw and not self._cipher.is_encrypted(pw):
                 tgt["password"] = self._cipher.encrypt(pw)
         self._path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        # Catalog holds encrypted secrets; keep it owner-only readable.
+        try:
+            self._path.chmod(0o600)
+        except OSError:
+            pass
 
     # ── Source CRUD ───────────────────────────────────────────────────
 

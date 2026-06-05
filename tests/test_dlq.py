@@ -92,3 +92,62 @@ class TestDeadLetterQueue:
     def test_list_dlq_files_nonexistent_dir(self, tmp_path):
         result = DeadLetterQueue.list_dlq_files(dlq_dir=tmp_path / "does_not_exist")
         assert result == []
+
+
+class TestPipelineDlqWiring:
+    """The streaming pipeline must persist import failures to the DLQ so the
+    ``/errors`` endpoint surfaces real data (PRD P5b.3.3)."""
+
+    def _make_pipeline(self, dlq):
+        from unittest.mock import MagicMock
+
+        from r2g.streaming.pipeline import StreamingPipeline
+        from r2g.types import MappingConfig, Schema
+
+        pipeline = StreamingPipeline.__new__(StreamingPipeline)
+        pipeline.dlq = dlq
+        pipeline.errors = {}
+        pipeline._lock = __import__("threading").Lock()
+        pipeline.on_duplicate = "replace"
+        return pipeline, MagicMock(spec=MappingConfig), MagicMock(spec=Schema)
+
+    def test_flush_batch_records_import_errors_to_dlq(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from r2g.connectors.arango_writer import ImportBatchError
+
+        dlq = DeadLetterQueue("load-flush", dlq_dir=tmp_path)
+        pipeline, _, _ = self._make_pipeline(dlq)
+
+        writer = MagicMock()
+        writer.import_batch.side_effect = ImportBatchError(
+            collection="users",
+            error_count=2,
+            total_count=3,
+            details=["unique constraint violated: _key 1", "invalid document: _key 2"],
+        )
+
+        pipeline._flush_batch(writer, "users", [{"_key": "1"}, {"_key": "2"}])
+
+        entries = dlq.read_errors()
+        assert len(entries) == 2
+        assert {e["error"] for e in entries} == {
+            "unique constraint violated: _key 1",
+            "invalid document: _key 2",
+        }
+        assert all(e["collection"] == "users" for e in entries)
+
+    def test_flush_batch_without_dlq_is_noop(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from r2g.connectors.arango_writer import ImportBatchError
+
+        pipeline, _, _ = self._make_pipeline(None)
+        writer = MagicMock()
+        writer.import_batch.side_effect = ImportBatchError(
+            collection="users", error_count=1, total_count=1, details=["boom"]
+        )
+
+        pipeline._flush_batch(writer, "users", [{"_key": "1"}])
+
+        assert pipeline.errors["users"] == ["boom"]

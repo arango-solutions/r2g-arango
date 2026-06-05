@@ -83,7 +83,7 @@ The following patterns are **handled with caveats**:
 
 ## 3. Project phases and requirements
 
-The roadmap is organized into seven phases: four implemented (MVP through Kafka), two planned (temporal graph mode, Snowflake), and one exploratory (future sources and advanced features).
+The roadmap is organized into phases: Phases 1–4 (MVP through Kafka), Phase 5 (temporal graph mode), Phase 5f (naming conventions & rename change-management), and Phase 6 (Snowflake + multi-source) are implemented; Phase 5d (ArangoDB catalog backend) is planned; Phase 7+ (additional sources and advanced features) is exploratory.
 
 ### Phase 1: Table dump file processing (MVP) -- Implemented
 
@@ -170,7 +170,7 @@ Topology edges --> EntityProxyIn --hasVersion--> Entity v0 (current: expired=NEV
 
 | Category | Requirement | Details |
 | :--- | :--- | :--- |
-| **Architecture** | Modularity | Design so data sources can be swapped (e.g., PostgreSQL replaced by Snowflake or MySQL) without rewriting the whole tool. Currently PostgreSQL-only; Snowflake planned (Phase 6). |
+| **Architecture** | Modularity | Data sources are swappable via the `SourceConnector` / `SourceSession` abstraction (`connectors/base.py`). Implemented: PostgreSQL, Snowflake, CSV directories, and Kafka (streaming). MySQL / SQL Server remain exploratory (Phase 7+). |
 | **Target DB** | ArangoDB | Load via `arangoimport` (file-based, Phase 1) and the ArangoDB HTTP API (streaming/CDC/Kafka, Phases 2--4). |
 | **Transformation** | Schema mapping | Configurable prefix mapping for `_from` and `_to` (e.g., `user_1` to `Users/1`). |
 | **Data integrity** | Key generation | Correct document `_key` values derived from source primary keys, including composite keys joined by a configurable separator. |
@@ -192,7 +192,7 @@ Delivery was sliced: slice 1 (P6.1 introspect-only + P6.2 type mapping + P6.5 so
 
 | ID | Requirement | Description | Pre-requisite | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **P6.1** | **Snowflake schema reader** | Connect to Snowflake via the Snowflake Connector for Python (`snowflake-connector-python`, installed as the optional `r2g[snowflake]` extra) and introspect `INFORMATION_SCHEMA.TABLES` / `INFORMATION_SCHEMA.COLUMNS` plus `SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS` to populate the same `Schema` model used by PostgreSQL. Delivered as `r2g.connectors.snowflake.SnowflakeConnector`; imports are lazy so the UI degrades gracefully with a 501 + pip-install hint when the extra is not installed. Connection strings use the Snowflake SQLAlchemy URL shape: `snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&role=R`. | P1.1 | **Done** (introspection-only) |
+| **P6.1** | **Snowflake schema reader** | Connect to Snowflake via the Snowflake Connector for Python (`snowflake-connector-python`, installed as the optional `r2g[snowflake]` extra) and introspect `INFORMATION_SCHEMA.TABLES` / `INFORMATION_SCHEMA.COLUMNS` plus `SHOW PRIMARY KEYS` / `SHOW IMPORTED KEYS` to populate the same `Schema` model used by PostgreSQL. Delivered as `r2g.connectors.snowflake.SnowflakeConnector`; imports are lazy so the UI degrades gracefully with a 501 + pip-install hint when the extra is not installed. Connection strings use the Snowflake SQLAlchemy URL shape: `snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&role=R`. | P1.1 | **Done** (introspection, dump, and streaming all wired via `SnowflakeSession`; see P6.3–P6.5) |
 | **P6.2** | **Snowflake type mapping** | Map Snowflake data types (`NUMBER`, `VARCHAR`, `BOOLEAN`, `TIMESTAMP_*`, `VARIANT`, `ARRAY`, `OBJECT`, `GEOGRAPHY`, `GEOMETRY`, `BINARY`, `VECTOR`, etc.) to JSON types. `VARIANT`/`OBJECT` map to JSON objects; `ARRAY` maps to JSON arrays. `DEFAULT_TYPE_MAP` in `r2g.config` has been extended with Snowflake-specific entries and is shared with PostgreSQL via `pg_type_to_json_type`. | P1.4 | **Done** |
 | **P6.3** | **Snowflake dump export** | `r2g source dump <name>` is the source-agnostic replacement for the legacy `r2g dump-tables --conn`. It reads the catalog entry, dispatches through `create_source_connector`, opens a `SourceSession`, and calls `SourceSession.dump_table_to_csv()` for every table in the latest snapshot (or a `--tables` subset). PostgreSQL goes through the server-side `COPY … TO STDOUT WITH CSV HEADER` fast path; Snowflake streams the cursor and writes CSV via Python's `csv` module with empty-string NULLs and `"` quoting. Output is one `<table>.csv` per table under `--output-dir`. The UI will gain a "Dump tables" button in a later polish pass. | P6.1 | **Done** |
 | **P6.4** | **Snowflake streaming** | `StreamingPipeline` now consumes any `SourceConnector`; PG and Snowflake each implement `open_session()` returning a `SourceSession` with `count_rows`, `stream_rows`, `dump_table_to_csv`, and `close`. PG sessions set `REPEATABLE READ`; Snowflake sessions open a `BEGIN`/`COMMIT` transaction for implicit snapshot isolation and stream via `cursor.fetchmany(batch_size)`. `r2g stream --source <name>` resolves the catalog source and drives the pipeline through the abstraction; the legacy `--pg-conn` flag still works by wrapping the string in a `PostgresConnector`. `POST /api/projects/{name}/load` dispatches the same way. Value-overlap FK sampling (P6.6) against Snowflake becomes available as a follow-up once a `SnowflakeValueSampler` is wired on top of the session. | P6.1, P2.3 | **Done** |
@@ -207,7 +207,7 @@ Delivery was sliced: slice 1 (P6.1 introspect-only + P6.2 type mapping + P6.5 so
 - **Authentication.** Snowflake supports multiple auth methods (user/password, key-pair, SSO/OAuth, external browser). The connector should accept standard Snowflake connection parameters: `account`, `user`, `password`, `warehouse`, `database`, `schema`, `role`. These should be loadable from env vars (`SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, etc.) and `.env` files.
 - **Cost implications.** Every query against Snowflake consumes warehouse credits. The schema reader and streaming pipeline should minimize the number of queries. `--dry-run` should clearly report query cost implications.
 
-### Phase 5b: Visual Graph Data Mapper & Ingestion Engine -- Planned
+### Phase 5b: Visual Graph Data Mapper & Ingestion Engine -- Implemented
 
 The existing Mapping Studio UI (`r2g ui`) provides basic project selection, graph visualization, and YAML export. Phase 5b evolves it into a full-featured visual mapping and ingestion tool, inspired by TigerGraph GraphStudio. This phase is defined by three epics: Data Catalog, Visual Mapping Interface, and Ingestion & Execution Engine.
 
@@ -228,8 +228,8 @@ The Data Catalog is the central repository for all incoming data sources and tar
 
 | ID | Requirement | Description | Pre-requisite | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **P5b.1.1** | **Data source CRUD** | Users can Create, Read, Update, and Delete data sources. Supported source types: CSV directory, RDBMS (PostgreSQL; MySQL, Oracle planned), Kafka topics. | -- | Done for PostgreSQL (CLI, API, and in-UI "+ New source" form + right-click remove, see P5e.8.1); CSV / Kafka source registration deferred |
-| **P5b.1.2** | **Automated schema introspection** | Upon saving a new data source, the system automatically introspects the source. CSV: parse headers and infer types. RDBMS: extract tables, columns, PKs, FKs. Kafka: extract schema from Schema Registry or parse sample payload. Display as hierarchical tree or entity cards. | P5b.1.1 | Done for PostgreSQL (`POST /api/sources/{name}/snapshot`, auto-triggered after in-UI source creation and exposed as right-click "Re-introspect"); CSV / Kafka introspection deferred |
+| **P5b.1.1** | **Data source CRUD** | Users can Create, Read, Update, and Delete data sources. Supported source types: CSV directory, RDBMS (PostgreSQL, Snowflake; MySQL, Oracle planned), Kafka topics. | -- | Done for PostgreSQL, Snowflake, CSV, and Kafka registration (`SUPPORTED_SOURCE_TYPES` in `connectors/base.py`; CLI, API, and in-UI "+ New source" form + right-click remove, see P5e.8.1) |
+| **P5b.1.2** | **Automated schema introspection** | Upon saving a new data source, the system automatically introspects the source. CSV: parse headers and infer types. RDBMS: extract tables, columns, PKs, FKs. Kafka: extract schema from Schema Registry or parse sample payload. Display as hierarchical tree or entity cards. | P5b.1.1 | Done (`POST /api/sources/{name}/snapshot`, auto-triggered after in-UI source creation and exposed as right-click "Re-introspect") for PostgreSQL, Snowflake, and CSV (header + type inference via `CsvConnector`); Kafka exposes introspection-only in the studio (batch sync via `kafka-start`) |
 | **P5b.1.3** | **Target graph definition** | Users define connections to target graph databases. System introspects the target graph to fetch existing vertex types, edge types, and their properties. | -- | Done (`TargetConfig` in catalog, `src/r2g/connectors/arango_reader.py`, `GET/POST/DELETE /api/targets`, `POST /api/targets/{name}/introspect`, and in-UI "+ New target" form + right-click actions, see P5e.8.2) |
 | **P5b.1.4** | **Referential integrity & cascading deletes** | Deleting a data source warns the user of dependent mappings/projects. Upon confirmation, all associated mappings and load history are deleted. | P5b.1.1 | Done (`CatalogManager.remove_source(cascade=True)` + `DependencyError`; `DELETE /api/sources/{name}?cascade=true`; in-UI right-click "Remove source…" shows a confirmation dialog before cascading) |
 
@@ -252,7 +252,7 @@ The mechanics of moving data based on the accepted map.
 | ID | Requirement | Description | Pre-requisite | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **P5b.3.1** | **Execution trigger ("Load" button)** | Once a mapping is saved, a "Load" / "Run" button provisions the ingestion job based on parallel connection settings and the active map. | P5b.2.2 | Done (`POST /api/projects/{name}/load` runs the streaming pipeline in a background thread with load id tracking; toolbar "Load" action + confirmation modal; shortcut Ctrl/Cmd+Enter) |
-| **P5b.3.2** | **Job monitoring** | Status indicator (Pending, Running, Success, Failed). Metrics: rows processed, vertices created, edges created, error count. | P5b.3.1 | Done (`GET /api/projects/{name}/load/{load_id}/status` + Server-Sent Events stream at `/stream`; `progress_callback` in `StreamingPipeline`; floating progress card in the UI with live per-table counters, error count, elapsed time, minimize-to-tray; bottom timeline strip records completed runs) |
+| **P5b.3.2** | **Job monitoring** | Status indicator (Pending, Running, Success, Failed). Metrics: rows processed, vertices created, edges created, error count. | P5b.3.1 | Done (`GET /api/projects/{name}/load/{load_id}/status` + Server-Sent Events stream at `GET /api/projects/{name}/load/{load_id}/stream`; `progress_callback` in `StreamingPipeline`; floating progress card in the UI with live per-table counters, error count, elapsed time, minimize-to-tray; bottom timeline strip records completed runs) |
 | **P5b.3.3** | **Error handling** | Records that fail mapping constraints (missing Vertex IDs, type mismatch) are routed to a dead-letter queue or error log without stopping the ingestion job. | P5b.3.1 | Done (`src/r2g/dlq.py` `DeadLetterQueue` writes `~/.r2g/dlq/{load_id}.jsonl`; `GET /api/projects/{name}/load/{load_id}/errors` exposes entries; streaming pipeline continues past per-record failures and records them to the DLQ) |
 
 #### Non-functional requirements (Phase 5b)
@@ -268,7 +268,7 @@ The mechanics of moving data based on the accepted map.
 - **Bi-directional sync:** Strictly source-to-graph ingestion, not graph-to-relational export.
 - **Scheduling:** Cron jobs for recurring loads are out of scope; all ingestion is manually triggered via the "Load" button.
 
-### Phase 5c: Expression Mapping & Graph-of-Graphs UI -- Planned
+### Phase 5c: Expression Mapping & Graph-of-Graphs UI -- Implemented
 
 Phase 5b delivers a card-based split-screen mapper with 1:1 pass-through mappings. Phase 5c evolves the mapper into a **three-graph workspace** (source graph, mapping graph, target graph) and introduces a first-class **expression engine** so users can transform values during ingestion, not just rename them.
 

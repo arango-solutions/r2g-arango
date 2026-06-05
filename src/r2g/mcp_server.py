@@ -41,6 +41,24 @@ def _resolve_conn_string(raw: str) -> str:
     return raw
 
 
+def _redact_source(dump: dict[str, Any]) -> dict[str, Any]:
+    """Mask the connection string of a serialized SourceConfig for output."""
+    from r2g.security import redact_connection_string
+
+    out = dict(dump)
+    out["connection_string"] = redact_connection_string(out.get("connection_string") or "")
+    return out
+
+
+def _redact_target(dump: dict[str, Any]) -> dict[str, Any]:
+    """Mask the password of a serialized TargetConfig for output."""
+    from r2g.security import redact_for_display
+
+    out = dict(dump)
+    out["password"] = redact_for_display(out.get("password") or "")
+    return out
+
+
 # ── Catalog: Sources ─────────────────────────────────────────────────
 
 
@@ -48,7 +66,7 @@ def _resolve_conn_string(raw: str) -> str:
 def list_sources() -> list[dict[str, Any]]:
     """List all registered data sources in the R2G catalog."""
     mgr = _get_catalog()
-    return [s.model_dump(mode="json") for s in mgr.list_sources()]
+    return [_redact_source(s.model_dump(mode="json")) for s in mgr.list_sources()]
 
 
 @mcp.tool()
@@ -58,7 +76,7 @@ def get_source(name: str) -> dict[str, Any]:
     source = mgr.get_source(name)
     if source is None:
         return {"error": f"Source '{name}' not found"}
-    return source.model_dump(mode="json")
+    return _redact_source(source.model_dump(mode="json"))
 
 
 @mcp.tool()
@@ -79,7 +97,7 @@ def add_source(
     mgr = _get_catalog()
     try:
         source = mgr.add_source(name, source_type, connection_string, description=description)
-        return {"status": "created", "source": source.model_dump(mode="json")}
+        return {"status": "created", "source": _redact_source(source.model_dump(mode="json"))}
     except ValueError as e:
         return {"error": str(e)}
 
@@ -156,7 +174,7 @@ def create_project(
 def list_targets() -> list[dict[str, Any]]:
     """List all registered ArangoDB target connections."""
     mgr = _get_catalog()
-    return [t.model_dump(mode="json") for t in mgr.list_targets()]
+    return [_redact_target(t.model_dump(mode="json")) for t in mgr.list_targets()]
 
 
 @mcp.tool()
@@ -181,7 +199,7 @@ def add_target(
     mgr = _get_catalog()
     try:
         target = mgr.add_target(name, endpoint, database, username, password, description)
-        return {"status": "created", "target": target.model_dump(mode="json")}
+        return {"status": "created", "target": _redact_target(target.model_dump(mode="json"))}
     except ValueError as e:
         return {"error": str(e)}
 
@@ -398,16 +416,32 @@ def preview_table(
     if source is None:
         return {"error": f"Source '{source_name}' not found"}
 
-    limit = min(limit, 100)
+    stype = (source.source_type or "postgresql").lower()
+    if stype not in ("postgresql", "postgres", "pg"):
+        return {"error": f"Preview is only supported for PostgreSQL sources (got '{stype}')"}
+
+    # Validate the table against the latest snapshot so the identifier is
+    # never an unvetted string interpolated into SQL.
+    snap = mgr.get_latest_snapshot(source_name)
+    if snap is None or table_name not in snap.schema_data.tables:
+        return {"error": f"Table '{table_name}' is not in the latest snapshot of '{source_name}'"}
+
+    limit = max(1, min(limit, 100))
 
     try:
         import psycopg
+        from psycopg import sql
         from psycopg.rows import dict_row
 
+        schema_name = snap.pg_schema or "public"
+        query = sql.SQL("SELECT * FROM {}.{} LIMIT %s").format(
+            sql.Identifier(schema_name),
+            sql.Identifier(table_name),
+        )
         conn_str = _resolve_conn_string(source.connection_string)
         with psycopg.connect(conn_str, row_factory=dict_row) as conn:
             with conn.cursor() as cur:
-                cur.execute(f"SELECT * FROM {table_name} LIMIT %s", (limit,))  # noqa: S608
+                cur.execute(query, (limit,))
                 rows = cur.fetchall()
 
         return {
@@ -579,7 +613,9 @@ def resource_sources() -> str:
     """All registered data sources."""
     mgr = _get_catalog()
     sources = mgr.list_sources()
-    return json.dumps([s.model_dump(mode="json") for s in sources], indent=2, default=str)
+    return json.dumps(
+        [_redact_source(s.model_dump(mode="json")) for s in sources], indent=2, default=str
+    )
 
 
 @mcp.resource("r2g://projects")
@@ -595,7 +631,9 @@ def resource_targets() -> str:
     """All registered ArangoDB targets."""
     mgr = _get_catalog()
     targets = mgr.list_targets()
-    return json.dumps([t.model_dump(mode="json") for t in targets], indent=2, default=str)
+    return json.dumps(
+        [_redact_target(t.model_dump(mode="json")) for t in targets], indent=2, default=str
+    )
 
 
 @mcp.resource("r2g://schema/{source_name}")

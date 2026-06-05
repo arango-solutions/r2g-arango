@@ -103,7 +103,7 @@ flowchart LR
 
 ```
 src/r2g/
-├── main.py                     # Typer CLI (17 commands)
+├── main.py                     # Typer CLI (top-level commands + `source`/`project`/`secrets` groups)
 ├── config_migrate.py           # Config migration when schema evolves
 ├── data_validator.py           # Referential integrity checker for dump data
 ├── schema_diff.py              # Schema comparison / structural diff
@@ -150,7 +150,7 @@ isolated venv and does not pollute your project environments:
 ```bash
 pipx install 'r2g-arango[postgres,ui]'   # PG source + interactive mapping studio
 r2g --help
-r2g ui                                   # opens http://localhost:8765
+r2g ui                                   # opens http://localhost:8501
 ```
 
 Plain `pip install` works too; just be aware that the connector
@@ -497,12 +497,12 @@ Use `--offset-reset earliest` or `latest` to control where a new consumer group 
 
 This is an experimental reference implementation. The following constraints apply:
 
-- **PostgreSQL and Snowflake are both supported sources.** Phase 6 shipped: schema introspection, FK inference, CSV dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) all work on both backends through a common `SourceConnector` / `SourceSession` abstraction. Snowflake is gated on the optional `r2g-arango[snowflake]` extra. End-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No MySQL, SQLite, or other source support yet.
+- **Supported sources: PostgreSQL, Snowflake, and CSV directories** (Kafka is supported for streaming sync via `kafka-start` and introspection in the catalog). Schema introspection, FK inference, dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) work across these backends through a common `SourceConnector` / `SourceSession` abstraction. Snowflake is gated on the optional `r2g-arango[snowflake]` extra. End-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No MySQL, SQLite, or Oracle support yet.
 - **Data validation is opt-in** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. Use `validate-data` before import to catch these, but it is not enforced automatically.
-- **Basic incremental support only** -- `stream --since` filters rows by a timestamp column for basic incremental updates, but there is no change tracking, CDC, or diff-based processing yet (see Phases 3-4 in the PRD).
+- **Incremental + change capture** -- `stream --since` filters rows by a timestamp column for basic incremental loads; full change capture is available via the CDC (`cdc-start`) and Kafka (`kafka-start`) pipelines with configurable conflict resolution, and `mapping-diff` / `selective-reload` reconcile mapping changes against an already-loaded target.
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
 - **ArangoDB write path** -- the `stream` command connects directly to ArangoDB via python-arango, but the file-based paths (`generate-csv-import`, `generate-import`) still require `arangoimport` installed separately.
-- **Credential handling** -- connection strings and passwords appear in CLI arguments and generated scripts. The import script uses environment variable overrides, but the tool has no secrets management.
+- **Credential handling** -- catalog secrets (source connection strings, target passwords) are encrypted at rest with Fernet using a key from `R2G_SECRET_KEY` or `~/.r2g/secret.key` (managed via `r2g secrets init|status|migrate`); API responses redact them. Generated import scripts still reference connection defaults via environment variables, and there is no integrated remote secrets manager (e.g. Vault).
 
 ## Testing
 
@@ -510,7 +510,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-502 tests covering CLI commands (via typer.testing.CliRunner, including CDC and Kafka commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, and PK-less table warnings), dump reader, node transformer, edge transformer, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (with retry logic, error surfacing, and single-document CDC ops), CDC models (ChangeEvent, ArangoDelta, TransactionBatch), CDC output plugin parsers (test_decoding text parsing, wal2json JSON parsing), CDC delta transformer (INSERT/UPDATE/DELETE → graph mutations with edge cleanup), CDC handler (event processing, transaction batching, stats tracking, failure handling, conflict resolution integration), CDC conflict resolution (ConflictPolicy, ConflictResolver, ConflictLog -- all four policies with duplicate/missing/stale scenarios), CDC replication listener (slot management, polling, graceful shutdown), Kafka parsers (Debezium envelope, flat JSON) and Kafka consumer (batch polling, offset commits, graceful shutdown), streaming pipeline (sequential, parallel, table filtering, import errors, skip-existing, topological ordering, since-filtering, PK-less table handling), dry-run mode, progress callbacks, throughput timing, and end-to-end integration tests against live PG + ArangoDB.
+998 tests (6 skipped) covering CLI commands (via typer.testing.CliRunner, including CDC and Kafka commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, PK-less table warnings, and reserved-attribute checks), dump reader, node/edge transformers, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (retry logic, error surfacing, single-document CDC ops), the full CDC stack (models, output-plugin parsers, delta transformer, handler, conflict resolution, replication listener), Kafka parsers and consumer, the streaming pipeline (sequential, parallel, filtering, skip-existing, topological/since handling), the expression evaluator (`expressions.py`), the Snowflake and CSV connectors, FK inference (name heuristics + PostgreSQL/CSV value-overlap samplers), naming conventions, mapping diff + selective reload, temporal graph mode (applier, models, queries), credential encryption (`security.py`), the Mapping Studio API (`ui/server.py`) and MCP server, plus end-to-end integration tests against live PG + ArangoDB.
 
 To run unit tests only (no Docker required):
 
@@ -532,7 +532,8 @@ Phases 1 through 4 are implemented. See [`docs/PRD.md`](docs/PRD.md) for the ful
 - **Phase 2** -- Direct PostgreSQL streaming (server-side cursors, HTTP API bulk import, REPEATABLE READ snapshots) -- **complete**
 - **Phase 3** -- CDC integration: event models, delta transformer, handler, replication listener, output plugin parsers (`test_decoding`/`wal2json`), continuous polling loop, conflict resolution (`source_wins`/`last_write_wins`/`log_and_skip`/`fail`), CLI commands -- **complete**
 - **Phase 4** -- Kafka integration: Debezium parser, flat JSON parser, confluent-kafka consumer, kafka-start CLI command -- **complete**
-- **Phase 5** -- Temporal graph mode: immutable-proxy time travel pattern (ProxyIn/Entity/ProxyOut), soft deletes with `created`/`expired` versioning, TTL aging, MDI-prefixed temporal indexes, point-in-time query templates, SmartGraph compatibility -- **planned**
+- **Phase 5** -- Temporal graph mode: immutable-proxy time travel pattern (ProxyIn/Entity/ProxyOut), soft deletes with `created`/`expired` versioning, TTL aging, MDI-prefixed temporal indexes, point-in-time query templates, SmartGraph compatibility -- **implemented** (`r2g.temporal`, `--temporal`/`--ttl-seconds`/`--smart-field` on `cdc-start`/`kafka-start`; live-warehouse field validation pending)
+- **Phase 5f** -- Naming conventions (PascalCase collections / camelCase properties + edges / snake_case) and rename change-management for already-loaded targets: `r2g.naming`, identity-based diff in `mapping-diff`, in-place `selective-reload`, `migration-plan` / `migrate` API endpoints, reserved-attribute protection -- **implemented**
 - **Phase 6** -- Snowflake integration -- **done**. Slice 1: source-abstraction `SourceConnector` Protocol, `SnowflakeConnector` for schema introspection via `INFORMATION_SCHEMA` + `SHOW PRIMARY/IMPORTED KEYS`, Snowflake-aware type map, UI / MCP / CLI dispatching through the factory. Slice 2: pure-Python FK inference engine (`r2g.fk_inference`, `POST /api/sources/{name}/infer-fks`, **Suggest FKs** toolbar button with per-row accept, `r2g source infer-fks <name> [--sample] [--accept]` CLI) with an optional PostgreSQL value-overlap sampler. Slice 3: new `SourceSession` Protocol (`count_rows`, `stream_rows`, `dump_table_to_csv`, `close`), `PostgresSession` (`REPEATABLE READ` + server-side cursor + `COPY TO STDOUT`), `SnowflakeSession` (`BEGIN`/`COMMIT` + `fetchmany` + CSV dump). `StreamingPipeline` is now fully source-agnostic; `r2g stream --source <name>` and new `r2g source dump <name>` work identically on PostgreSQL and Snowflake; `POST /api/projects/{name}/load` dispatches through `create_source_connector`. Legacy `--pg-conn` / `r2g dump-tables --conn` flags still work via a backward-compat shim.
 - **Phase 7+** -- Additional sources (MySQL, SQL Server), LLM-driven ontology derivation, ArangoRDF, bi-directional sync -- **exploratory**
 
