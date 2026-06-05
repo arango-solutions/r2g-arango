@@ -6,14 +6,43 @@
 <title>Relational-to-Graph Studio</title>
 <link rel="icon" type="image/png" href="/static/r2g-icon.png">
 <link rel="apple-touch-icon" href="/static/r2g-icon.png">
+<script>
+  // Resolve the theme before first paint to avoid a flash. Light is the
+  // default; a stored choice or the OS preference can switch to dark.
+  (function () {
+    try {
+      var stored = localStorage.getItem('r2g.theme');
+      var theme = stored
+        || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark' : 'light');
+      document.documentElement.setAttribute('data-theme', theme);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    }
+  })();
+</script>
 <style>
+  /* Light theme is the default (P5g.1). Dark is opt-in via
+     <html data-theme="dark">, toggled from the top bar and persisted in
+     localStorage. Both palettes drive the same CSS custom properties so the
+     rest of the stylesheet is theme-agnostic. */
   :root {
+    color-scheme: light;
+    --bg: #f1f5f9; --surface: #ffffff; --surface2: #e9eef5;
+    --border: #cbd5e1; --text: #1e293b; --text-muted: #64748b;
+    /* --accent (blue) = relational / non-Arango sources; --green = ArangoDB target. */
+    --accent: #0284c7; --accent2: #6366f1;
+    /* Arango green: true brand greens for filled primary actions, plus a
+       tint that stays legible as text/accents on the current canvas. */
+    --green: #2fa86b;
+    --arango-green: #006532; --arango-green-hover: #005329;
+    --yellow: #b45309; --red: #da1a20; --pink: #db2777;
+  }
+  html[data-theme="dark"] {
+    color-scheme: dark;
     --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
     --border: #475569; --text: #e2e8f0; --text-muted: #94a3b8;
-    /* --accent (blue) = relational / non-Arango sources; --green = ArangoDB target. */
     --accent: #38bdf8; --accent2: #818cf8;
-    /* Arango green: true brand greens for filled primary actions, plus a
-       lightened tint that stays legible as text/accents on the dark canvas. */
     --green: #2fa86b;
     --arango-green: #006532; --arango-green-hover: #005329;
     --yellow: #fbbf24; --red: #da1a20; --pink: #f472b6;
@@ -159,6 +188,60 @@
     font: inherit; cursor: pointer; padding: 0; text-decoration: underline;
   }
 
+  /* Left explorer: always-visible icon rail + collapsible drawer (P5g.3/P5g.6) */
+  .explorer-rail {
+    width: 46px; min-width: 46px; flex-shrink: 0; background: var(--surface2);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    align-items: center; padding-top: 8px; gap: 6px;
+  }
+  .explorer-rail button {
+    width: 34px; height: 34px; border-radius: 8px; border: 1px solid transparent;
+    background: transparent; color: var(--text-muted); cursor: pointer;
+    font-size: 16px; display: flex; align-items: center; justify-content: center;
+  }
+  .explorer-rail button:hover { color: var(--accent); border-color: var(--border); }
+  .explorer-rail button.active { color: var(--accent); background: var(--surface); border-color: var(--border); }
+  .explorer-drawer {
+    width: 230px; min-width: 160px; flex-shrink: 0; background: var(--surface);
+    border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .main.explorer-collapsed .explorer-drawer,
+  .main.explorer-collapsed .explorer-resizer { display: none; }
+  .explorer-section { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--border); }
+  .explorer-section:not(.collapsed) { flex: 1 1 0; }
+  .explorer-section.collapsed { flex: 0 0 auto; }
+  .explorer-section:last-child { border-bottom: none; }
+  .explorer-section-header {
+    padding: 8px 12px; font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: .5px; color: var(--text-muted); background: var(--surface2);
+    display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; flex-shrink: 0;
+  }
+  .explorer-section-header:hover { color: var(--text); }
+  .explorer-section-header .tree-caret { font-size: 9px; transition: transform .12s; width: 9px; flex-shrink: 0; }
+  .explorer-section.collapsed .tree-caret { transform: rotate(-90deg); }
+  .explorer-section-header .sec-title { flex: 1; }
+  .explorer-section.collapsed .explorer-section-body { display: none; }
+  .explorer-section-body { overflow-y: auto; flex: 1; min-height: 0; }
+
+  .project-item {
+    padding: 7px 12px; font-size: 12px; display: flex; align-items: center; gap: 8px;
+    cursor: pointer; border-bottom: 1px solid rgba(128,128,128,.12);
+  }
+  .project-item:hover { background: rgba(56,189,248,.06); }
+  .project-item.active { background: rgba(56,189,248,.10); }
+  .project-item.active .pi-name { color: var(--accent); font-weight: 700; }
+  .project-item .pi-icon { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+  .project-item .pi-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .project-chip {
+    background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 12px; font-family: inherit; font-size: 12px;
+    cursor: pointer; max-width: 280px; text-align: left; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .project-chip:hover { border-color: var(--accent); color: var(--accent); }
+  .project-chip .pc-label { color: var(--text-muted); margin-right: 6px; text-transform: uppercase; font-size: 10px; letter-spacing: .5px; }
+
   /* Floating-card form layout */
   .fc-form { display: flex; flex-direction: column; gap: 10px; }
   .fc-form label {
@@ -200,11 +283,19 @@
   .mapper-source-pane { border-right: 1px solid var(--border); }
   .mapper-target-pane { border-left: 1px solid var(--border); }
   .mapper-pane-header {
-    padding: 10px 14px; font-size: 11px; font-weight: 700;
+    padding: 8px 12px; font-size: 11px; font-weight: 700;
     text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted);
     background: var(--surface2); border-bottom: 1px solid var(--border);
     position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
   }
+  .pane-tools { display: inline-flex; gap: 4px; }
+  .pane-tool-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+    border-radius: 4px; font-size: 10px; line-height: 1; padding: 2px 5px;
+    cursor: pointer; font-family: inherit;
+  }
+  .pane-tool-btn:hover { color: var(--accent); border-color: var(--accent); }
   .mapper-canvas {
     flex: 1; min-width: 80px; position: relative; background: var(--bg); overflow: hidden;
   }
@@ -289,6 +380,13 @@
     font-size: 10px; color: var(--text-muted); background: var(--surface2);
     padding: 1px 6px; border-radius: 3px;
   }
+  .target-card-header .expand-icon {
+    font-size: 10px; color: var(--text-muted); width: 14px; text-align: center;
+    transition: transform .15s; flex-shrink: 0;
+  }
+  .target-card-header .expand-icon.open { transform: rotate(90deg); }
+  .target-card-body { overflow: hidden; }
+  .target-card-body.collapsed { display: none; }
   .target-dot {
     width: 10px; height: 10px; border-radius: 50%; background: var(--green);
     position: absolute; left: -5px; top: 50%; transform: translateY(-50%); z-index: 5;
@@ -316,6 +414,12 @@
   .connector { fill: none; stroke-width: 1.5; stroke: var(--accent); opacity: .45; transition: opacity .15s, stroke-width .15s; }
   .connector:hover { opacity: .9; stroke-width: 2.5; }
   .connector.selected { opacity: 1; stroke-width: 3; filter: drop-shadow(0 0 6px rgba(56,189,248,.5)); }
+  /* Bidirectional mapping highlight (P5g.5) — distinct from blue selection. */
+  .connector.hl { stroke: var(--accent2) !important; opacity: 1 !important; stroke-width: 3 !important; filter: drop-shadow(0 0 6px rgba(99,102,241,.55)); }
+  .func-circle.hl circle { stroke: var(--accent2); stroke-width: 2.5; }
+  .source-card.hl, .target-card.hl { box-shadow: inset 3px 0 0 0 var(--accent2); }
+  .target-card.hl { box-shadow: inset -3px 0 0 0 var(--accent2); }
+  .source-col-row.hl, .target-prop-row.hl { background: rgba(99,102,241,.14) !important; }
   .connector.table-conn { stroke-width: 2.5; opacity: .6; }
   .connector.col-conn { stroke-width: 1; opacity: .3; }
   .connector.col-conn:hover { opacity: .7; stroke-width: 2; }
@@ -469,13 +573,22 @@
   }
   .mapper-legend-item { display: flex; align-items: center; gap: 6px; }
 
-  /* Right sidebar */
+  /* Right detail panel — on-demand (P5g.4). Hidden until an entity is
+     selected; slides in by animating width so it never covers the target
+     pane and reclaims canvas space when closed. */
   .sidebar-right {
-    width: 280px; min-width: 280px; background: var(--surface);
-    border-left: 1px solid var(--border); display: flex;
-    flex-direction: column; overflow: hidden; transition: width .2s;
+    width: 0; min-width: 0; background: var(--surface);
+    border-left: 1px solid transparent; display: flex;
+    flex-direction: column; overflow: hidden; flex-shrink: 0;
+    transition: width .2s, min-width .2s;
   }
-  .sidebar-right.collapsed { width: 0; min-width: 0; border: none; overflow: hidden; }
+  .sidebar-right.open { width: 300px; min-width: 300px; border-left-color: var(--border); }
+  .detail-header { gap: 8px; }
+  .detail-close {
+    background: transparent; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px;
+  }
+  .detail-close:hover { color: var(--text); }
   .props-body { overflow-y: auto; flex: 1; padding: 12px 14px; }
   .prop-group { margin-bottom: 14px; }
   .prop-group-title {
@@ -632,9 +745,9 @@
   .progress-bar-count { font-size: 11px; color: var(--text-muted); min-width: 80px; text-align: right; }
 
   @media (max-width: 1100px) {
-    .sidebar-left { width: 140px; min-width: 140px; }
+    .explorer-drawer { width: 180px; min-width: 150px; }
     .mapper-source-pane, .mapper-target-pane { width: 200px; min-width: 160px; }
-    .sidebar-right { width: 240px; min-width: 240px; }
+    .sidebar-right.open { width: 260px; min-width: 260px; }
     .toolbar-brand span { display: none; }
   }
 
@@ -911,61 +1024,78 @@
     </div>
   </div>
   <div class="toolbar-center">
-    <label>Project</label>
-    <select id="project-select"><option value="">Select a project&hellip;</option></select>
-    <button class="btn-sm" id="btn-new-project" aria-label="Create a new mapping project" data-hint="Create a new mapping project: pick a source, target endpoint, and database." onclick="openNewProjectForm()">+ New</button>
-    <button class="btn-sm" id="btn-project-menu" aria-label="Manage current project" data-hint="Edit, rename, or delete the current project." onclick="openProjectMenu(event)" disabled>&#8943;</button>
+    <button class="project-chip" id="active-project-chip" aria-haspopup="menu"
+            onclick="toggleExplorer(true)"
+            oncontextmenu="if(currentProject){event.preventDefault();openProjectMenu(event);return false;}"
+            data-hint="Active project. Click to open the Explorer; right-click for project actions (edit / delete / copy name).">
+      <span class="pc-label">Project</span><span id="active-project-name">No project</span>
+    </button>
     <span class="toolbar-status">
       <span class="lens-chip" id="lens-chip" role="button" tabindex="0" aria-label="Active graph lens; click to cycle" data-hint="Active graph lens. Click to cycle Topology &rarr; Coverage &rarr; Validation &rarr; Diff. Lenses only recolor the graph (no relayout). Also: right-click canvas &rarr; View as, or press 1-4.">Topology</span>
       <span class="lens-chip" id="dirty-chip" style="display:none;color:var(--yellow);border-color:var(--yellow);cursor:default" data-hint="You have unsaved mapping changes. Press Cmd/Ctrl+S or use Save to persist them.">Unsaved</span>
     </span>
   </div>
   <div class="toolbar-actions">
-    <button class="btn" id="btn-validate" disabled onclick="validateMapping()" aria-label="Validate mapping" data-hint="Check the current mapping for errors and warnings without saving. Shortcut: Cmd/Ctrl+Shift+V.">Validate</button>
+    <button class="btn" id="btn-actions" onclick="openActionsMenu(event)" aria-label="More actions" aria-haspopup="menu" data-hint="More actions: Validate, Auto-Map, Suggest FKs, Diff, Export YAML, History, Settings.">Actions &#9662;</button>
     <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()" aria-label="Save mapping" data-hint="Persist the mapping config. If the target is already loaded and names changed, you'll be offered an in-place migration. Shortcut: Cmd/Ctrl+S.">Save</button>
-    <button class="btn" id="btn-automap" disabled onclick="autoMap()" aria-label="Auto-map all tables" data-hint="Generate default mappings for every source table from column-name and primary-key heuristics. Existing manual edits are preserved. Shortcut: a.">Auto-Map</button>
-    <button class="btn" id="btn-suggest-fks" disabled onclick="suggestFks()" aria-label="Suggest foreign keys" data-hint="Scan the source schema for likely foreign keys (by name and value overlap) and propose new edges to accept or dismiss. Shortcut: i.">Suggest FKs</button>
-    <button class="btn" id="btn-diff" disabled onclick="showDiff()" aria-label="Show diff" data-hint="Show what changed in the mapping versus the last saved version. Shortcut: Cmd/Ctrl+D.">Diff</button>
-    <button class="btn" id="btn-export" disabled onclick="exportYaml()" aria-label="Export YAML" data-hint="Export the current mapping configuration as a YAML file you can copy or download.">Export YAML</button>
-    <button class="btn" id="btn-history" disabled onclick="showHistory()" aria-label="Load history" data-hint="View past load runs for this project with row counts, errors, and status.">History</button>
-    <button class="btn" id="btn-settings" onclick="showSettings()" aria-label="Settings" data-hint="Configure ingestion settings: parallel workers, batch size, duplicate handling, and drop-collections.">&#9881;</button>
-    <button class="help-btn" id="btn-help" aria-label="Help and keyboard shortcuts" data-hint="Open the help overlay listing every keyboard shortcut and the right-click contract. Shortcut: ?.">?</button>
     <button class="btn btn-load" id="btn-load" disabled onclick="showLoadModal()" aria-label="Load data" data-hint="Run the ingestion pipeline: stream data from the source into ArangoDB using the saved mapping. Shortcut: Cmd/Ctrl+Enter.">&#9654; Load</button>
+    <button class="btn" id="btn-theme" onclick="toggleTheme()" aria-label="Toggle light or dark theme" data-hint="Switch between light and dark mode. Your choice is remembered on this device.">&#9790;</button>
+    <button class="help-btn" id="btn-help" aria-label="Help and keyboard shortcuts" data-hint="Open the help overlay listing every keyboard shortcut and the right-click contract. Shortcut: ?.">?</button>
   </div>
 </div>
 
 <!-- Main layout -->
 <div class="main">
 
-  <!-- Left sidebar — sources + targets -->
-  <div class="sidebar-left" id="sidebar-left">
-    <div class="sidebar-section">
-      <div class="panel-header">
-        <span>Sources</span>
-        <button class="panel-add-btn" id="btn-new-source" aria-label="Create a new data source" data-hint="Register a new data source (PostgreSQL, Snowflake, CSV, Kafka). Its schema is introspected automatically on save." onclick="openNewSourceForm()">+</button>
+  <!-- Left explorer: icon rail (always visible) + collapsible drawer -->
+  <div class="explorer-rail">
+    <button id="btn-explorer-toggle" class="active" onclick="toggleExplorer()"
+            aria-label="Toggle explorer panel" aria-expanded="true"
+            data-hint="Show or hide the Explorer (Projects, Sources, Targets). Hiding it reclaims canvas space.">&#9776;</button>
+  </div>
+  <div class="explorer-drawer" id="explorer-drawer">
+    <div class="explorer-section" id="exp-projects">
+      <div class="explorer-section-header" onclick="toggleExplorerSection('exp-projects')">
+        <span class="tree-caret">&#9662;</span><span class="sec-title">Projects</span>
+        <button class="panel-add-btn" id="btn-new-project" aria-label="Create a new mapping project" data-hint="Create a new mapping project: pick a source, target endpoint, and database." onclick="event.stopPropagation();openNewProjectForm()">+</button>
       </div>
-      <div class="panel-body" id="sources-panel">
+      <div class="explorer-section-body" id="projects-panel">
+        <div class="empty-state">Loading projects&hellip;</div>
+      </div>
+    </div>
+    <div class="explorer-section collapsed" id="exp-sources">
+      <div class="explorer-section-header" onclick="toggleExplorerSection('exp-sources')">
+        <span class="tree-caret">&#9662;</span><span class="sec-title">Sources</span>
+        <button class="panel-add-btn" id="btn-new-source" aria-label="Create a new data source" data-hint="Register a new data source (PostgreSQL, Snowflake, CSV, Kafka). Its schema is introspected automatically on save." onclick="event.stopPropagation();openNewSourceForm()">+</button>
+      </div>
+      <div class="explorer-section-body" id="sources-panel">
         <div class="empty-state">Loading sources&hellip;</div>
       </div>
     </div>
-    <div class="sidebar-section">
-      <div class="panel-header">
-        <span>Targets</span>
-        <button class="panel-add-btn" id="btn-new-target" aria-label="Create a new target graph database" data-hint="Register a new ArangoDB target database connection." onclick="openNewTargetForm()">+</button>
+    <div class="explorer-section collapsed" id="exp-targets">
+      <div class="explorer-section-header" onclick="toggleExplorerSection('exp-targets')">
+        <span class="tree-caret">&#9662;</span><span class="sec-title">Targets</span>
+        <button class="panel-add-btn" id="btn-new-target" aria-label="Create a new target graph database" data-hint="Register a new ArangoDB target database connection." onclick="event.stopPropagation();openNewTargetForm()">+</button>
       </div>
-      <div class="panel-body" id="targets-panel">
+      <div class="explorer-section-body" id="targets-panel">
         <div class="empty-state">Loading targets&hellip;</div>
       </div>
     </div>
   </div>
 
-  <div class="resizer" data-target="sidebar-left" data-edge="right" data-min="120" data-max="420" title="Drag to resize"></div>
+  <div class="resizer explorer-resizer" data-target="explorer-drawer" data-edge="right" data-min="160" data-max="420" title="Drag to resize"></div>
 
   <!-- Mapper container -->
   <div class="mapper-container" id="mapper-container">
     <!-- Source pane -->
     <div class="mapper-source-pane" id="mapper-source-pane">
-      <div class="mapper-pane-header">Source Schema</div>
+      <div class="mapper-pane-header">
+        <span>Source Schema</span>
+        <span class="pane-tools">
+          <button class="pane-tool-btn" onclick="expandAllTables(true)" aria-label="Expand all source tables" data-hint="Expand every source table to reveal its columns and attribute mappings.">&#9633;&#43;</button>
+          <button class="pane-tool-btn" onclick="expandAllTables(false)" aria-label="Collapse all source tables" data-hint="Collapse every source table to show only table-to-collection mappings.">&#9633;&#8722;</button>
+        </span>
+      </div>
       <svg class="pane-graph-svg" id="source-graph-svg"></svg>
       <div id="source-cards">
         <div class="empty-state">Select a project</div>
@@ -998,7 +1128,13 @@
 
     <!-- Target pane -->
     <div class="mapper-target-pane" id="mapper-target-pane">
-      <div class="mapper-pane-header">Target Graph Model</div>
+      <div class="mapper-pane-header">
+        <span>Target Graph Model</span>
+        <span class="pane-tools">
+          <button class="pane-tool-btn" onclick="expandAllCollections(true)" aria-label="Expand all collections" data-hint="Expand every target collection to reveal its properties and attribute mappings.">&#9633;&#43;</button>
+          <button class="pane-tool-btn" onclick="expandAllCollections(false)" aria-label="Collapse all collections" data-hint="Collapse every target collection to show only table-to-collection mappings.">&#9633;&#8722;</button>
+        </span>
+      </div>
       <svg class="pane-graph-svg" id="target-graph-svg"></svg>
       <div id="target-cards">
         <div class="empty-state">Select a project</div>
@@ -1006,11 +1142,12 @@
     </div>
   </div>
 
-  <div class="resizer" data-target="sidebar-right" data-edge="left" data-min="180" data-max="640" title="Drag to resize"></div>
-
-  <!-- Right sidebar — properties -->
+  <!-- Right detail panel — on-demand, shown when an entity is selected -->
   <div class="sidebar-right" id="sidebar-right">
-    <div class="panel-header" id="props-header">Properties</div>
+    <div class="panel-header detail-header">
+      <span id="props-header">Properties</span>
+      <button class="detail-close" onclick="clearSelection()" aria-label="Close detail panel" title="Close (or click empty canvas)">&#10005;</button>
+    </div>
     <div class="props-body" id="props-body">
       <div class="empty-state">Click a table, collection, or connector to inspect.<br><br>Right-click any entity for actions, or press <kbd>?</kbd> for shortcuts.</div>
     </div>
@@ -1110,6 +1247,7 @@ let graphDataCache = null;
 let editState = { collections: {}, edges: [], typeOverrides: {}, keySeparator: '_', sourceSchema: 'public', defaultWorkers: 1, defaultBatchSize: 10000 };
 let tablesInfo = [];
 let collapsedTables = new Set();
+let collapsedCollections = new Set();
 let selectedConnector = null;
 let selectedCardKey = null;
 let dragState = null;
@@ -1153,7 +1291,10 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 });
 
 function setActionButtons(enabled) {
-  ['btn-validate','btn-save','btn-automap','btn-suggest-fks','btn-diff','btn-export','btn-history','btn-load','btn-project-menu'].forEach(id => {
+  // Project-scoped actions now live in the Actions overflow menu (P5g.2),
+  // which reads `currentProject` directly; only the inline primary buttons and
+  // the project chip need their disabled state toggled here.
+  ['btn-save','btn-load'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = !enabled;
   });
@@ -1660,8 +1801,6 @@ function openNewProjectForm() {
         toast('Project created', 'success');
         closeFloatingCard('new-project');
         await loadProjects();
-        const sel = document.getElementById('project-select');
-        sel.value = name;
         selectProject(name);
       }},
     ],
@@ -1747,6 +1886,130 @@ function openProjectMenu(ev) {
   openContextMenu(_menuProject(currentProject), x, y, { header: 'Project: ' + currentProject });
 }
 
+// Overflow "Actions" menu (P5g.2) — collapses the dense toolbar row into a
+// single menu. Project-scoped actions are disabled until a project is open;
+// Settings is always available.
+function openActionsMenu(ev) {
+  if (ev) ev.preventDefault();
+  const dis = !currentProject;
+  const items = [
+    { label: 'Validate', icon: '\u2713', shortcut: '\u2318\u21E7V', disabled: dis,
+      hint: 'Check the current mapping for errors and warnings without saving.',
+      onClick: validateMapping },
+    { label: 'Auto-Map', icon: '\u26A1', shortcut: 'a', disabled: dis,
+      hint: 'Generate default mappings for every source table from column-name and primary-key heuristics. Existing manual edits are preserved.',
+      onClick: autoMap },
+    { label: 'Suggest FKs', icon: '\u2197', shortcut: 'i', disabled: dis,
+      hint: 'Scan the source schema for likely foreign keys (by name and value overlap) and propose new edges to accept or dismiss.',
+      onClick: suggestFks },
+    { label: 'Diff', icon: '\u00B1', shortcut: '\u2318D', disabled: dis,
+      hint: 'Show what changed in the mapping versus the last saved version.',
+      onClick: showDiff },
+    { label: 'Export YAML', icon: '\u2913', disabled: dis,
+      hint: 'Export the current mapping configuration as a YAML file you can copy or download.',
+      onClick: exportYaml },
+    { label: 'Load history', icon: '\u21BB', disabled: dis,
+      hint: 'View past load runs for this project with row counts, errors, and status.',
+      onClick: showHistory },
+    '-',
+    { label: 'Settings', icon: '\u2699',
+      hint: 'Configure ingestion settings: parallel workers, batch size, duplicate handling, and drop-collections.',
+      onClick: showSettings },
+  ];
+  const anchor = document.getElementById('btn-actions');
+  let x = ev ? ev.clientX : 200, y = ev ? ev.clientY : 80;
+  if (anchor) {
+    const r = anchor.getBoundingClientRect();
+    x = r.left; y = r.bottom + 2;
+  }
+  openContextMenu(items, x, y, { header: 'Actions' });
+}
+
+// ── Left explorer (Projects / Sources / Targets), P5g.3 + P5g.6 ─────
+function setExplorerOpen(open) {
+  const main = document.querySelector('.main');
+  if (!main) return;
+  main.classList.toggle('explorer-collapsed', !open);
+  const btn = document.getElementById('btn-explorer-toggle');
+  if (btn) {
+    btn.classList.toggle('active', open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  try { localStorage.setItem('r2g.explorerOpen', open ? '1' : '0'); } catch (e) { /* ignore */ }
+  scheduleRedraw();
+}
+function toggleExplorer(force) {
+  const main = document.querySelector('.main');
+  const open = !main.classList.contains('explorer-collapsed');
+  setExplorerOpen(typeof force === 'boolean' ? force : !open);
+}
+function toggleExplorerSection(id) {
+  const sec = document.getElementById(id);
+  if (!sec) return;
+  sec.classList.toggle('collapsed');
+  try { localStorage.setItem('r2g.exp.' + id, sec.classList.contains('collapsed') ? '1' : '0'); }
+  catch (e) { /* ignore */ }
+}
+function initExplorer() {
+  try {
+    const open = localStorage.getItem('r2g.explorerOpen');
+    setExplorerOpen(open === null ? true : open === '1');
+    ['exp-projects', 'exp-sources', 'exp-targets'].forEach(id => {
+      const v = localStorage.getItem('r2g.exp.' + id);
+      if (v !== null) {
+        const sec = document.getElementById(id);
+        if (sec) sec.classList.toggle('collapsed', v === '1');
+      }
+    });
+  } catch (e) { setExplorerOpen(true); }
+}
+
+// ── On-demand right detail panel (P5g.4) ────────────────────────────
+function openDetailPanel() {
+  const el = document.getElementById('sidebar-right');
+  if (el && !el.classList.contains('open')) {
+    el.classList.add('open');
+    scheduleRedraw();
+  }
+}
+function closeDetailPanel() {
+  const el = document.getElementById('sidebar-right');
+  if (el && el.classList.contains('open')) {
+    el.classList.remove('open');
+    scheduleRedraw();
+  }
+}
+
+// ── Projects list in the explorer (replaces the toolbar dropdown) ────
+function setActiveProject(name) {
+  const label = document.getElementById('active-project-name');
+  if (label) label.textContent = name || 'No project';
+  document.querySelectorAll('#projects-panel .project-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.project === name);
+  });
+}
+function renderProjects() {
+  const panel = document.getElementById('projects-panel');
+  if (!panel) return;
+  const projects = window._projectsCache || [];
+  if (!projects.length) {
+    panel.innerHTML = '<div class="empty-state-cta">No projects yet.<br><button type="button" onclick="openNewProjectForm()">+ Create your first project</button></div>';
+    return;
+  }
+  panel.innerHTML = projects.map(p => {
+    const nm = _htmlEscape(p.name);
+    const disp = _htmlEscape(p.mapping_name || p.name);
+    const desc = _htmlEscape(p.mapping_description || '');
+    return `<div class="project-item${p.name === currentProject ? ' active' : ''}" data-project="${nm}" title="${desc}"
+        onclick="selectProject('${nm}')" oncontextmenu="event.preventDefault();_projectItemMenu(event,'${nm}')">
+      <span class="pi-icon">&#9670;</span><span class="pi-name">${disp}</span>
+    </div>`;
+  }).join('');
+}
+function _projectItemMenu(ev, name) {
+  openContextMenu(_menuProject(name), ev.clientX, ev.clientY, { header: 'Project: ' + name });
+}
+
 function openEditProjectForm(name) {
   const proj = (window._projectsCache || []).find(p => p.name === name) || {};
   const html = `
@@ -1799,8 +2062,7 @@ async function confirmDeleteProject(name) {
     toast(`Project '${name}' deleted`, 'success');
     if (currentProject === name) {
       currentProject = null;
-      const sel = document.getElementById('project-select');
-      if (sel) sel.value = '';
+      setActiveProject(null);
       setActionButtons(false);
     }
     await loadProjects();
@@ -1815,14 +2077,8 @@ async function loadProjects() {
   try {
     const projects = await apiFetch('/api/projects');
     window._projectsCache = projects;
-    const sel = document.getElementById('project-select');
-    sel.innerHTML = '<option value="">Select a project\u2026</option>';
-    projects.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.name;
-      opt.textContent = p.name;
-      sel.appendChild(opt);
-    });
+    renderProjects();
+    setActiveProject(currentProject);
     // Targets render before projects at startup; re-render so each database
     // node can show its linked project(s).
     if (window._targetsCache) renderTargets(window._targetsCache);
@@ -1831,12 +2087,9 @@ async function loadProjects() {
   }
 }
 
-document.getElementById('project-select').addEventListener('change', e => {
-  if (e.target.value) selectProject(e.target.value);
-});
-
 async function selectProject(name) {
   currentProject = name;
+  setActiveProject(name);
   for (const k of Object.keys(_exprSampleRowCache)) delete _exprSampleRowCache[k];
   setActionButtons(true);
   toast('Loading project ' + name + '\u2026', 'info');
@@ -1856,7 +2109,7 @@ async function selectProject(name) {
     };
 
     tablesInfo = data.tables || [];
-    collapsedTables = new Set();
+    loadDisclosure();
     renderMapper();
     clearSelection();
   } catch (e) {
@@ -1967,14 +2220,16 @@ function renderTargetPane() {
         props.push({ name: tgtName, source: f, type: 'field' });
       }
 
+      const isCollapsed = collapsedCollections.has(key);
       html += `
         <div class="target-card${selectedCardKey === 'tgt:'+key ? ' selected' : ''}" data-collection="${targetName}" data-key="${key}">
           <div class="target-card-header" onclick="onTargetCardClick('${key}')">
+            <span class="expand-icon ${isCollapsed ? '' : 'open'}">&#9654;</span>
             <div class="target-dot" data-collection="${targetName}"></div>
             <span class="coll-name">${escHtml(targetName)}</span>
             <span class="coll-count">${props.length}</span>
           </div>
-          <div class="target-card-body">
+          <div class="target-card-body${isCollapsed ? ' collapsed' : ''}" id="tgt-body-${key}">
             ${props.map(p => `
               <div class="target-prop-row" data-collection="${targetName}" data-prop="${p.name}" data-source="${p.source}">
                 <div class="target-prop-dot" data-collection="${targetName}" data-prop="${p.name}"></div>
@@ -2067,6 +2322,10 @@ function drawConnectors() {
       `.target-dot[data-collection="${targetColl}"]`, 'connector table-conn',
       { type: 'table', sourceTable, targetCollection: targetColl });
 
+    // Attribute->property connectors only exist when BOTH the source table and
+    // its mapped collection are expanded (progressive disclosure, P5g.7).
+    if (collapsedTables.has(sourceTable) || collapsedCollections.has(key)) continue;
+
     const tableInfo = tablesInfo.find(t => t.name === sourceTable);
     if (!tableInfo) continue;
     const excluded = new Set(coll.excludeFields || []);
@@ -2107,7 +2366,7 @@ function drawConnectors() {
   for (const edge of editState.edges) {
     const fromEntry = Object.entries(editState.collections).find(
       ([k, c]) => (c.targetCollection || k) === edge.fromCollection);
-    if (fromEntry) {
+    if (fromEntry && !collapsedTables.has(fromEntry[1].sourceTable || fromEntry[0])) {
       const srcTable = fromEntry[1].sourceTable || fromEntry[0];
       const fromField = edge.fromField.split(',')[0].trim();
       drawOneConnector(svgEl, canvasRect,
@@ -2118,7 +2377,7 @@ function drawConnectors() {
     }
     const toEntry = Object.entries(editState.collections).find(
       ([k, c]) => (c.targetCollection || k) === edge.toCollection);
-    if (toEntry) {
+    if (toEntry && !collapsedTables.has(toEntry[1].sourceTable || toEntry[0])) {
       const srcTable = toEntry[1].sourceTable || toEntry[0];
       const toField = edge.toField.split(',')[0].trim();
       const pkCols = (tablesInfo.find(t => t.name === srcTable)?.columns || [])
@@ -2131,6 +2390,9 @@ function drawConnectors() {
         { type: 'edge', edgeCollection: edge.edgeCollection, direction: 'to' });
     }
   }
+
+  // Re-apply the pinned mapping highlight after paths are recreated (P5g.5).
+  applyPinnedHighlight();
 }
 
 function drawOneConnector(svgEl, canvasRect, srcSel, tgtSel, cls, data) {
@@ -2383,6 +2645,7 @@ function drawTargetGraphEdges() {
 function onSourceFkClick(fromTable, toTable, fk) {
   const header = document.getElementById('props-header');
   const body = document.getElementById('props-body');
+  openDetailPanel();
   header.textContent = 'FK Relationship';
   const cols = (fk.columns || [fk.column]).join(', ');
   const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
@@ -2420,25 +2683,37 @@ function onSourceCardClick(tableName) {
   if (body) body.classList.toggle('collapsed');
   const icon = document.querySelector(`.source-card[data-table="${tableName}"] .expand-icon`);
   if (icon) icon.classList.toggle('open');
+  saveDisclosure();
 
   selectedCardKey = 'src:' + tableName;
   document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
   const card = document.querySelector(`.source-card[data-table="${tableName}"]`);
   if (card) card.classList.add('selected');
+  openDetailPanel();
   showSourceProps(tableName);
   deselectConnector();
   scheduleRedraw();
 }
 
 function onTargetCardClick(collKey) {
-  selectedCardKey = 'tgt:' + collKey;
-  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
+  if (collapsedCollections.has(collKey)) collapsedCollections.delete(collKey);
+  else collapsedCollections.add(collKey);
+  const body = document.getElementById('tgt-body-' + collKey);
+  if (body) body.classList.toggle('collapsed');
   const coll = editState.collections[collKey];
   const targetName = coll?.targetCollection || collKey;
+  const icon = document.querySelector(`.target-card[data-key="${collKey}"] .expand-icon`);
+  if (icon) icon.classList.toggle('open');
+  saveDisclosure();
+
+  selectedCardKey = 'tgt:' + collKey;
+  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
   const card = document.querySelector(`.target-card[data-collection="${targetName}"]`);
   if (card) card.classList.add('selected');
+  openDetailPanel();
   showTargetProps(collKey);
   deselectConnector();
+  scheduleRedraw();
 }
 
 function onEdgeCardClick(edgeColl) {
@@ -2446,6 +2721,7 @@ function onEdgeCardClick(edgeColl) {
   document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
   const card = document.querySelector(`.target-card[data-edge="${edgeColl}"]`);
   if (card) card.classList.add('selected');
+  openDetailPanel();
   showEdgeProps(edgeColl);
   deselectConnector();
 }
@@ -2454,6 +2730,7 @@ function onConnectorClick(pathEl) {
   deselectConnector();
   selectedConnector = pathEl;
   pathEl.classList.add('selected');
+  openDetailPanel();
   showConnectorProps(pathEl);
 }
 
@@ -2471,6 +2748,7 @@ function clearSelection() {
   document.getElementById('props-header').textContent = 'Properties';
   document.getElementById('props-body').innerHTML =
     '<div class="empty-state">Click a table, collection, or connector to inspect.<br><br>Right-click any entity for actions, or press <kbd>?</kbd> for shortcuts.</div>';
+  closeDetailPanel();
 }
 
 // ── Properties panel ──
@@ -4091,6 +4369,25 @@ function openContextMenu(items, x, y, opts = {}) {
 }
 
 // ── Menu hint tooltips (configurable, default on) ──
+// ── Theme (light default + dark toggle, P5g.1) ──────────────────────
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light';
+}
+function applyTheme(theme) {
+  const t = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('r2g.theme', t); } catch (e) { /* ignore */ }
+  const btn = document.getElementById('btn-theme');
+  if (btn) {
+    // Show the icon for the mode you'd switch TO.
+    btn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;'; // ☀ when dark, ☾ when light
+    btn.setAttribute('aria-label', t === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+  }
+}
+function toggleTheme() {
+  applyTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+}
+
 function menuHintsEnabled() {
   return localStorage.getItem('r2g.menuHints') !== 'off';
 }
@@ -4761,10 +5058,156 @@ function copyToClipboard(text) {
   );
 }
 
+// ── Progressive disclosure (P5g.7) ──────────────────────────────────
+// Default: every source table and target collection starts collapsed so the
+// canvas shows only table->collection mappings. Expanding a table (and its
+// mapped collection) reveals attribute->property connectors. Per-project state
+// is persisted in localStorage.
+function _disclosureKey() { return 'r2g.disclosure.' + (currentProject || '_'); }
+function saveDisclosure() {
+  try {
+    const t = (tablesInfo || []).map(x => x.name).filter(n => !collapsedTables.has(n));
+    const c = Object.keys(editState.collections).filter(k => !collapsedCollections.has(k));
+    localStorage.setItem(_disclosureKey(), JSON.stringify({ t, c }));
+  } catch (e) { /* ignore */ }
+}
+function loadDisclosure() {
+  collapsedTables = new Set((tablesInfo || []).map(t => t.name));
+  collapsedCollections = new Set(Object.keys(editState.collections));
+  try {
+    const raw = localStorage.getItem(_disclosureKey());
+    if (raw) {
+      const o = JSON.parse(raw);
+      (o.t || []).forEach(n => collapsedTables.delete(n));
+      (o.c || []).forEach(k => collapsedCollections.delete(k));
+    }
+  } catch (e) { /* defaults already set */ }
+}
+
 function expandAllTables(open) {
   if (open) collapsedTables.clear();
   else (tablesInfo || []).forEach(t => collapsedTables.add(t.name));
+  saveDisclosure();
   renderMapper();
+}
+function expandAllCollections(open) {
+  if (open) collapsedCollections.clear();
+  else Object.keys(editState.collections).forEach(k => collapsedCollections.add(k));
+  saveDisclosure();
+  renderMapper();
+}
+function expandAll(open) {
+  if (open) { collapsedTables.clear(); collapsedCollections.clear(); }
+  else {
+    (tablesInfo || []).forEach(t => collapsedTables.add(t.name));
+    Object.keys(editState.collections).forEach(k => collapsedCollections.add(k));
+  }
+  saveDisclosure();
+  renderMapper();
+}
+
+// ── Bidirectional source <-> target mapping highlight (P5g.5) ───────
+let _pinnedHL = null;
+
+function _hlForSource(table, col) {
+  const entry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === table);
+  const targetCollection = entry ? (entry[1].targetCollection || entry[0]) : null;
+  return { sourceTable: table, targetCollection, sourceCol: col || null };
+}
+function _hlForTarget(collKey, prop) {
+  const c = editState.collections[collKey] || {};
+  return { sourceTable: c.sourceTable || collKey, targetCollection: c.targetCollection || collKey, targetProp: prop || null };
+}
+function _hlForEdge(edgeColl) {
+  return { edgeCollection: edgeColl };
+}
+
+function computeHLForSelection() {
+  if (!selectedCardKey) return null;
+  if (selectedCardKey.startsWith('src:')) return _hlForSource(selectedCardKey.slice(4));
+  if (selectedCardKey.startsWith('tgt:')) return _hlForTarget(selectedCardKey.slice(4));
+  if (selectedCardKey.startsWith('edge:')) return _hlForEdge(selectedCardKey.slice(5));
+  return null;
+}
+
+function renderHighlight(hl) {
+  document.querySelectorAll('.connector.hl, .func-circle.hl').forEach(e => e.classList.remove('hl'));
+  document.querySelectorAll('.source-card.hl, .target-card.hl, .source-col-row.hl, .target-prop-row.hl')
+    .forEach(e => e.classList.remove('hl'));
+  if (!hl) return;
+
+  if (hl.sourceTable) document.querySelector(`.source-card[data-table="${hl.sourceTable}"]`)?.classList.add('hl');
+  if (hl.targetCollection) document.querySelector(`.target-card[data-collection="${hl.targetCollection}"]`)?.classList.add('hl');
+  if (hl.edgeCollection) document.querySelector(`.target-card[data-edge="${hl.edgeCollection}"]`)?.classList.add('hl');
+  if (hl.sourceCol) document.querySelector(`.source-col-row[data-table="${hl.sourceTable}"][data-col="${hl.sourceCol}"]`)?.classList.add('hl');
+
+  const matchedTargetProps = new Set();
+  const matchedSourceCols = new Set();
+  document.querySelectorAll('#connector-svg path.connector, #connector-svg g.func-circle').forEach(p => {
+    const d = p.dataset;
+    let match = false;
+    if (hl.edgeCollection) {
+      match = d.edgeCollection === hl.edgeCollection;
+    } else if (hl.sourceCol) {
+      match = d.sourceTable === hl.sourceTable && d.sourceCol === hl.sourceCol;
+    } else if (hl.targetProp) {
+      match = d.targetCollection === hl.targetCollection && d.targetProp === hl.targetProp;
+    } else if (hl.sourceTable && hl.targetCollection) {
+      match = (d.sourceTable === hl.sourceTable) || (d.targetCollection === hl.targetCollection);
+    } else if (hl.targetCollection) {
+      match = d.targetCollection === hl.targetCollection;
+    } else if (hl.sourceTable) {
+      match = d.sourceTable === hl.sourceTable;
+    }
+    if (match) {
+      p.classList.add('hl');
+      if (d.targetProp) matchedTargetProps.add(d.targetProp);
+      if (d.sourceCol) matchedSourceCols.add(d.sourceCol);
+    }
+  });
+
+  // Light up the specific rows on either end of the matched connectors.
+  if (hl.targetCollection) {
+    matchedTargetProps.forEach(tp =>
+      document.querySelector(`.target-prop-row[data-collection="${hl.targetCollection}"][data-prop="${tp}"]`)?.classList.add('hl'));
+  }
+  if (hl.sourceTable) {
+    matchedSourceCols.forEach(sc =>
+      document.querySelector(`.source-col-row[data-table="${hl.sourceTable}"][data-col="${sc}"]`)?.classList.add('hl'));
+  }
+}
+
+function applyPinnedHighlight() {
+  _pinnedHL = computeHLForSelection();
+  renderHighlight(_pinnedHL);
+}
+
+// Transient hover highlight; restores the pinned highlight on leave.
+function _onMapperHover(e) {
+  const colRow = e.target.closest('.source-col-row');
+  if (colRow) { renderHighlight(_hlForSource(colRow.dataset.table, colRow.dataset.col)); return; }
+  const srcCard = e.target.closest('.source-card');
+  if (srcCard) { renderHighlight(_hlForSource(srcCard.dataset.table)); return; }
+  const propRow = e.target.closest('.target-prop-row');
+  if (propRow && propRow.dataset.collection) {
+    const entry = getCollectionEntry(propRow.dataset.collection);
+    if (entry) renderHighlight(_hlForTarget(entry[0], propRow.dataset.prop));
+    return;
+  }
+  const edgeCard = e.target.closest('.target-card.edge-card');
+  if (edgeCard) { renderHighlight(_hlForEdge(edgeCard.dataset.edge)); return; }
+  const tgtCard = e.target.closest('.target-card');
+  if (tgtCard && tgtCard.dataset.key) { renderHighlight(_hlForTarget(tgtCard.dataset.key)); return; }
+}
+function _onMapperLeave() { renderHighlight(_pinnedHL); }
+
+function initMappingHighlight() {
+  ['mapper-source-pane', 'mapper-target-pane'].forEach(id => {
+    const pane = document.getElementById(id);
+    if (!pane) return;
+    pane.addEventListener('mouseover', _onMapperHover);
+    pane.addEventListener('mouseleave', _onMapperLeave);
+  });
 }
 
 function showSourceFkSummary(tableName) {
@@ -5843,7 +6286,7 @@ selectProject = async function (name) {
 // Draggable frame splitters — resize the fixed-width frame adjacent to each
 // handle; the flex canvas absorbs the remaining space. Widths persist locally.
 function initResizers() {
-  const RESTORE = ['sidebar-left', 'mapper-source-pane', 'mapper-target-pane', 'sidebar-right'];
+  const RESTORE = ['explorer-drawer', 'mapper-source-pane', 'mapper-target-pane'];
   RESTORE.forEach(id => {
     try {
       const w = localStorage.getItem('r2g_w_' + id);
@@ -5893,6 +6336,9 @@ function initResizers() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  applyTheme(currentTheme());
+  initExplorer();
+  initMappingHighlight();
   loadSources();
   loadTargets();
   loadProjects();

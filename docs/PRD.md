@@ -484,6 +484,41 @@ After any rename the named graph is rebuilt so its edge definitions reference cu
 
 ---
 
+### Phase 5g: Post-demo UX refinements -- Planned
+
+Captured from the first stakeholder demo (June 2026). The studio works but the
+layout is heavy: too much permanent chrome, too many always-visible toolbar
+buttons, and the relationship between a source element and its mapped target is
+not visually obvious. This phase makes the canvas the focus, moves supporting
+surfaces on-demand, and adds progressive disclosure so the mapping reads at the
+level of detail the user wants. All work stays within the single `/workspace`
+shell (no new routes), uses overlay / slide-out panels and context menus, and
+preserves graph layout on lens-only changes per the UI architecture rules.
+
+| ID | Requirement | Description | Status |
+| :--- | :--- | :--- | :--- |
+| **P5g.1** | **Light mode default + theme toggle** | Ship a light theme as the default and a one-click toggle to dark mode. Drive both from the existing CSS custom properties via a `[data-theme]` attribute on `<html>`; persist the choice in `localStorage` (`r2g.theme`) and honor `prefers-color-scheme` on first run. A toggle control lives in the top bar (or the consolidated menu, P5g.2) with an accessible label and keyboard operability. | Planned |
+| **P5g.2** | **Simplified top bar (action overflow menu)** | The toolbar action row (Validate, Save, Auto-Map, Suggest FKs, Diff, Export YAML, History, Settings, Help, Load) is too dense. Keep only the highest-frequency primary actions inline (e.g. Save, Load, and the active-lens chip) and collapse the rest into an overflow / "Actions" menu (kebab) that reuses the existing context-menu primitive and hint system. Keyboard shortcuts and `aria-label`s are retained. | Planned |
+| **P5g.3** | **On-demand Sources & Targets** | The left Sources/Targets sidebar is always consuming width. Replace the permanent panel with an on-demand surface: a slide-out drawer (or popover) opened from a toolbar/explorer affordance, dismissible with Esc and click-outside. Source/Target CRUD and right-click actions (P5e.8.1/8.2) move into the drawer unchanged. Default state is collapsed. | Planned |
+| **P5g.4** | **On-demand detail (Properties) panel** | The right-hand Properties / collection-detail panel likewise becomes on-demand: it appears as a slide-in or floating overlay when an entity is selected (reusing the floating-card primitive, P5e.1.4) and is otherwise hidden, returning that real estate to the canvas. Minimize / dismiss supported. | Planned |
+| **P5g.5** | **Bidirectional mapping highlight** | Selecting a source table or column highlights the full mapping path to its target collection / property (connector + opposite-side card/row), and selecting a target collection or property highlights the path back to the source table / attribute. Hover gives a transient highlight; click pins it. Built on the existing `data-table` / `data-col` / `data-collection` / `data-prop` attributes and the `.connector.selected` styling — paint-only, no relayout. | Planned |
+| **P5g.6** | **Project explorer (IDE-style)** | Replace the awkward project dropdown + kebab menu with an optional left explorer panel listing available projects (grouped by source/target as useful), with the active project highlighted. Selecting opens it on the canvas; right-click exposes the existing project actions (edit / delete / copy name, P5e.8.3). Collapsible so it does not compete with the canvas. May share the slide-out shell with Sources/Targets (P5g.3) as an "explorer" with sections. | Planned |
+| **P5g.7** | **Progressive disclosure / mapping detail filter** | Control the level of mapping detail shown. Default: source tables and target collections render **collapsed**, showing only table→collection mappings. Expanding a source table reveals its attributes and, when the matching collection is also expanded, the attribute→property connectors; collapsing hides them again. Each source table and each target collection has an independent expand/collapse affordance. Connectors are drawn per visible level (table-conn always; col-conn only when both ends are expanded). Optionally complemented by explicit filters (e.g. show only unmapped, only edges). State persisted per project. | Planned |
+
+#### Sequencing & dependencies
+
+- P5g.1 (theme) and P5g.2 (top-bar overflow) are independent, low-risk, and unblock a cleaner shell first.
+- P5g.7 (progressive disclosure) changes the connector-drawing logic (`renderSourcePane` / `renderTargetPane` / `drawConnectors`) and is a prerequisite for P5g.5 (highlight) reading cleanly, since highlight targets must be visible.
+- P5g.3 / P5g.4 / P5g.6 share a slide-out/overlay shell; build the shell once and host Sources, Targets, and the project explorer as sections.
+
+#### Out of scope (V1 of Phase 5g)
+
+- A full dockable / rearrangeable panel system (drag panels between zones).
+- Multi-project tabs or split canvases.
+- Server-side persistence of layout preferences (V1 uses `localStorage`).
+
+---
+
 ## 6. Future considerations (Phase 7+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
@@ -530,6 +565,7 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **CSV value-overlap FK sampling** | **June 2026** | Extended P6.6 FK inference with `CsvValueSampler` in `src/r2g/fk_inference.py`: reads the two candidate CSV files with Polars (type inference disabled so values compare as raw text, avoiding int/float token mismatches), bounded by a row limit, and returns the fraction of distinct local values present in the foreign column — the same statistic `PostgresValueSampler` computes via `LEFT JOIN`. Resilient (missing file / unreadable column → `None`). Wired into `r2g source infer-fks --sample` and `POST /api/sources/{name}/infer-fks` for CSV sources; Snowflake still falls back to name-only. 9 new tests in `tests/test_fk_inference.py`. 992 passing, 6 skipped. |
 | **Configurable hints — menus + buttons (Phase 5e.7.4)** | **June 2026** | Context-menu items gained optional explanatory `hint` tooltips (ⓘ marker, shown on hover / keyboard focus, `role="tooltip"`, viewport-clamped) rendered centrally in `openContextMenu`. The same styled tooltip surface was extended to toolbar / panel buttons via `data-hint` + a delegated `mouseover` / `focusin` handler (placed below the button, replacing the old native `title` tooltips; `aria-label`s retained). A single "Show menu hints" toggle (default on, `localStorage` `r2g.menuHints`) in the `?` help overlay controls both. Static-asset-only change to `src/r2g/ui/static/index.html`. |
 | **Naming conventions & rename change-management (Phase 5f)** | **June 2026** | Phase 5f added and implemented. New `src/r2g/naming.py` (`split_identifier` / `convert_identifier` / `apply_naming_convention`) and `NamingConvention` model on `MappingConfig`; `POST /api/projects/{name}/apply-naming` + canvas "Apply naming convention…" form (PascalCase collections, camelCase properties/edges by default). Rename change-management: `Project.loaded_mapping` tracking via `CatalogManager.set_loaded_mapping`; identity-based rename detection in `diff_mappings` (source-table identity for collections, relationship identity for edges) emitting parameterized `ReloadAction`s; hardened `SelectiveReloader` (in-place collection/edge rename, edge reload-from-source, parameter-bound property-rename AQL, named-graph rebuild, idempotency + `_system` guards); `GET /api/projects/{name}/migration-plan` + `POST /api/projects/{name}/migrate`; save-time migration prompt overlay. Reserved-attribute protection (`RESERVED_ATTRIBUTES`) across naming, diff, executor, and `validate_config`. Fixed latent edge `_from`/`_to` + named-graph resolution to use target collection names (`ConfigManager.graph_edge_definitions`, `EdgeTransformer` `from_name`/`to_name`). New `tests/test_naming.py`; expanded diff / executor / config / UI-API tests. 983 passing, 6 skipped. |
+| **Post-demo UX feedback (Phase 5g)** | **June 2026** | Added Phase 5g (Planned) capturing first-demo feedback: light-mode default + dark toggle (P5g.1), simplified top bar via an action overflow menu (P5g.2), on-demand Sources/Targets (P5g.3) and Properties/detail (P5g.4) surfaces instead of permanent sidebars, bidirectional source↔target mapping highlight (P5g.5), an IDE-style project explorer (P5g.6), and progressive-disclosure mapping detail with per-table / per-collection expand/collapse and a detail filter (P5g.7). Documentation-only; implementation pending review. |
 | **Snowflake dump + streaming (Phase 6 close-out)** | **April 2026** | P6.3 + P6.4 closed, completing Phase 6. New `r2g.connectors.session.SourceSession` Protocol (`count_rows`, `stream_rows`, `dump_table_to_csv`, `close`) plus concrete `PostgresSession` (`REPEATABLE READ` + server-side cursor + `COPY TO STDOUT` fast path) and `SnowflakeSession` (`BEGIN`/`COMMIT` snapshot + `cursor.fetchmany` streaming + `csv`-module dump). `SourceConnector` gains an `open_session()` method; `StreamingPipeline` is now fully source-agnostic and opens one session per worker (same consistent-snapshot semantics on both backends). `r2g stream --source <name>` resolves a catalog source by `source_type`; the legacy `--pg-conn` still works. New `r2g source dump <name>` subcommand replaces `r2g dump-tables` for catalog-aware dumps. UI `POST /api/projects/{name}/load` dispatches through `create_source_connector` with a 501 + install hint when the Snowflake extra is missing. Backward-compat constructor shim (`StreamingPipeline(pg_conn_string=…)`) keeps existing call sites working. 845 tests passing, 26 new. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
