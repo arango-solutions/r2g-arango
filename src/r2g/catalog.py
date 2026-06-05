@@ -75,6 +75,11 @@ class Project(BaseModel):
     target_name: str | None = None
     mapping_name: str = ""
     mapping_description: str = ""
+    # Snapshot of the mapping config as of the last successful load, used to
+    # compute change-management migrations against the live database. ``None``
+    # until the project has been loaded at least once.
+    loaded_mapping: dict[str, Any] | None = None
+    loaded_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -339,6 +344,24 @@ class CatalogManager:
         catalog.projects[name].updated_at = _now()
         self._save(catalog)
 
+    def delete_project(self, name: str) -> bool:
+        """Delete a project and cascade-remove its load history.
+
+        The on-disk mapping config (``mapping_config_path``) is intentionally
+        left in place; only the catalog record and associated load records are
+        removed. Returns ``False`` if the project does not exist.
+        """
+        catalog = self._load()
+        if name not in catalog.projects:
+            return False
+        del catalog.projects[name]
+        removed = [r for r in catalog.load_history if r.project_name == name]
+        if removed:
+            catalog.load_history = [r for r in catalog.load_history if r.project_name != name]
+        self._save(catalog)
+        logger.info("project_deleted", name=name, load_records_removed=len(removed))
+        return True
+
     # ── Load history ─────────────────────────────────────────────────
 
     def start_load(self, project_name: str, load_type: str, mapping_hash: str = "") -> LoadRecord:
@@ -379,6 +402,21 @@ class CatalogManager:
                 self._save(catalog)
                 return record
         raise ValueError(f"Load record '{load_id}' not found")
+
+    def set_loaded_mapping(self, project_name: str, mapping: dict[str, Any]) -> None:
+        """Record the mapping config that is now live in the target database.
+
+        Called after a successful (full or selective) load so future migrations
+        can diff the live state against subsequent mapping edits.
+        """
+        catalog = self._load()
+        project = catalog.projects.get(project_name)
+        if project is None:
+            return
+        project.loaded_mapping = mapping
+        project.loaded_at = _now()
+        project.updated_at = _now()
+        self._save(catalog)
 
     def get_history(self, project_name: str | None = None, limit: int = 20) -> list[LoadRecord]:
         catalog = self._load()

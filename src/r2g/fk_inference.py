@@ -731,3 +731,113 @@ class PostgresValueSampler:
             except Exception:  # noqa: BLE001
                 pass
             return None
+
+
+# ── Concrete CSV value sampler ──────────────────────────────────────
+
+
+class CsvValueSampler:
+    """Sampler that computes FK value-overlap ratios across CSV files.
+
+    A CSV source is a directory of files (one per table, filename stem =
+    table name). For each ``(local_column, foreign_column)`` pair we read
+    just those two columns (bounded by ``limit`` rows) and return the
+    fraction of distinct local values that also appear in the foreign
+    column — the same statistic :class:`PostgresValueSampler` computes
+    with a ``LEFT JOIN``.
+
+    Values are compared as *raw text* (columns are read with type
+    inference disabled) so that ``1`` and ``1.0`` — which Polars might
+    otherwise type as int on one side and float on the other — still
+    match on their textual token, which is what actually joins in the
+    file.
+
+    The sampler is resilient: any read failure (missing file, unreadable
+    column, Polars error) is logged and surfaced as ``None`` so the
+    name-based score still wins. ``close`` is a no-op; the context-manager
+    protocol is provided for parity with :class:`PostgresValueSampler`.
+    """
+
+    _CSV_EXTENSIONS = (".csv", ".tsv", ".txt")
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        delimiter: str = ",",
+        has_header: bool = True,
+        limit: int = 10_000,
+    ) -> None:
+        from pathlib import Path
+
+        self.connection_string = connection_string
+        self.delimiter = delimiter
+        self.has_header = has_header
+        self.limit = max(100, int(limit))
+        self.directory = Path(connection_string).expanduser()
+
+    def close(self) -> None:
+        return None
+
+    def __enter__(self) -> "CsvValueSampler":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _resolve(self, table: str):
+        for ext in self._CSV_EXTENSIONS:
+            candidate = self.directory / f"{table}{ext}"
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _distinct_text_values(self, table: str, column: str) -> Optional[set[str]]:
+        """Return the set of distinct, non-empty textual values for a column,
+        or ``None`` if the file/column could not be read."""
+        import polars as pl
+
+        path = self._resolve(table)
+        if path is None:
+            return None
+        try:
+            frame = pl.read_csv(
+                str(path),
+                separator=self.delimiter,
+                has_header=self.has_header,
+                columns=[column],
+                n_rows=self.limit,
+                infer_schema_length=0,  # read everything as Utf8 (raw text)
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                "csv_fk_sampler_read_failed",
+                table=table,
+                column=column,
+                error=str(err),
+            )
+            return None
+        if not frame.columns:
+            return None
+        series = frame.get_column(frame.columns[0])
+        return {
+            v for v in series.to_list() if v is not None and str(v) != ""
+        }
+
+    def __call__(
+        self,
+        local_table: str,
+        local_column: str,
+        foreign_table: str,
+        foreign_column: str,
+    ) -> SamplerResult:
+        """Return the fraction of distinct local values present in the
+        foreign column, or ``None`` if either side could not be read."""
+        local_vals = self._distinct_text_values(local_table, local_column)
+        if not local_vals:
+            return None
+        foreign_vals = self._distinct_text_values(foreign_table, foreign_column)
+        if foreign_vals is None:
+            return None
+        overlap = len(local_vals & foreign_vals) / len(local_vals)
+        return float(overlap)

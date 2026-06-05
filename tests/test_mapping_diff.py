@@ -127,20 +127,13 @@ class TestCollectionChanges:
 
     def test_collection_renamed(self, minimal_schema):
         old = _base_config()
+        # Only the target_collection display name changes; edges keep their
+        # source-table keys (the real invariant the pipeline relies on).
         new_collections = {
             "users": CollectionMapping(source_table="users", target_collection="app_users"),
             "orders": CollectionMapping(source_table="orders", target_collection="orders"),
         }
-        new_edges = [
-            EdgeDefinition(
-                edge_collection="user_orders",
-                from_collection="app_users",
-                to_collection="orders",
-                from_field="id",
-                to_field="user_id",
-            ),
-        ]
-        new = _base_config(collections=new_collections, edges=new_edges)
+        new = _base_config(collections=new_collections)
         plan = diff_mappings(old, new, minimal_schema)
 
         renamed = [c for c in plan.changes if c.change_type == "collection_renamed"]
@@ -150,10 +143,15 @@ class TestCollectionChanges:
 
         rename_actions = [a for a in plan.actions if a.action_type == "rename_collection"]
         assert len(rename_actions) == 1
+        assert rename_actions[0].params == {"old_name": "users", "new_name": "app_users"}
 
-        aql_actions = [a for a in plan.actions if a.action_type == "aql_update" and a.collection == "user_orders"]
-        assert len(aql_actions) == 1
-        assert "SUBSTITUTE" in aql_actions[0].aql_query
+        # The edge that references the renamed collection is reloaded so its
+        # _from/_to are rebuilt with the new name.
+        reload_edges = [a for a in plan.actions if a.action_type == "reload_edge" and a.collection == "user_orders"]
+        assert len(reload_edges) == 1
+
+        # A rename invalidates the named graph, so it is rebuilt.
+        assert any(a.action_type == "rebuild_graph" for a in plan.actions)
 
     def test_exclude_fields_changed(self, minimal_schema):
         old_collections = {
@@ -265,6 +263,81 @@ class TestFieldMappingChanges:
         aql = [a for a in plan.actions if a.action_type == "aql_update" and a.collection == "users"]
         assert len(aql) == 1
         assert "UNSET" in aql[0].aql_query
+
+
+class TestNamingConventionRenames:
+    def test_multiple_property_renames_not_deduplicated(self, minimal_schema):
+        """Re-casing several columns in one collection must yield one action each."""
+        old = _base_config()
+        new_collections = {
+            "users": CollectionMapping(
+                source_table="users",
+                target_collection="users",
+                field_mappings={"id": "userId", "name": "userName"},
+            ),
+            "orders": _base_config().collections["orders"],
+        }
+        new = _base_config(collections=new_collections)
+        plan = diff_mappings(old, new, minimal_schema)
+
+        renames = [a for a in plan.actions if a.action_type == "aql_update" and a.collection == "users"]
+        assert len(renames) == 2
+        pairs = {(a.params["old_name"], a.params["new_name"]) for a in renames}
+        assert pairs == {("id", "userId"), ("name", "userName")}
+        for a in renames:
+            assert "UNSET" in a.aql_query and "@new_name" in a.aql_query
+
+    def test_reserved_attribute_rename_is_skipped(self, minimal_schema):
+        """A field_mapping targeting a system attribute must not produce an action."""
+        old_collections = {
+            "users": CollectionMapping(source_table="users", target_collection="users"),
+            "orders": _base_config().collections["orders"],
+        }
+        new_collections = {
+            "users": CollectionMapping(source_table="users", target_collection="users", field_mappings={"id": "_key"}),
+            "orders": _base_config().collections["orders"],
+        }
+        plan = diff_mappings(_base_config(collections=old_collections), _base_config(collections=new_collections), minimal_schema)
+        renames = [a for a in plan.actions if a.action_type == "aql_update"]
+        assert renames == []
+
+    def test_field_mapping_changed_detected(self, minimal_schema):
+        old_collections = {
+            "users": CollectionMapping(source_table="users", target_collection="users", field_mappings={"email": "mail"}),
+            "orders": _base_config().collections["orders"],
+        }
+        new_collections = {
+            "users": CollectionMapping(source_table="users", target_collection="users", field_mappings={"email": "emailAddress"}),
+            "orders": _base_config().collections["orders"],
+        }
+        plan = diff_mappings(_base_config(collections=old_collections), _base_config(collections=new_collections), minimal_schema)
+        changed = [c for c in plan.changes if c.change_type == "field_mapping_changed"]
+        assert len(changed) == 1
+        action = [a for a in plan.actions if a.action_type == "aql_update"][0]
+        assert action.params == {"old_name": "mail", "new_name": "emailAddress"}
+
+    def test_edge_collection_renamed_in_place(self, minimal_schema):
+        old = _base_config()
+        new_edges = [
+            EdgeDefinition(
+                edge_collection="userOrders",  # renamed; same relationship
+                from_collection="users",
+                to_collection="orders",
+                from_field="id",
+                to_field="user_id",
+            ),
+        ]
+        new = _base_config(edges=new_edges)
+        plan = diff_mappings(old, new, minimal_schema)
+
+        renamed = [c for c in plan.changes if c.change_type == "edge_renamed"]
+        assert len(renamed) == 1
+        assert renamed[0].details == {"old_name": "user_orders", "new_name": "userOrders"}
+        rename_actions = [a for a in plan.actions if a.action_type == "rename_collection"]
+        assert rename_actions[0].params == {"old_name": "user_orders", "new_name": "userOrders"}
+        # Not treated as add/remove
+        assert not [c for c in plan.changes if c.change_type in ("edge_added", "edge_removed")]
+        assert any(a.action_type == "rebuild_graph" for a in plan.actions)
 
 
 class TestEdgeChanges:

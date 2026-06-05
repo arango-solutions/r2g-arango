@@ -57,6 +57,7 @@ def seeded_client(catalog_dir, schema, mapping_path):
         name="demo",
         source_name="pg_src",
         mapping_config_path=mapping_path,
+        arango_database="demo_graph",
     )
 
     app = create_app(catalog_dir=catalog_dir)
@@ -141,6 +142,22 @@ class TestLoadEndpoint:
         resp = client.post("/api/projects/proj_bad/load", json={})
         assert resp.status_code == 400
         assert "validation_errors" in resp.json()["detail"]
+
+    def test_load_into_system_database_is_refused(self, catalog_dir, schema, mapping_path):
+        from starlette.testclient import TestClient
+
+        mgr = CatalogManager(catalog_dir)
+        mgr.add_source("sys_src", "postgresql", "postgresql://localhost/db")
+        mgr.create_snapshot("sys_src", schema)
+        mgr.create_project(
+            "sys_proj", "sys_src", mapping_path, arango_database="_system"
+        )
+
+        app = create_app(catalog_dir=catalog_dir)
+        client = TestClient(app)
+        resp = client.post("/api/projects/sys_proj/load", json={})
+        assert resp.status_code == 400
+        assert "_system" in resp.json()["detail"]
 
 
 class TestLoadStatusEndpoint:

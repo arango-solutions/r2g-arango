@@ -212,8 +212,21 @@ def transform_edges(
 
         reader = DumpReader(dump_file)
         out_path = Path(output_file)
+        target_by_source = {
+            cm.source_table: cm.target_collection
+            for cm in mapping.collections.values()
+        }
         transformers = [
-            (e, EdgeTransformer(e, table_def, key_separator=mapping.key_separator))
+            (
+                e,
+                EdgeTransformer(
+                    e,
+                    table_def,
+                    key_separator=mapping.key_separator,
+                    from_name=target_by_source.get(e.from_collection),
+                    to_name=target_by_source.get(e.to_collection),
+                ),
+            )
             for e in matching
         ]
 
@@ -347,10 +360,20 @@ def transform_all(
                 summary.append((target_coll, "document", n))
                 progress.advance(task_id)
 
+            target_by_source = {
+                cm.source_table: cm.target_collection
+                for cm in mapping.collections.values()
+            }
             for edge, dump_path, table_def in edge_jobs:
                 progress.update(task_id, description=f"Edges: {edge.edge_collection}")
                 out_file = out_root / f"{edge.edge_collection}.jsonl"
-                et = EdgeTransformer(edge, table_def, key_separator=mapping.key_separator)
+                et = EdgeTransformer(
+                    edge,
+                    table_def,
+                    key_separator=mapping.key_separator,
+                    from_name=target_by_source.get(edge.from_collection),
+                    to_name=target_by_source.get(edge.to_collection),
+                )
                 reader = DumpReader(str(dump_path))
                 n = 0
                 with out_file.open("w", encoding="utf-8") as f_out:
@@ -1659,7 +1682,7 @@ def ui_cmd(
     project: Optional[str] = typer.Option(None, "--project", help="Open directly to a project"),
     catalog_dir: Optional[str] = typer.Option(None, "--catalog-dir", help="Catalog directory"),
 ) -> None:
-    """Start the R2G Mapping Studio web UI."""
+    """Start the Relational-to-Graph Studio web UI."""
     try:
         import uvicorn
 
@@ -1671,7 +1694,7 @@ def ui_cmd(
         )
         raise typer.Exit(code=1)
 
-    console.print(f"[green]R2G Mapping Studio[/green] starting at http://{host}:{port}")
+    console.print(f"[green]Relational-to-Graph Studio[/green] starting at http://{host}:{port}")
     if project:
         console.print(f"  Default project: {project}")
 
@@ -1928,7 +1951,7 @@ def source_infer_fks(
     sample: bool = typer.Option(
         False,
         "--sample",
-        help="Run bounded value-overlap queries to score candidates (PostgreSQL only)",
+        help="Run bounded value-overlap checks to score candidates (PostgreSQL and CSV)",
     ),
     sample_limit: int = typer.Option(
         10_000,
@@ -1951,15 +1974,16 @@ def source_infer_fks(
 ) -> None:
     """Propose foreign keys for a source's latest schema snapshot.
 
-    Uses the stored ``source_type`` (PostgreSQL or Snowflake) for the
-    name-based heuristic. ``--sample`` additionally opens a PostgreSQL
-    connection and runs small ``LEFT JOIN`` queries to score
-    value-overlap between candidate columns; Snowflake sampling is
-    not supported in this slice and falls back to name-only.
+    Uses the stored ``source_type`` (PostgreSQL, Snowflake, or CSV) for
+    the name-based heuristic. ``--sample`` additionally scores
+    value-overlap between candidate columns: PostgreSQL runs bounded
+    ``LEFT JOIN`` queries, CSV reads the two files with Polars. Snowflake
+    sampling is not yet supported and falls back to name-only.
     """
     from rich.table import Table as RichTable
 
     from r2g.fk_inference import (
+        CsvValueSampler,
         InferenceOptions,
         PostgresValueSampler,
         infer_foreign_keys,
@@ -1985,9 +2009,17 @@ def source_infer_fks(
             schema_name=snap.pg_schema,
             limit=sample_limit,
         )
+    elif sample and stype == "csv":
+        params = source.source_params or {}
+        sampler = CsvValueSampler(
+            source.connection_string,
+            delimiter=params.get("delimiter", ","),
+            has_header=bool(params.get("has_header", True)),
+            limit=sample_limit,
+        )
     elif sample:
         console.print(
-            f"[yellow]--sample is only supported for PostgreSQL sources (got "
+            f"[yellow]--sample is only supported for PostgreSQL and CSV sources (got "
             f"'{stype}'); falling back to name-only inference.[/yellow]"
         )
 

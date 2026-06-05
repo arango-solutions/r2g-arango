@@ -17,11 +17,19 @@ class EdgeTransformer:
         *,
         key_separator: str = "_",
         join_mode: bool = False,
+        from_name: str | None = None,
+        to_name: str | None = None,
     ) -> None:
         self.edge_def = edge_def
         self.source_table = source_table
         self.key_separator = key_separator
         self.join_mode = join_mode
+        # Collection names used to build ``_from`` / ``_to`` references. These
+        # default to the source-table keys on ``edge_def`` (historical
+        # behaviour), but callers that rename collections should pass the
+        # resolved ``target_collection`` names so endpoints stay valid.
+        self.from_name = from_name or edge_def.from_collection
+        self.to_name = to_name or edge_def.to_collection
 
     @classmethod
     def for_join_table(
@@ -92,8 +100,8 @@ class EdgeTransformer:
         edge_key = f"{src_key}{self.key_separator}{to_key}"
         return {
             "_key": edge_key,
-            "_from": f"{self.edge_def.from_collection}/{src_key}",
-            "_to": f"{self.edge_def.to_collection}/{to_key}",
+            "_from": f"{self.from_name}/{src_key}",
+            "_to": f"{self.to_name}/{to_key}",
             "_label": self.edge_def.edge_collection,
         }
 
@@ -127,8 +135,8 @@ class EdgeTransformer:
         edge_key = f"{from_key}{self.key_separator}{to_key}"
         return {
             "_key": edge_key,
-            "_from": f"{self.edge_def.from_collection}/{from_key}",
-            "_to": f"{self.edge_def.to_collection}/{to_key}",
+            "_from": f"{self.from_name}/{from_key}",
+            "_to": f"{self.to_name}/{to_key}",
             "_label": self.edge_def.edge_collection,
         }
 

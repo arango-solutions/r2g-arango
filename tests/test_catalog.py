@@ -183,6 +183,30 @@ class TestProjectCRUD:
         mgr = CatalogManager(catalog_dir=tmp_path)
         mgr.touch_project("nope")  # should not raise
 
+    def test_delete_project_removes_record(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.add_source("pg1", "postgresql", "conn")
+        mgr.create_project("proj", "pg1", "mapping.yaml")
+        assert mgr.delete_project("proj") is True
+        assert mgr.get_project("proj") is None
+        # Persisted: a fresh manager should not see it either.
+        assert CatalogManager(catalog_dir=tmp_path).get_project("proj") is None
+
+    def test_delete_project_cascades_load_history(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        mgr.add_source("pg1", "postgresql", "conn")
+        mgr.create_project("proj", "pg1", "mapping.yaml")
+        mgr.start_load("proj", "full")
+        mgr.start_load("other", "full")
+        assert mgr.delete_project("proj") is True
+        history = mgr.get_history()
+        assert all(r.project_name != "proj" for r in history)
+        assert any(r.project_name == "other" for r in history)
+
+    def test_delete_project_missing_returns_false(self, tmp_path):
+        mgr = CatalogManager(catalog_dir=tmp_path)
+        assert mgr.delete_project("nope") is False
+
     def test_get_project_missing(self, tmp_path):
         mgr = CatalogManager(catalog_dir=tmp_path)
         assert mgr.get_project("missing") is None

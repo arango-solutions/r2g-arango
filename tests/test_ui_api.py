@@ -312,6 +312,26 @@ class TestProjectEndpoints:
         resp = client.patch("/api/projects/empty_patch", json={})
         assert resp.status_code == 400
 
+    def test_delete_project(self, client, tmp_path):
+        self._add_source(client)
+        mapping_path = str(tmp_path / "mapping.yaml")
+        ConfigManager.save_config(MappingConfig(), mapping_path)
+        client.post("/api/projects", json={
+            "name": "del_proj",
+            "source_name": "src",
+            "mapping_config_path": mapping_path,
+        })
+        resp = client.delete("/api/projects/del_proj")
+        assert resp.status_code == 200
+        assert resp.json() == {"deleted": "del_proj"}
+        # Gone from the listing.
+        names = [p["name"] for p in client.get("/api/projects").json()]
+        assert "del_proj" not in names
+
+    def test_delete_project_not_found(self, client):
+        resp = client.delete("/api/projects/nope")
+        assert resp.status_code == 404
+
 
 class TestMappingEndpoints:
     def _setup_project(self, client, tmp_path, catalog_dir):
@@ -359,6 +379,91 @@ class TestMappingEndpoints:
         resp = client.post("/api/projects/proj/validate")
         assert resp.status_code == 200
         assert "valid" in resp.json()
+
+    def test_apply_naming_collections_pascal(self, client, tmp_path, catalog_dir):
+        self._setup_project(client, tmp_path, catalog_dir)
+        resp = client.post("/api/projects/proj/apply-naming", json={"collections": "pascal"})
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["collections"]["users"]["target_collection"] == "Users"
+        assert data["naming_convention"]["collections"] == "pascal"
+
+    def test_apply_naming_properties_camel(self, client, tmp_path, catalog_dir):
+        client.post("/api/sources", json={
+            "name": "src2",
+            "source_type": "postgresql",
+            "connection_string": "postgresql://localhost/test",
+        })
+        schema = Schema(tables={
+            "order_line": Table(name="order_line", columns=[
+                Column(name="line_id", data_type="integer", is_primary_key=True),
+                Column(name="unit_price", data_type="numeric"),
+            ], primary_key=["line_id"]),
+        })
+        config = ConfigManager.generate_default_config(schema)
+        mapping_path = str(tmp_path / "mapping2.yaml")
+        ConfigManager.save_config(config, mapping_path)
+        CatalogManager(catalog_dir).create_snapshot("src2", schema)
+        client.post("/api/projects", json={
+            "name": "proj2", "source_name": "src2", "mapping_config_path": mapping_path,
+        })
+        resp = client.post(
+            "/api/projects/proj2/apply-naming",
+            json={"collections": "pascal", "properties": "camel"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["collections"]["order_line"]["target_collection"] == "OrderLine"
+        fm = data["collections"]["order_line"]["field_mappings"]
+        assert fm["unit_price"] == "unitPrice"
+
+    def test_apply_naming_not_found(self, client):
+        resp = client.post("/api/projects/nope/apply-naming", json={"collections": "pascal"})
+        assert resp.status_code == 404
+
+    def test_migration_plan_when_never_loaded(self, client, tmp_path, catalog_dir):
+        self._setup_project(client, tmp_path, catalog_dir)
+        resp = client.get("/api/projects/proj/migration-plan")
+        assert resp.status_code == 200
+        assert resp.json()["loaded"] is False
+
+    def test_migrate_when_never_loaded_rejected(self, client, tmp_path, catalog_dir):
+        self._setup_project(client, tmp_path, catalog_dir)
+        resp = client.post("/api/projects/proj/migrate", json={"dry_run": True})
+        assert resp.status_code == 400
+
+    def test_migration_plan_detects_property_rename(self, client, tmp_path, catalog_dir):
+        self._setup_project(client, tmp_path, catalog_dir)
+        # Pretend the current mapping was loaded into the DB.
+        loaded = client.get("/api/projects/proj/mapping").json()
+        CatalogManager(catalog_dir).set_loaded_mapping("proj", loaded)
+        # Save an edited mapping that renames a property.
+        edited = client.get("/api/projects/proj/mapping").json()
+        edited["collections"]["users"]["field_mappings"] = {"name": "fullName"}
+        assert client.put("/api/projects/proj/mapping", json=edited).status_code == 200
+
+        resp = client.get("/api/projects/proj/migration-plan")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["loaded"] is True
+        kinds = {c["change_type"] for c in data["plan"]["changes"]}
+        assert "field_mapping_added" in kinds
+
+    def test_migrate_dry_run_reports_plan(self, client, tmp_path, catalog_dir):
+        self._setup_project(client, tmp_path, catalog_dir)
+        # Point at a real (non-system) database so the migration guard passes.
+        CatalogManager(catalog_dir).update_project("proj", arango_database="proj_graph")
+        loaded = client.get("/api/projects/proj/mapping").json()
+        CatalogManager(catalog_dir).set_loaded_mapping("proj", loaded)
+        edited = client.get("/api/projects/proj/mapping").json()
+        edited["collections"]["users"]["field_mappings"] = {"name": "fullName"}
+        client.put("/api/projects/proj/mapping", json=edited)
+
+        resp = client.post("/api/projects/proj/migrate", json={"dry_run": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["migrated"] is False  # dry run never reports success
+        assert len(body["report"]["actions_skipped"]) >= 1
 
     def test_save_mapping(self, client, tmp_path, catalog_dir):
         self._setup_project(client, tmp_path, catalog_dir)

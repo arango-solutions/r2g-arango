@@ -368,10 +368,16 @@ class StreamingPipeline:
                 w.drop_collection(edge_name)
             w.ensure_collection(edge_name, edge=True)
 
+        target_by_source = {
+            cm.source_table: cm.target_collection
+            for cm in self.config.collections.values()
+        }
         transformer = EdgeTransformer(
             edge_def,
             table_def,
             key_separator=self.config.key_separator,
+            from_name=target_by_source.get(edge_def.from_collection),
+            to_name=target_by_source.get(edge_def.to_collection),
         )
 
         since_col = self._resolve_since_column(table_name)
@@ -555,13 +561,9 @@ class StreamingPipeline:
                 session.close()
 
         if not self.dry_run and graph_name:
-            edge_defs = []
-            for edge_def in self.config.edges:
-                edge_defs.append({
-                    "edge_collection": edge_def.edge_collection,
-                    "from_vertex_collections": [edge_def.from_collection],
-                    "to_vertex_collections": [edge_def.to_collection],
-                })
+            from r2g.config import ConfigManager
+
+            edge_defs = ConfigManager.graph_edge_definitions(self.config)
             self.writer.create_named_graph(graph_name, edge_defs)
 
         self.writer.close()

@@ -362,6 +362,34 @@ class TestValidateConfig:
         issues = validate_config(schema, config)
         assert any("bogus" in i for i in issues)
 
+    def test_field_mapping_target_reserved_attribute(self, schema):
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    field_mappings={"name": "_key"},
+                ),
+            },
+        )
+        issues = validate_config(schema, config)
+        assert any("_key" in i and "reserved" in i for i in issues)
+
+    def test_expression_target_reserved_attribute(self, schema):
+        from r2g.types import FieldExpression
+
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(
+                    source_table="users",
+                    target_collection="users",
+                    field_expressions=[FieldExpression(target="_from", sources=["id"])],
+                ),
+            },
+        )
+        issues = validate_config(schema, config)
+        assert any("_from" in i and "reserved" in i for i in issues)
+
     def test_bad_field_mapping_source(self, schema):
         config = MappingConfig(
             collections={

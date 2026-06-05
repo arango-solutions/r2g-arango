@@ -79,11 +79,14 @@ class TestSelectiveReloader:
 
     def test_rename_collection_calls_rename(self):
         writer = _mock_writer()
+        # old exists, new does not (so the idempotency guard lets the rename run)
+        writer.db.has_collection.side_effect = lambda n: n == "old_name"
         plan = ReloadPlan(actions=[
             ReloadAction(
                 action_type="rename_collection",
                 collection="old_name",
                 reason="renamed to 'new_name'",
+                params={"old_name": "old_name", "new_name": "new_name"},
             ),
         ])
         reloader = SelectiveReloader(writer=writer, plan=plan)
@@ -114,6 +117,77 @@ class TestSelectiveReloader:
         )
         assert len(report.actions_executed) == 1
         assert report.actions_executed[0]["action"] == "aql_update"
+
+    def test_aql_update_binds_params(self):
+        writer = _mock_writer()
+        plan = ReloadPlan(actions=[
+            ReloadAction(
+                action_type="aql_update",
+                collection="users",
+                reason="rename property",
+                aql_query="FOR doc IN @@coll REPLACE doc WITH MERGE(UNSET(doc,@old_name),{@new_name: doc.@old_name}) IN @@coll",
+                params={"old_name": "first_name", "new_name": "firstName"},
+            ),
+        ])
+        reloader = SelectiveReloader(writer=writer, plan=plan)
+        reloader.execute()
+
+        _, kwargs = writer.db.aql.execute.call_args
+        assert kwargs["bind_vars"]["old_name"] == "first_name"
+        assert kwargs["bind_vars"]["new_name"] == "firstName"
+        assert kwargs["bind_vars"]["@coll"] == "users"
+
+    def test_rebuild_graph_recreates_named_graph(self):
+        from r2g.types import CollectionMapping, EdgeDefinition, MappingConfig
+
+        writer = _mock_writer()
+        config = MappingConfig(
+            collections={
+                "users": CollectionMapping(source_table="users", target_collection="Users"),
+                "orders": CollectionMapping(source_table="orders", target_collection="Orders"),
+            },
+            edges=[EdgeDefinition(
+                edge_collection="userOrders", from_collection="users",
+                to_collection="orders", from_field="id", to_field="user_id",
+            )],
+        )
+        plan = ReloadPlan(actions=[
+            ReloadAction(action_type="rebuild_graph", collection="", reason="after rename"),
+        ])
+        reloader = SelectiveReloader(writer=writer, plan=plan, config=config, graph_name="g1")
+        report = reloader.execute()
+
+        writer.create_named_graph.assert_called_once()
+        gname, defs = writer.create_named_graph.call_args[0]
+        assert gname == "g1"
+        # vertex collections resolved to target names
+        assert defs[0]["from_vertex_collections"] == ["Users"]
+        assert defs[0]["to_vertex_collections"] == ["Orders"]
+        assert len(report.actions_executed) == 1
+
+    def test_rebuild_graph_without_name_skips(self):
+        writer = _mock_writer()
+        plan = ReloadPlan(actions=[
+            ReloadAction(action_type="rebuild_graph", collection="", reason="x"),
+        ])
+        reloader = SelectiveReloader(writer=writer, plan=plan, graph_name=None)
+        report = reloader.execute()
+        writer.create_named_graph.assert_not_called()
+        assert len(report.actions_skipped) == 1
+
+    def test_rename_collection_skips_when_target_exists(self):
+        writer = _mock_writer()
+        writer.db.has_collection.return_value = True  # new already exists
+        plan = ReloadPlan(actions=[
+            ReloadAction(
+                action_type="rename_collection", collection="old", reason="renamed to 'new'",
+                params={"old_name": "old", "new_name": "new"},
+            ),
+        ])
+        reloader = SelectiveReloader(writer=writer, plan=plan)
+        report = reloader.execute()
+        writer.db.collection("old").rename.assert_not_called()
+        assert len(report.actions_skipped) == 1
 
     def test_aql_update_without_query_skips(self):
         writer = _mock_writer()

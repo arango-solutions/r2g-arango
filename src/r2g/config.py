@@ -6,7 +6,14 @@ from typing import Any, Dict, Set
 import yaml
 
 from r2g.expressions import ExpressionError, compile_expression
-from r2g.types import CollectionMapping, EdgeDefinition, MappingConfig, Schema, Table
+from r2g.types import (
+    RESERVED_ATTRIBUTES,
+    CollectionMapping,
+    EdgeDefinition,
+    MappingConfig,
+    Schema,
+    Table,
+)
 
 DEFAULT_TYPE_MAP: Dict[str, str] = {
     "integer": "integer",
@@ -148,11 +155,16 @@ def validate_config(schema: Schema, config: MappingConfig) -> list[str]:
             continue
         collection_tables.add(src)
         cols = col_names_by_table[src]
-        for fm_src in cm.field_mappings:
+        for fm_src, fm_tgt in cm.field_mappings.items():
             if fm_src not in cols:
                 issues.append(
                     f"Collection '{key}': field_mapping source '{fm_src}' "
                     f"is not a column in table '{src}'"
+                )
+            if fm_tgt in RESERVED_ATTRIBUTES:
+                issues.append(
+                    f"Collection '{key}': field_mapping target '{fm_tgt}' is a "
+                    f"reserved ArangoDB attribute and cannot be used"
                 )
         for ef in cm.exclude_fields:
             if ef not in cols:
@@ -169,6 +181,11 @@ def validate_config(schema: Schema, config: MappingConfig) -> list[str]:
                     )
 
         for fx in cm.field_expressions:
+            if fx.target in RESERVED_ATTRIBUTES:
+                issues.append(
+                    f"Collection '{key}': expression target '{fx.target}' is a "
+                    f"reserved ArangoDB attribute and cannot be used"
+                )
             for s in fx.sources:
                 if s not in cols:
                     issues.append(
@@ -233,6 +250,31 @@ def validate_config(schema: Schema, config: MappingConfig) -> list[str]:
 
 class ConfigManager:
     """Load, save, and synthesize table-to-graph mapping configuration."""
+
+    @staticmethod
+    def graph_edge_definitions(config: MappingConfig) -> list[dict[str, Any]]:
+        """Build ArangoDB named-graph edge definitions from a mapping config.
+
+        Resolves ``from_collection`` / ``to_collection`` (which are *source-table*
+        keys on the edge) to the corresponding ``target_collection`` names, so
+        the named graph references the collections that actually hold the data
+        even after collections are renamed.
+        """
+        target_by_source = {
+            cm.source_table: cm.target_collection for cm in config.collections.values()
+        }
+        defs: list[dict[str, Any]] = []
+        for edge in config.edges:
+            defs.append({
+                "edge_collection": edge.edge_collection,
+                "from_vertex_collections": [
+                    target_by_source.get(edge.from_collection, edge.from_collection)
+                ],
+                "to_vertex_collections": [
+                    target_by_source.get(edge.to_collection, edge.to_collection)
+                ],
+            })
+        return defs
 
     @staticmethod
     def generate_default_config(schema: Schema, source_schema: str = "public") -> MappingConfig:

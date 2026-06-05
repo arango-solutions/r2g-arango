@@ -4,6 +4,11 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
 
+# ArangoDB system attributes. These are managed by ArangoDB / the R2G
+# transformers (``_key`` is derived from the source PK; ``_from``/``_to`` are
+# built from FK data) and must never be renamed or used as a mapping target.
+RESERVED_ATTRIBUTES: frozenset[str] = frozenset({"_id", "_key", "_rev", "_from", "_to"})
+
 
 class ForeignKey(BaseModel):
     """A foreign key constraint, supporting both single- and multi-column FKs.
@@ -208,6 +213,24 @@ class TargetGraphSchema(BaseModel):
     graphs: list[dict[str, Any]] = Field(default_factory=list)
 
 
+NameCase = Literal["preserve", "snake", "camel", "pascal"]
+
+
+class NamingConvention(BaseModel):
+    """A naming convention applied across a mapping.
+
+    Each field selects the case style for a class of identifiers. ``preserve``
+    leaves names untouched (the historical pass-through behaviour). Stored on
+    :class:`MappingConfig` as a record of the last convention applied; the
+    actual names are *materialized* into ``target_collection`` /
+    ``field_mappings`` / ``edge_collection`` so they remain visible and editable.
+    """
+
+    collections: NameCase = "preserve"
+    properties: NameCase = "preserve"
+    edges: NameCase = "preserve"
+
+
 class MappingConfig(BaseModel):
     """Top-level mapping configuration."""
     source_schema: str = "public"
@@ -215,6 +238,7 @@ class MappingConfig(BaseModel):
     edges: List[EdgeDefinition] = Field(default_factory=list)
     type_overrides: Dict[str, str] = Field(default_factory=dict)
     key_separator: str = "_"
+    naming_convention: Optional[NamingConvention] = None
 
     def save_to_file(self, path: str):
         with open(path, 'w') as f:

@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from r2g.types import MappingConfig, Schema
+from r2g.types import RESERVED_ATTRIBUTES, MappingConfig, Schema
 
 
 class MappingChange(BaseModel):
@@ -20,6 +20,34 @@ class ReloadAction(BaseModel):
     reason: str
     sql_query: str | None = None
     aql_query: str | None = None
+    # Structured bind parameters for the executor (e.g. {"old_name", "new_name"}).
+    # Preferred over parsing names out of ``reason``.
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
+# In-place attribute rename: copy the old attribute to the new name and drop the
+# old one in a single REPLACE. Bound with @old_name / @new_name / @@coll.
+_RENAME_PROPERTY_AQL = (
+    "FOR doc IN @@coll"
+    " FILTER HAS(doc, @old_name)"
+    " REPLACE doc WITH MERGE(UNSET(doc, @old_name), {@new_name: doc.@old_name})"
+    " IN @@coll"
+)
+
+
+def _edges_referencing_source(source_table: str, edges: list) -> list[str]:
+    """Edge-collection names whose endpoints reference a source table.
+
+    Edges carry *source-table* keys in ``from_collection`` / ``to_collection``
+    (this is what the pipeline and ``validate_config`` rely on), so renames of a
+    collection's display name are detected against this stable identity.
+    """
+    result = []
+    for e in edges:
+        if e.from_collection == source_table or e.to_collection == source_table:
+            if e.edge_collection not in result:
+                result.append(e.edge_collection)
+    return result
 
 
 class ReloadPlan(BaseModel):
@@ -33,18 +61,18 @@ def _edge_by_name(edges: list) -> dict[str, Any]:
     return {e.edge_collection: e for e in edges}
 
 
-def _collections_referencing(collection_name: str, edges: list) -> list[str]:
-    result = []
-    for e in edges:
-        if e.from_collection == collection_name or e.to_collection == collection_name:
-            if e.edge_collection not in result:
-                result.append(e.edge_collection)
-    return result
+def _action_key(action: ReloadAction) -> tuple:
+    return (
+        action.action_type,
+        action.collection,
+        tuple(sorted(action.params.items())),
+    )
 
 
 def _add_action(actions: list[ReloadAction], action: ReloadAction) -> None:
+    key = _action_key(action)
     for existing in actions:
-        if existing.action_type == action.action_type and existing.collection == action.collection:
+        if _action_key(existing) == key:
             return
     actions.append(action)
 
@@ -93,7 +121,7 @@ def _detect_collection_removed(old: MappingConfig, new: MappingConfig, plan: Rel
                 collection=coll.target_collection,
                 reason="collection removed from mapping",
             ))
-            for edge_name in _collections_referencing(coll.target_collection, old.edges):
+            for edge_name in _edges_referencing_source(key, old.edges):
                 _add_action(plan.actions, ReloadAction(
                     action_type="drop_edge",
                     collection=edge_name,
@@ -108,34 +136,31 @@ def _detect_collection_renamed(old: MappingConfig, new: MappingConfig, plan: Rel
         old_coll = old.collections[key]
         new_coll = new.collections[key]
         if old_coll.source_table == new_coll.source_table and old_coll.target_collection != new_coll.target_collection:
+            old_name = old_coll.target_collection
+            new_name = new_coll.target_collection
             plan.changes.append(MappingChange(
                 change_type="collection_renamed",
-                collection=new_coll.target_collection,
-                details={"old_name": old_coll.target_collection, "new_name": new_coll.target_collection},
+                collection=new_name,
+                details={"old_name": old_name, "new_name": new_name},
             ))
             _add_action(plan.actions, ReloadAction(
                 action_type="rename_collection",
-                collection=old_coll.target_collection,
-                reason=f"renamed to '{new_coll.target_collection}'",
+                collection=old_name,
+                reason=f"renamed to '{new_name}'",
+                params={"old_name": old_name, "new_name": new_name},
             ))
-            affected = (
-                _collections_referencing(old_coll.target_collection, old.edges)
-                + _collections_referencing(new_coll.target_collection, new.edges)
+            # Edges that touch this collection must have their _from/_to rebuilt
+            # to point at the new name. Endpoints are derived from source FK data,
+            # so we reload the affected edges rather than rewrite strings in place.
+            affected = dict.fromkeys(
+                _edges_referencing_source(key, old.edges)
+                + _edges_referencing_source(key, new.edges)
             )
-            for edge_name in dict.fromkeys(affected):
-                old_name = old_coll.target_collection
-                new_name = new_coll.target_collection
+            for edge_name in affected:
                 _add_action(plan.actions, ReloadAction(
-                    action_type="aql_update",
+                    action_type="reload_edge",
                     collection=edge_name,
-                    reason=f"update _from/_to references from '{old_name}' to '{new_name}'",
-                    aql_query=(
-                        "FOR doc IN @@edge_collection"
-                        " UPDATE doc WITH"
-                        " {_from: SUBSTITUTE(doc._from, @old_prefix, @new_prefix),"
-                        " _to: SUBSTITUTE(doc._to, @old_prefix, @new_prefix)}"
-                        " IN @@edge_collection"
-                    ),
+                    reason=f"endpoints reference renamed collection '{old_name}' -> '{new_name}'",
                 ))
 
 
@@ -150,40 +175,40 @@ def _detect_field_mapping_changes(old: MappingConfig, new: MappingConfig, plan: 
         old_fm = old_coll.field_mappings
         new_fm = new_coll.field_mappings
 
-        for field_key in new_fm:
-            if field_key not in old_fm:
-                plan.changes.append(MappingChange(
-                    change_type="field_mapping_added",
-                    collection=target,
-                    details={"field": field_key, "mapped_to": new_fm[field_key]},
-                ))
-                _add_action(plan.actions, ReloadAction(
-                    action_type="aql_update",
-                    collection=target,
-                    reason=f"rename field '{field_key}' to '{new_fm[field_key]}'",
-                    aql_query=(
-                        "FOR doc IN @@coll"
-                        " UPDATE doc WITH {@new_name: doc.@old_name} IN @@coll"
-                    ),
-                ))
+        # A source column's property name in the DB is its mapped name, or the
+        # column name itself when unmapped (pass-through). Compare those to find
+        # the minimal in-place attribute rename for each changed column.
+        for field_key in dict.fromkeys(list(old_fm) + list(new_fm)):
+            old_prop = old_fm.get(field_key, field_key)
+            new_prop = new_fm.get(field_key, field_key)
+            if old_prop == new_prop:
+                continue
+            # Never rename ArangoDB system attributes in place.
+            if old_prop in RESERVED_ATTRIBUTES or new_prop in RESERVED_ATTRIBUTES:
+                continue
 
-        for field_key in old_fm:
-            if field_key not in new_fm:
-                plan.changes.append(MappingChange(
-                    change_type="field_mapping_removed",
-                    collection=target,
-                    details={"field": field_key, "was_mapped_to": old_fm[field_key]},
-                ))
-                _add_action(plan.actions, ReloadAction(
-                    action_type="aql_update",
-                    collection=target,
-                    reason=f"remove field mapping for '{field_key}'",
-                    aql_query=(
-                        "FOR doc IN @@coll"
-                        " LET d = UNSET(doc, @field_name)"
-                        " REPLACE doc WITH d IN @@coll"
-                    ),
-                ))
+            if field_key not in old_fm:
+                change_type = "field_mapping_added"
+                details = {"field": field_key, "mapped_to": new_fm[field_key]}
+            elif field_key not in new_fm:
+                change_type = "field_mapping_removed"
+                details = {"field": field_key, "was_mapped_to": old_fm[field_key]}
+            else:
+                change_type = "field_mapping_changed"
+                details = {"field": field_key, "old": old_fm[field_key], "new": new_fm[field_key]}
+
+            plan.changes.append(MappingChange(
+                change_type=change_type,
+                collection=target,
+                details=details,
+            ))
+            _add_action(plan.actions, ReloadAction(
+                action_type="aql_update",
+                collection=target,
+                reason=f"rename property '{old_prop}' to '{new_prop}'",
+                aql_query=_RENAME_PROPERTY_AQL,
+                params={"old_name": old_prop, "new_name": new_prop},
+            ))
 
 
 def _detect_exclude_fields_changed(old: MappingConfig, new: MappingConfig, plan: ReloadPlan) -> None:
@@ -226,11 +251,49 @@ def _detect_include_fields_changed(old: MappingConfig, new: MappingConfig, plan:
             ))
 
 
+def _edge_identity(edge: Any) -> tuple:
+    """Relationship identity of an edge, independent of its collection name."""
+    return (
+        edge.from_collection,
+        edge.to_collection,
+        tuple(edge.from_fields),
+        tuple(edge.to_fields),
+    )
+
+
 def _detect_edge_changes(old: MappingConfig, new: MappingConfig, plan: ReloadPlan) -> None:
     old_edges = _edge_by_name(old.edges)
     new_edges = _edge_by_name(new.edges)
 
+    # Detect pure renames first: same relationship, different edge-collection
+    # name. These are in-place collection renames, not drop+reload.
+    old_by_identity: dict[tuple, Any] = {}
+    for e in old.edges:
+        old_by_identity.setdefault(_edge_identity(e), e)
+    renamed: dict[str, str] = {}  # old_edge_name -> new_edge_name
+    for ne in new.edges:
+        oe = old_by_identity.get(_edge_identity(ne))
+        if oe is not None and oe.edge_collection != ne.edge_collection \
+                and oe.edge_collection not in new_edges \
+                and ne.edge_collection not in old_edges:
+            renamed[oe.edge_collection] = ne.edge_collection
+
+    for old_name, new_name in renamed.items():
+        plan.changes.append(MappingChange(
+            change_type="edge_renamed",
+            edge=new_name,
+            details={"old_name": old_name, "new_name": new_name},
+        ))
+        _add_action(plan.actions, ReloadAction(
+            action_type="rename_collection",
+            collection=old_name,
+            reason=f"renamed to '{new_name}'",
+            params={"old_name": old_name, "new_name": new_name},
+        ))
+
     for name, edge in new_edges.items():
+        if name in renamed.values():
+            continue
         if name not in old_edges:
             plan.changes.append(MappingChange(
                 change_type="edge_added",
@@ -247,6 +310,8 @@ def _detect_edge_changes(old: MappingConfig, new: MappingConfig, plan: ReloadPla
             ))
 
     for name, edge in old_edges.items():
+        if name in renamed:
+            continue
         if name not in new_edges:
             plan.changes.append(MappingChange(
                 change_type="edge_removed",
@@ -342,5 +407,14 @@ def diff_mappings(old: MappingConfig, new: MappingConfig, schema: Schema) -> Rel
     _detect_include_fields_changed(old, new, plan)
     _detect_edge_changes(old, new, plan)
     _detect_type_override_changes(old, new, plan, schema)
+
+    # Any rename invalidates the named-graph edge definitions, which reference
+    # collections by name; rebuild it once after the renames are applied.
+    if any(c.change_type in ("collection_renamed", "edge_renamed") for c in plan.changes):
+        _add_action(plan.actions, ReloadAction(
+            action_type="rebuild_graph",
+            collection="",
+            reason="rebuild named graph after rename(s)",
+        ))
 
     return plan

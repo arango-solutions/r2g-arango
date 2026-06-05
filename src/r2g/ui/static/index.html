@@ -3,13 +3,20 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>R2G Mapping Studio</title>
+<title>Relational-to-Graph Studio</title>
+<link rel="icon" type="image/png" href="/static/r2g-icon.png">
+<link rel="apple-touch-icon" href="/static/r2g-icon.png">
 <style>
   :root {
     --bg: #0f172a; --surface: #1e293b; --surface2: #334155;
     --border: #475569; --text: #e2e8f0; --text-muted: #94a3b8;
-    --accent: #38bdf8; --accent2: #818cf8; --green: #34d399;
-    --yellow: #fbbf24; --red: #f87171; --pink: #f472b6;
+    /* --accent (blue) = relational / non-Arango sources; --green = ArangoDB target. */
+    --accent: #38bdf8; --accent2: #818cf8;
+    /* Arango green: true brand greens for filled primary actions, plus a
+       lightened tint that stays legible as text/accents on the dark canvas. */
+    --green: #2fa86b;
+    --arango-green: #006532; --arango-green-hover: #005329;
+    --yellow: #fbbf24; --red: #da1a20; --pink: #f472b6;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -26,10 +33,14 @@
     position: fixed; top: 0; left: 0; right: 0; z-index: 200;
   }
   .toolbar-brand {
-    font-size: 15px; font-weight: 700; color: var(--accent);
     white-space: nowrap; display: flex; align-items: center; gap: 8px;
   }
   .toolbar-brand svg { flex-shrink: 0; }
+  .brand-icon { flex-shrink: 0; border-radius: 6px; }
+  .brand-text { display: flex; flex-direction: column; line-height: 1.15; }
+  .brand-title { font-size: 14px; font-weight: 700; color: var(--green); }
+  .brand-tagline { font-size: 10px; font-weight: 400; color: var(--text-muted); }
+  @media (max-width: 900px) { .brand-tagline { display: none; } }
   .toolbar-center { flex: 1; display: flex; justify-content: center; align-items: center; gap: 10px; }
   .toolbar-center label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
   .toolbar-center select {
@@ -46,8 +57,8 @@
   }
   .btn:hover { border-color: var(--accent); color: var(--accent); }
   .btn:active { transform: scale(.97); }
-  .btn-primary { background: var(--accent); color: #0f172a; border-color: var(--accent); font-weight: 600; }
-  .btn-primary:hover { background: #7dd3fc; border-color: #7dd3fc; color: #0f172a; }
+  .btn-primary { background: var(--arango-green); color: #ffffff; border-color: var(--arango-green); font-weight: 600; }
+  .btn-primary:hover { background: var(--arango-green-hover); border-color: var(--arango-green-hover); color: #ffffff; }
   .btn-danger { border-color: var(--red); color: var(--red); }
   .btn-danger:hover { background: var(--red); color: #fff; }
   .btn:disabled { opacity: .4; pointer-events: none; }
@@ -56,6 +67,18 @@
   .main {
     display: flex; height: calc(100vh - 52px); margin-top: 52px;
   }
+
+  /* Draggable splitters between frames */
+  .resizer {
+    flex: 0 0 5px; width: 5px; align-self: stretch; cursor: col-resize;
+    background: transparent; position: relative; z-index: 60;
+  }
+  .resizer::after {
+    content: ''; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px;
+    background: var(--border); transition: background .12s;
+  }
+  .resizer:hover::after, .resizer.dragging::after { background: var(--accent); width: 3px; left: 1px; }
+  body.resizing { cursor: col-resize; user-select: none; }
 
   /* Left sidebar — sources only */
   .sidebar-left {
@@ -80,6 +103,31 @@
   .source-item:hover { background: rgba(56,189,248,.05); }
   .source-name { color: var(--accent); font-weight: 600; }
   .source-type { font-size: 10px; color: var(--text-muted); }
+
+  /* Target cluster tree (cluster endpoint -> database targets) */
+  .target-cluster { border-bottom: 1px solid rgba(71,85,105,.3); }
+  .target-cluster-header {
+    padding: 7px 12px; display: flex; align-items: center; gap: 6px;
+    cursor: pointer; font-size: 11px; font-weight: 700; color: var(--green);
+    background: rgba(52,211,153,.04); user-select: none;
+  }
+  .target-cluster-header:hover { background: rgba(52,211,153,.09); }
+  .target-cluster-header .tree-caret {
+    font-size: 9px; color: var(--text-muted); width: 9px;
+    transition: transform .12s; flex-shrink: 0;
+  }
+  .target-cluster.collapsed .tree-caret { transform: rotate(-90deg); }
+  .target-cluster-header .cluster-name {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .target-cluster-header .cluster-count {
+    font-size: 9px; color: var(--text-muted); background: var(--surface2);
+    border: 1px solid var(--border); border-radius: 8px; padding: 0 6px; font-weight: 600;
+  }
+  .target-cluster.collapsed .target-cluster-children { display: none; }
+  .target-cluster-children .source-item { padding-left: 28px; }
+  .target-cluster-children .source-name { color: var(--green); }
+  .source-type .target-meta { color: var(--text-muted); font-weight: 400; }
   .btn-sm {
     padding: 2px 8px; font-size: 10px; border-radius: 4px;
     border: 1px solid var(--border); background: transparent;
@@ -217,7 +265,7 @@
   .field-badge {
     font-size: 8px; padding: 0 4px; border-radius: 2px; font-weight: 700; flex-shrink: 0;
   }
-  .field-badge.pk { background: var(--green); color: #000; }
+  .field-badge.pk { background: var(--yellow); color: #000; }
   .field-badge.fk { background: var(--accent); color: #000; }
   .field-type { margin-left: auto; font-size: 9px; color: var(--text-muted); flex-shrink: 0; }
 
@@ -619,7 +667,18 @@
   .ctx-item-label { flex: 1; }
   .ctx-item-shortcut { font-size: 10px; color: var(--text-muted); flex-shrink: 0; opacity: .8; }
   .ctx-item-arrow { font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+  .ctx-item-help { font-size: 11px; color: var(--text-muted); flex-shrink: 0; opacity: .5; cursor: help; }
   .ctx-separator { height: 1px; background: var(--border); margin: 4px 8px; }
+  .ctx-hint {
+    position: fixed; z-index: 1000;
+    max-width: 260px; padding: 7px 10px;
+    background: var(--surface2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    font-size: 11px; line-height: 1.4; pointer-events: none;
+    display: none; opacity: 0; transition: opacity .1s ease-out;
+  }
+  .ctx-hint.open { display: block; opacity: 1; }
 
   /* ── Phase A: Floating cards ───────────────────────────────────── */
   .floating-card {
@@ -845,35 +904,33 @@
 <!-- Toolbar -->
 <div class="toolbar">
   <div class="toolbar-brand">
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
-      <rect x="2" y="3" width="8" height="7" rx="1.5" stroke="#38bdf8" stroke-width="1.5"/>
-      <rect x="14" y="3" width="8" height="7" rx="1.5" stroke="#34d399" stroke-width="1.5"/>
-      <rect x="8" y="14" width="8" height="7" rx="1.5" stroke="#818cf8" stroke-width="1.5"/>
-      <line x1="10" y1="6.5" x2="14" y2="6.5" stroke="#475569" stroke-width="1.2"/>
-      <line x1="12" y1="10" x2="12" y2="14" stroke="#475569" stroke-width="1.2"/>
-    </svg>
-    <span>R2G Mapping Studio</span>
+    <img src="/static/r2g-icon.png" alt="" width="28" height="28" class="brand-icon" />
+    <div class="brand-text">
+      <span class="brand-title">Relational-to-Graph Studio</span>
+      <span class="brand-tagline">Auto-build an ArangoDB graph from your relational data</span>
+    </div>
   </div>
   <div class="toolbar-center">
     <label>Project</label>
     <select id="project-select"><option value="">Select a project&hellip;</option></select>
-    <button class="btn-sm" id="btn-new-project" title="New project" aria-label="Create a new mapping project" onclick="openNewProjectForm()">+ New</button>
+    <button class="btn-sm" id="btn-new-project" aria-label="Create a new mapping project" data-hint="Create a new mapping project: pick a source, target endpoint, and database." onclick="openNewProjectForm()">+ New</button>
+    <button class="btn-sm" id="btn-project-menu" aria-label="Manage current project" data-hint="Edit, rename, or delete the current project." onclick="openProjectMenu(event)" disabled>&#8943;</button>
     <span class="toolbar-status">
-      <span class="lens-chip" id="lens-chip" title="Active view (right-click canvas to switch, or press 1-4)">Topology</span>
-      <span class="lens-chip" id="dirty-chip" style="display:none;color:var(--yellow);border-color:var(--yellow)">Unsaved</span>
+      <span class="lens-chip" id="lens-chip" role="button" tabindex="0" aria-label="Active graph lens; click to cycle" data-hint="Active graph lens. Click to cycle Topology &rarr; Coverage &rarr; Validation &rarr; Diff. Lenses only recolor the graph (no relayout). Also: right-click canvas &rarr; View as, or press 1-4.">Topology</span>
+      <span class="lens-chip" id="dirty-chip" style="display:none;color:var(--yellow);border-color:var(--yellow);cursor:default" data-hint="You have unsaved mapping changes. Press Cmd/Ctrl+S or use Save to persist them.">Unsaved</span>
     </span>
   </div>
   <div class="toolbar-actions">
-    <button class="btn" id="btn-validate" disabled onclick="validateMapping()" title="Validate (Cmd/Ctrl+Shift+V)">Validate</button>
-    <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()" title="Save (Cmd/Ctrl+S)">Save</button>
-    <button class="btn" id="btn-automap" disabled onclick="autoMap()" title="Auto-map (a)">Auto-Map</button>
-    <button class="btn" id="btn-suggest-fks" disabled onclick="suggestFks()" title="Suggest foreign keys from names / values (i)">Suggest FKs</button>
-    <button class="btn" id="btn-diff" disabled onclick="showDiff()" title="Diff (Cmd/Ctrl+D)">Diff</button>
-    <button class="btn" id="btn-export" disabled onclick="exportYaml()">Export YAML</button>
-    <button class="btn" id="btn-history" disabled onclick="showHistory()">History</button>
-    <button class="btn" id="btn-settings" onclick="showSettings()" title="Settings" aria-label="Settings">&#9881;</button>
-    <button class="help-btn" id="btn-help" title="Help &amp; shortcuts (?)" aria-label="Help and keyboard shortcuts" onclick="openHelpModal()">?</button>
-    <button class="btn btn-load" id="btn-load" disabled onclick="showLoadModal()" title="Load (Cmd/Ctrl+Enter)">&#9654; Load</button>
+    <button class="btn" id="btn-validate" disabled onclick="validateMapping()" aria-label="Validate mapping" data-hint="Check the current mapping for errors and warnings without saving. Shortcut: Cmd/Ctrl+Shift+V.">Validate</button>
+    <button class="btn btn-primary" id="btn-save" disabled onclick="saveMapping()" aria-label="Save mapping" data-hint="Persist the mapping config. If the target is already loaded and names changed, you'll be offered an in-place migration. Shortcut: Cmd/Ctrl+S.">Save</button>
+    <button class="btn" id="btn-automap" disabled onclick="autoMap()" aria-label="Auto-map all tables" data-hint="Generate default mappings for every source table from column-name and primary-key heuristics. Existing manual edits are preserved. Shortcut: a.">Auto-Map</button>
+    <button class="btn" id="btn-suggest-fks" disabled onclick="suggestFks()" aria-label="Suggest foreign keys" data-hint="Scan the source schema for likely foreign keys (by name and value overlap) and propose new edges to accept or dismiss. Shortcut: i.">Suggest FKs</button>
+    <button class="btn" id="btn-diff" disabled onclick="showDiff()" aria-label="Show diff" data-hint="Show what changed in the mapping versus the last saved version. Shortcut: Cmd/Ctrl+D.">Diff</button>
+    <button class="btn" id="btn-export" disabled onclick="exportYaml()" aria-label="Export YAML" data-hint="Export the current mapping configuration as a YAML file you can copy or download.">Export YAML</button>
+    <button class="btn" id="btn-history" disabled onclick="showHistory()" aria-label="Load history" data-hint="View past load runs for this project with row counts, errors, and status.">History</button>
+    <button class="btn" id="btn-settings" onclick="showSettings()" aria-label="Settings" data-hint="Configure ingestion settings: parallel workers, batch size, duplicate handling, and drop-collections.">&#9881;</button>
+    <button class="help-btn" id="btn-help" aria-label="Help and keyboard shortcuts" data-hint="Open the help overlay listing every keyboard shortcut and the right-click contract. Shortcut: ?.">?</button>
+    <button class="btn btn-load" id="btn-load" disabled onclick="showLoadModal()" aria-label="Load data" data-hint="Run the ingestion pipeline: stream data from the source into ArangoDB using the saved mapping. Shortcut: Cmd/Ctrl+Enter.">&#9654; Load</button>
   </div>
 </div>
 
@@ -881,11 +938,11 @@
 <div class="main">
 
   <!-- Left sidebar — sources + targets -->
-  <div class="sidebar-left">
+  <div class="sidebar-left" id="sidebar-left">
     <div class="sidebar-section">
       <div class="panel-header">
         <span>Sources</span>
-        <button class="panel-add-btn" id="btn-new-source" title="New source" aria-label="Create a new data source" onclick="openNewSourceForm()">+</button>
+        <button class="panel-add-btn" id="btn-new-source" aria-label="Create a new data source" data-hint="Register a new data source (PostgreSQL, Snowflake, CSV, Kafka). Its schema is introspected automatically on save." onclick="openNewSourceForm()">+</button>
       </div>
       <div class="panel-body" id="sources-panel">
         <div class="empty-state">Loading sources&hellip;</div>
@@ -894,13 +951,15 @@
     <div class="sidebar-section">
       <div class="panel-header">
         <span>Targets</span>
-        <button class="panel-add-btn" id="btn-new-target" title="New target" aria-label="Create a new target graph database" onclick="openNewTargetForm()">+</button>
+        <button class="panel-add-btn" id="btn-new-target" aria-label="Create a new target graph database" data-hint="Register a new ArangoDB target database connection." onclick="openNewTargetForm()">+</button>
       </div>
       <div class="panel-body" id="targets-panel">
         <div class="empty-state">Loading targets&hellip;</div>
       </div>
     </div>
   </div>
+
+  <div class="resizer" data-target="sidebar-left" data-edge="right" data-min="120" data-max="420" title="Drag to resize"></div>
 
   <!-- Mapper container -->
   <div class="mapper-container" id="mapper-container">
@@ -912,6 +971,8 @@
         <div class="empty-state">Select a project</div>
       </div>
     </div>
+
+    <div class="resizer" data-target="mapper-source-pane" data-edge="right" data-min="160" data-max="760" title="Drag to resize"></div>
 
     <!-- Canvas with connector SVG -->
     <div class="mapper-canvas" id="mapper-canvas">
@@ -933,6 +994,8 @@
       </div>
     </div>
 
+    <div class="resizer" data-target="mapper-target-pane" data-edge="left" data-min="160" data-max="760" title="Drag to resize"></div>
+
     <!-- Target pane -->
     <div class="mapper-target-pane" id="mapper-target-pane">
       <div class="mapper-pane-header">Target Graph Model</div>
@@ -942,6 +1005,8 @@
       </div>
     </div>
   </div>
+
+  <div class="resizer" data-target="sidebar-right" data-edge="left" data-min="180" data-max="640" title="Drag to resize"></div>
 
   <!-- Right sidebar — properties -->
   <div class="sidebar-right" id="sidebar-right">
@@ -972,6 +1037,7 @@
 
 <!-- Context menu (Phase A1) -->
 <div class="ctx-menu" id="ctx-menu" role="menu" aria-label="Context menu"></div>
+<div class="ctx-hint" id="ctx-hint" role="tooltip" aria-hidden="true"></div>
 
 <!-- Toast container -->
 <div class="toast-container" id="toast-container"></div>
@@ -1087,7 +1153,7 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 });
 
 function setActionButtons(enabled) {
-  ['btn-validate','btn-save','btn-automap','btn-suggest-fks','btn-diff','btn-export','btn-history','btn-load'].forEach(id => {
+  ['btn-validate','btn-save','btn-automap','btn-suggest-fks','btn-diff','btn-export','btn-history','btn-load','btn-project-menu'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.disabled = !enabled;
   });
@@ -1167,28 +1233,88 @@ async function loadSources() {
   }
 }
 
+// Normalize an Arango endpoint so targets on the same cluster group together
+// regardless of trailing slash, case, or 127.0.0.1 vs localhost.
+function _normalizeEndpoint(ep) {
+  return String(ep || '').trim().toLowerCase().replace(/\/+$/, '').replace('127.0.0.1', 'localhost');
+}
+
+// Friendly cluster label: drop the scheme, keep host:port.
+function _clusterLabel(ep) {
+  return String(ep || '').replace(/^https?:\/\//, '').replace(/\/+$/, '') || '(unknown endpoint)';
+}
+
+// Projects that write to a given target — either by explicit target_name link
+// or by matching endpoint + database (the same fallback the loader uses).
+function _linkedProjects(t) {
+  const projs = window._projectsCache || [];
+  const tEp = _normalizeEndpoint(t.endpoint);
+  return projs
+    .filter(p =>
+      p.target_name === t.name ||
+      (!p.target_name && _normalizeEndpoint(p.arango_endpoint) === tEp && (p.arango_database || '') === (t.database || '')))
+    .map(p => p.name);
+}
+
+window._collapsedClusters = window._collapsedClusters || new Set();
+
+function toggleCluster(key) {
+  const set = window._collapsedClusters;
+  if (set.has(key)) set.delete(key); else set.add(key);
+  renderTargets(window._targetsCache || []);
+}
+
 async function loadTargets() {
   try {
     const targets = await apiFetch('/api/targets');
     window._targetsCache = targets;
-    const panel = document.getElementById('targets-panel');
-    if (!targets.length) {
-      panel.innerHTML = '<div class="empty-state-cta">No targets yet.<br><button type="button" onclick="openNewTargetForm()">+ Add a graph target</button><br><span style="font-size:11px">or right-click here</span></div>';
-      return;
-    }
-    panel.innerHTML = targets.map(t => `
-      <div class="source-item" data-target="${_htmlEscape(t.name)}" title="${_htmlEscape(t.endpoint)} / ${_htmlEscape(t.database)}">
-        <div>
-          <div class="source-name">${_htmlEscape(t.name)}</div>
-          <div class="source-type">${_htmlEscape(t.database || '_system')}</div>
-        </div>
-        <button class="btn-sm" onclick="introspectTarget('${_htmlEscape(t.name)}')" title="Introspect target graph">Intro</button>
-      </div>
-    `).join('');
+    renderTargets(targets);
   } catch (e) {
     document.getElementById('targets-panel').innerHTML =
       '<div class="empty-state">Could not load targets</div>';
   }
+}
+
+// Render targets as a 2-level tree: cluster (endpoint) -> database targets.
+function renderTargets(targets) {
+  const panel = document.getElementById('targets-panel');
+  if (!panel) return;
+  if (!targets || !targets.length) {
+    panel.innerHTML = '<div class="empty-state-cta">No targets yet.<br><button type="button" onclick="openNewTargetForm()">+ Add a graph target</button><br><span style="font-size:11px">or right-click here</span></div>';
+    return;
+  }
+  const groups = new Map();
+  for (const t of targets) {
+    const key = _normalizeEndpoint(t.endpoint);
+    if (!groups.has(key)) groups.set(key, { endpoint: t.endpoint, targets: [] });
+    groups.get(key).targets.push(t);
+  }
+  const collapsed = window._collapsedClusters;
+  panel.innerHTML = [...groups.entries()].map(([key, g]) => {
+    const isCollapsed = collapsed.has(key);
+    const children = g.targets.map(t => {
+      const projs = _linkedProjects(t);
+      const meta = projs.length ? ' \u00b7 ' + projs.join(', ') : ' \u00b7 unlinked';
+      return `
+        <div class="source-item" data-target="${_htmlEscape(t.name)}" title="${_htmlEscape(t.endpoint)} / ${_htmlEscape(t.database)}">
+          <div>
+            <div class="source-name">${_htmlEscape(t.database || '_system')}</div>
+            <div class="source-type">${_htmlEscape(t.name)}<span class="target-meta">${_htmlEscape(meta)}</span></div>
+          </div>
+          <button class="btn-sm" onclick="event.stopPropagation();introspectTarget('${_htmlEscape(t.name)}')" title="Introspect target graph">Intro</button>
+        </div>`;
+    }).join('');
+    const safeKey = key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `
+      <div class="target-cluster${isCollapsed ? ' collapsed' : ''}" data-endpoint="${_htmlEscape(g.endpoint)}">
+        <div class="target-cluster-header" onclick="toggleCluster('${safeKey}')" title="${_htmlEscape(g.endpoint)}">
+          <span class="tree-caret">\u25BE</span>
+          <span class="cluster-name">${_htmlEscape(_clusterLabel(g.endpoint))}</span>
+          <span class="cluster-count">${g.targets.length}</span>
+        </div>
+        <div class="target-cluster-children">${children}</div>
+      </div>`;
+  }).join('');
 }
 
 async function snapshotSource(name) {
@@ -1362,17 +1488,20 @@ function openNewSourceForm() {
   setTimeout(() => document.getElementById('ns-name')?.focus(), 50);
 }
 
-function openNewTargetForm() {
+function openNewTargetForm(prefill) {
+  prefill = prefill || {};
+  const epValue = prefill.endpoint || 'http://localhost:8529';
   const html = `
     <div class="fc-form">
       <label>Name
         <input id="nt-name" placeholder="arango_local" autocomplete="off" />
       </label>
       <label>Endpoint
-        <input id="nt-endpoint" value="http://localhost:8529" autocomplete="off" />
+        <input id="nt-endpoint" value="${_htmlEscape(epValue)}" autocomplete="off" />
       </label>
       <label>Database
-        <input id="nt-database" value="_system" autocomplete="off" />
+        <input id="nt-database" value="" placeholder="my_graph" autocomplete="off" />
+        <span class="hint">A dedicated graph database \u2014 created on load if it doesn't exist. Never use <code>_system</code>.</span>
       </label>
       <label>Username
         <input id="nt-user" value="root" autocomplete="off" />
@@ -1402,6 +1531,11 @@ function openNewTargetForm() {
         errEl.style.display = 'none';
         if (!name || !endpoint || !database) {
           errEl.textContent = 'Name, endpoint and database are required.';
+          errEl.style.display = '';
+          return;
+        }
+        if (database.toLowerCase() === '_system') {
+          errEl.textContent = 'Refusing to target "_system". Use a dedicated graph database (e.g. my_graph).';
           errEl.style.display = '';
           return;
         }
@@ -1460,7 +1594,8 @@ function openNewProjectForm() {
         <input id="np-endpoint" value="http://localhost:8529" autocomplete="off" />
       </label>
       <label>Arango database
-        <input id="np-database" value="_system" autocomplete="off" />
+        <input id="np-database" value="" placeholder="my_graph" autocomplete="off" />
+        <span class="hint">A dedicated graph database \u2014 created on load if needed. Never use <code>_system</code>.</span>
       </label>
       <label>Mapping config path
         <input id="np-mapping-path" placeholder="${defaultMappingPath}" autocomplete="off" />
@@ -1493,6 +1628,16 @@ function openNewProjectForm() {
           errEl.style.display = '';
           return;
         }
+        if (!arango_database) {
+          errEl.textContent = 'Arango database is required (e.g. my_graph).';
+          errEl.style.display = '';
+          return;
+        }
+        if (arango_database.toLowerCase() === '_system') {
+          errEl.textContent = 'Refusing to target "_system". Use a dedicated graph database (e.g. my_graph).';
+          errEl.style.display = '';
+          return;
+        }
         if (!mapping_config_path) {
           mapping_config_path = `~/.r2g/projects/${name}/mapping.yaml`;
         }
@@ -1503,7 +1648,7 @@ function openNewProjectForm() {
               name, source_name,
               mapping_config_path,
               arango_endpoint: arango_endpoint || 'http://localhost:8529',
-              arango_database: arango_database || '_system',
+              arango_database,
               mapping_description,
             }),
           });
@@ -1580,11 +1725,96 @@ async function confirmRemoveTarget(name) {
   }
 }
 
+// ── Project management (edit / delete) ──
+
+function _menuProject(name) {
+  return [
+    { label: 'Edit name & description\u2026', icon: '\u270E', onClick: () => openEditProjectForm(name),
+      hint: 'Rename the project or change its description, target endpoint, and database. Does not touch already-loaded data.' },
+    '-',
+    { label: 'Copy project name', icon: '\u29C9', onClick: () => copyToClipboard(name),
+      hint: 'Copy this project\u2019s name to the clipboard.' },
+    '-',
+    { label: 'Delete project', icon: '\u2716', danger: true, onClick: () => confirmDeleteProject(name),
+      hint: 'Remove the project and its mapping from the catalog. Data already loaded into ArangoDB is not deleted.' },
+  ];
+}
+
+function openProjectMenu(ev) {
+  if (!currentProject) { toast('Select a project first', 'info'); return; }
+  const x = ev ? ev.clientX : 200;
+  const y = ev ? ev.clientY : 80;
+  openContextMenu(_menuProject(currentProject), x, y, { header: 'Project: ' + currentProject });
+}
+
+function openEditProjectForm(name) {
+  const proj = (window._projectsCache || []).find(p => p.name === name) || {};
+  const html = `
+    <div class="fc-form">
+      <label>Display name
+        <input id="ep-name" value="${_htmlEscape(proj.mapping_name || '')}" placeholder="${_htmlEscape(name)}" autocomplete="off" />
+        <span class="hint">Friendly label; the project key (${_htmlEscape(name)}) is immutable.</span>
+      </label>
+      <label>Description
+        <input id="ep-desc" value="${_htmlEscape(proj.mapping_description || '')}" placeholder="What this mapping produces" autocomplete="off" />
+      </label>
+      <div class="err" id="ep-err" style="display:none"></div>
+    </div>
+  `;
+  openFloatingCard({
+    id: 'edit-project',
+    title: 'Edit project',
+    body: html,
+    position: { right: 40, top: 80 },
+    actions: [
+      { label: 'Cancel', onClick: () => closeFloatingCard('edit-project') },
+      { label: 'Save', kind: 'primary', onClick: async () => {
+        const errEl = document.getElementById('ep-err');
+        errEl.style.display = 'none';
+        try {
+          await apiFetch(`/api/projects/${encodeURIComponent(name)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              mapping_name: document.getElementById('ep-name').value.trim(),
+              mapping_description: document.getElementById('ep-desc').value.trim(),
+            }),
+          });
+        } catch (e) {
+          errEl.textContent = 'Save failed: ' + e.message;
+          errEl.style.display = '';
+          return;
+        }
+        toast('Project updated', 'success');
+        closeFloatingCard('edit-project');
+        await loadProjects();
+      }},
+    ],
+  });
+}
+
+async function confirmDeleteProject(name) {
+  if (!confirm(`Delete project '${name}'?\n\nThis removes it from the catalog (and its load history). The mapping file on disk is left intact.`)) return;
+  try {
+    await apiFetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    toast(`Project '${name}' deleted`, 'success');
+    if (currentProject === name) {
+      currentProject = null;
+      const sel = document.getElementById('project-select');
+      if (sel) sel.value = '';
+      setActionButtons(false);
+    }
+    await loadProjects();
+  } catch (e) {
+    toast('Delete failed: ' + e.message, 'error');
+  }
+}
+
 // ── Projects ──
 
 async function loadProjects() {
   try {
     const projects = await apiFetch('/api/projects');
+    window._projectsCache = projects;
     const sel = document.getElementById('project-select');
     sel.innerHTML = '<option value="">Select a project\u2026</option>';
     projects.forEach(p => {
@@ -1593,6 +1823,9 @@ async function loadProjects() {
       opt.textContent = p.name;
       sel.appendChild(opt);
     });
+    // Targets render before projects at startup; re-render so each database
+    // node can show its linked project(s).
+    if (window._targetsCache) renderTargets(window._targetsCache);
   } catch (e) {
     toast('Could not load projects', 'error');
   }
@@ -3098,8 +3331,91 @@ async function saveMapping() {
       body: JSON.stringify(payload)
     });
     toast('Mapping saved successfully', 'success');
+    await maybePromptMigration();
   } catch (e) {
     toast('Save failed: ' + e.message, 'error');
+  }
+}
+
+// After saving, if the database has already been loaded and the saved mapping
+// renamed collections/edges/properties, offer to reconcile the live database.
+async function maybePromptMigration() {
+  try {
+    const res = await apiFetch(`/api/projects/${currentProject}/migration-plan`);
+    if (!res || !res.loaded) return;
+    const plan = res.plan || {};
+    const changes = plan.changes || [];
+    const renames = changes.filter(c =>
+      ['collection_renamed', 'edge_renamed', 'field_mapping_added', 'field_mapping_removed', 'field_mapping_changed'].includes(c.change_type)
+    );
+    if (!renames.length) return;
+    showMigrationPrompt(plan, renames);
+  } catch (e) {
+    // Non-fatal: the save already succeeded.
+    console.warn('migration-plan check failed', e);
+  }
+}
+
+function _summarizeChange(c) {
+  const d = c.details || {};
+  if (c.change_type === 'collection_renamed') return `Collection <b>${_htmlEscape(d.old_name)}</b> &rarr; <b>${_htmlEscape(d.new_name)}</b>`;
+  if (c.change_type === 'edge_renamed') return `Edge collection <b>${_htmlEscape(d.old_name)}</b> &rarr; <b>${_htmlEscape(d.new_name)}</b>`;
+  if (c.change_type === 'field_mapping_added') return `Property in <b>${_htmlEscape(c.collection)}</b>: rename to <b>${_htmlEscape(d.mapped_to)}</b>`;
+  if (c.change_type === 'field_mapping_removed') return `Property in <b>${_htmlEscape(c.collection)}</b>: revert <b>${_htmlEscape(d.was_mapped_to)}</b>`;
+  if (c.change_type === 'field_mapping_changed') return `Property in <b>${_htmlEscape(c.collection)}</b>: <b>${_htmlEscape(d.old)}</b> &rarr; <b>${_htmlEscape(d.new)}</b>`;
+  return _htmlEscape(c.change_type);
+}
+
+function showMigrationPrompt(plan, renames) {
+  const items = renames.map(c => `<li>${_summarizeChange(c)}</li>`).join('');
+  openFloatingCard({
+    id: 'migration-prompt',
+    title: 'Apply changes to loaded database?',
+    body: `
+      <p style="color:var(--text-muted);margin:0 0 8px;font-size:12px">
+        This database has already been loaded. The mapping you just saved renames:
+      </p>
+      <ul style="margin:0 0 10px;padding-left:18px;font-size:12px;max-height:180px;overflow:auto">${items}</ul>
+      <p style="color:var(--text-muted);margin:0;font-size:12px">
+        <b>Migrate in place</b> renames collections, reloads affected edges, and renames
+        properties &mdash; data is preserved. <b>Full reload</b> drops and rebuilds from source.
+      </p>
+      <div id="migration-prompt-status" style="font-size:12px;margin-top:8px"></div>
+    `,
+    actions: [
+      { label: 'Migrate in place', kind: 'primary', onClick: runInPlaceMigration },
+      { label: 'Full reload\u2026', onClick: () => { closeFloatingCard('migration-prompt'); showLoadModal(); } },
+      { label: 'Save mapping only', onClick: () => closeFloatingCard('migration-prompt') },
+    ],
+    position: { right: 20, top: 80 },
+  });
+}
+
+async function runInPlaceMigration() {
+  const statusEl = document.getElementById('migration-prompt-status');
+  if (statusEl) statusEl.textContent = 'Migrating\u2026';
+  try {
+    const res = await apiFetch(`/api/projects/${currentProject}/migrate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: false }),
+    });
+    const report = res.report || {};
+    const errs = report.errors || [];
+    if (errs.length) {
+      if (statusEl) {
+        statusEl.style.color = 'var(--red)';
+        statusEl.innerHTML = `${errs.length} action(s) failed: ${_htmlEscape(errs.map(e => e.error).join('; '))}`;
+      }
+      toast('Migration completed with errors', 'error');
+      return;
+    }
+    const n = (report.actions_executed || []).length;
+    closeFloatingCard('migration-prompt');
+    toast(`Database migrated (${n} action${n === 1 ? '' : 's'})`, 'success');
+  } catch (e) {
+    if (statusEl) { statusEl.style.color = 'var(--red)'; statusEl.textContent = 'Migration failed: ' + e.message; }
+    toast('Migration failed: ' + e.message, 'error');
   }
 }
 
@@ -3356,56 +3672,120 @@ function closeProgressView() { closeFloatingCard('load-progress'); }
 
 // ── Auto-Map ──
 
+// Replace the working mapping with a server-returned config payload (snake_case
+// keys from the API). Shared by auto-map and apply-naming-convention.
+function applyConfigToEditState(config) {
+  const collections = {};
+  for (const [key, c] of Object.entries(config.collections || {})) {
+    const rawFx = c.field_expressions || c.fieldExpressions || [];
+    collections[key] = {
+      sourceTable: c.source_table || c.sourceTable || key,
+      targetCollection: c.target_collection || c.targetCollection || key,
+      collectionType: c.collection_type || c.collectionType || 'document',
+      isJoinTable: c.is_join_table || c.isJoinTable || false,
+      fieldMappings: c.field_mappings || c.fieldMappings || {},
+      excludeFields: c.exclude_fields || c.excludeFields || [],
+      includeFields: c.include_fields || c.includeFields || null,
+      fieldExpressions: rawFx.map(fx => ({
+        target: fx.target,
+        sources: fx.sources || [],
+        expression: fx.expression || '',
+        engine: fx.engine || 'aql',
+        description: fx.description || '',
+      })),
+      allFields: [],
+    };
+  }
+
+  for (const [key, coll] of Object.entries(collections)) {
+    const t = tablesInfo.find(t => t.name === (coll.sourceTable || key));
+    if (t) coll.allFields = t.columns.map(c => c.name);
+  }
+
+  editState.collections = collections;
+  editState.edges = (config.edges || []).map(e => ({
+    edgeCollection: e.edge_collection || e.edgeCollection || '',
+    fromCollection: e.from_collection || e.fromCollection || '',
+    toCollection: e.to_collection || e.toCollection || '',
+    fromField: e.from_field || (e.from_fields ? e.from_fields.join(', ') : (e.fromField || '')),
+    toField: e.to_field || (e.to_fields ? e.to_fields.join(', ') : (e.toField || '')),
+  }));
+  editState.typeOverrides = config.type_overrides || config.typeOverrides || {};
+  editState.keySeparator = config.key_separator || config.keySeparator || '_';
+  editState.sourceSchema = config.source_schema || config.sourceSchema || 'public';
+}
+
 async function autoMap() {
   if (!currentProject) return;
   try {
     toast('Generating default mapping\u2026', 'info');
     const config = await apiFetch(`/api/projects/${currentProject}/auto-map`, { method: 'POST' });
-
-    const collections = {};
-    for (const [key, c] of Object.entries(config.collections || {})) {
-      const rawFx = c.field_expressions || c.fieldExpressions || [];
-      collections[key] = {
-        sourceTable: c.source_table || c.sourceTable || key,
-        targetCollection: c.target_collection || c.targetCollection || key,
-        collectionType: c.collection_type || c.collectionType || 'document',
-        isJoinTable: c.is_join_table || c.isJoinTable || false,
-        fieldMappings: c.field_mappings || c.fieldMappings || {},
-        excludeFields: c.exclude_fields || c.excludeFields || [],
-        includeFields: c.include_fields || c.includeFields || null,
-        fieldExpressions: rawFx.map(fx => ({
-          target: fx.target,
-          sources: fx.sources || [],
-          expression: fx.expression || '',
-          engine: fx.engine || 'aql',
-          description: fx.description || '',
-        })),
-        allFields: [],
-      };
-    }
-
-    for (const [key, coll] of Object.entries(collections)) {
-      const t = tablesInfo.find(t => t.name === (coll.sourceTable || key));
-      if (t) coll.allFields = t.columns.map(c => c.name);
-    }
-
-    editState.collections = collections;
-    editState.edges = (config.edges || []).map(e => ({
-      edgeCollection: e.edge_collection || e.edgeCollection || '',
-      fromCollection: e.from_collection || e.fromCollection || '',
-      toCollection: e.to_collection || e.toCollection || '',
-      fromField: e.from_field || (e.from_fields ? e.from_fields.join(', ') : (e.fromField || '')),
-      toField: e.to_field || (e.to_fields ? e.to_fields.join(', ') : (e.toField || '')),
-    }));
-    editState.typeOverrides = config.type_overrides || config.typeOverrides || {};
-    editState.keySeparator = config.key_separator || config.keySeparator || '_';
-    editState.sourceSchema = config.source_schema || config.sourceSchema || 'public';
-
+    applyConfigToEditState(config);
     renderMapper();
     clearSelection();
     toast('Default mapping generated', 'success');
   } catch (e) {
     toast('Auto-map failed: ' + e.message, 'error');
+  }
+}
+
+// ── Naming conventions ──
+const _NAME_CASE_OPTS = [
+  { v: 'preserve', label: 'Keep as-is' },
+  { v: 'pascal', label: 'PascalCase' },
+  { v: 'camel', label: 'camelCase' },
+  { v: 'snake', label: 'snake_case' },
+];
+
+function openNamingConventionForm() {
+  if (!currentProject) { toast('Open a project first', 'info'); return; }
+  const sel = (id, def) => `<select id="${id}">` +
+    _NAME_CASE_OPTS.map(o => `<option value="${o.v}"${o.v === def ? ' selected' : ''}>${o.label}</option>`).join('') +
+    `</select>`;
+  openFloatingCard({
+    id: 'naming-convention',
+    title: 'Apply naming convention',
+    body: `
+      <p style="color:var(--text-muted);margin:0 0 10px;font-size:12px">
+        Re-cases generated names. Loads as an editable draft &#x2014; review, then Save to persist.
+        Your manual renames are kept; system fields (<code>_key</code>, <code>_from</code>) are never changed.
+      </p>
+      <label style="display:block;margin-bottom:8px">Collections ${sel('nc-collections', 'pascal')}</label>
+      <label style="display:block;margin-bottom:8px">Properties ${sel('nc-properties', 'camel')}</label>
+      <label style="display:block;margin-bottom:8px">Edge collections ${sel('nc-edges', 'camel')}</label>
+      <div id="nc-error" style="color:var(--red);font-size:12px;display:none"></div>
+    `,
+    actions: [
+      { label: 'Apply', kind: 'primary', onClick: applyNamingConvention },
+      { label: 'Cancel', onClick: () => closeFloatingCard('naming-convention') },
+    ],
+    position: { right: 20, top: 80 },
+  });
+}
+
+async function applyNamingConvention() {
+  if (!currentProject) return;
+  const payload = {
+    collections: document.getElementById('nc-collections').value,
+    properties: document.getElementById('nc-properties').value,
+    edges: document.getElementById('nc-edges').value,
+  };
+  try {
+    const config = await apiFetch(`/api/projects/${currentProject}/apply-naming`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    applyConfigToEditState(config);
+    closeFloatingCard('naming-convention');
+    renderMapper();
+    clearSelection();
+    markDirty();
+    toast('Naming convention applied \u2014 review and Save', 'success');
+  } catch (e) {
+    const errEl = document.getElementById('nc-error');
+    if (errEl) { errEl.textContent = 'Failed: ' + e.message; errEl.style.display = ''; }
+    else toast('Apply naming failed: ' + e.message, 'error');
   }
 }
 
@@ -3655,13 +4035,14 @@ function openContextMenu(items, x, y, opts = {}) {
     const icon = it.icon ? escHtml(it.icon) : '';
     const sc = it.shortcut ? `<span class="ctx-item-shortcut">${escHtml(it.shortcut)}</span>` : '';
     const arrow = it.submenu ? '<span class="ctx-item-arrow">&#9656;</span>' : '';
+    const help = (menuHintsEnabled() && it.hint && !it.submenu) ? '<span class="ctx-item-help">&#9432;</span>' : '';
     const cls = ['ctx-item'];
     if (it.danger) cls.push('danger');
     if (it.disabled) cls.push('disabled');
     html += `<div class="${cls.join(' ')}" role="menuitem" data-idx="${idx}" tabindex="-1">
       <span class="ctx-item-icon">${icon}</span>
       <span class="ctx-item-label">${escHtml(it.label || '')}</span>
-      ${sc}${arrow}
+      ${sc}${arrow}${help}
     </div>`;
   });
   el.innerHTML = html;
@@ -3683,10 +4064,19 @@ function openContextMenu(items, x, y, opts = {}) {
   _ctxItems = items;
   _ctxOpen = true;
 
+  const hintsOn = menuHintsEnabled();
   el.querySelectorAll('.ctx-item').forEach(node => {
     const idx = parseInt(node.dataset.idx);
     const it = items[idx];
-    if (!it || it.disabled) return;
+    if (!it) return;
+    if (hintsOn && it.hint) {
+      const show = () => showMenuHint(it.hint, node);
+      node.addEventListener('mouseenter', show);
+      node.addEventListener('focus', show);
+      node.addEventListener('mouseleave', hideMenuHint);
+      node.addEventListener('blur', hideMenuHint);
+    }
+    if (it.disabled) return;
     node.addEventListener('click', e => {
       e.stopPropagation();
       closeContextMenu();
@@ -3700,9 +4090,68 @@ function openContextMenu(items, x, y, opts = {}) {
   });
 }
 
+// ── Menu hint tooltips (configurable, default on) ──
+function menuHintsEnabled() {
+  return localStorage.getItem('r2g.menuHints') !== 'off';
+}
+function setMenuHints(on) {
+  localStorage.setItem('r2g.menuHints', on ? 'on' : 'off');
+  if (!on) hideMenuHint();
+}
+function showMenuHint(text, anchor, placement = 'right') {
+  const el = document.getElementById('ctx-hint');
+  if (!el || !text) return;
+  el.textContent = text;
+  el.classList.add('open');
+  el.setAttribute('aria-hidden', 'false');
+  const a = anchor.getBoundingClientRect();
+  const m = el.getBoundingClientRect();
+  const pad = 8, vw = window.innerWidth, vh = window.innerHeight;
+  let x, y;
+  if (placement === 'below') {
+    // Anchor below (e.g. top toolbar buttons); flip above if it would overflow.
+    x = Math.min(a.left, vw - m.width - pad);
+    if (x < pad) x = pad;
+    y = a.bottom + pad;
+    if (y + m.height + pad > vh) y = Math.max(pad, a.top - m.height - pad);
+  } else {
+    // Prefer to the right of the menu item; flip left if it would overflow.
+    x = a.right + pad;
+    if (x + m.width + pad > vw) x = Math.max(pad, a.left - m.width - pad);
+    y = a.top;
+    if (y + m.height + pad > vh) y = Math.max(pad, vh - m.height - pad);
+  }
+  el.style.left = x + 'px';
+  el.style.top = y + 'px';
+}
+function hideMenuHint() {
+  const el = document.getElementById('ctx-hint');
+  if (el) { el.classList.remove('open'); el.setAttribute('aria-hidden', 'true'); }
+}
+
+// Delegated hints for any element carrying data-hint (toolbar buttons, etc.).
+// Placement defaults to 'below'; override with data-hint-placement.
+(function wireDataHints() {
+  function handle(e) {
+    if (!menuHintsEnabled()) return;
+    const t = e.target.closest && e.target.closest('[data-hint]');
+    if (!t) return;
+    showMenuHint(t.getAttribute('data-hint'), t, t.getAttribute('data-hint-placement') || 'below');
+  }
+  document.addEventListener('mouseover', handle);
+  document.addEventListener('focusin', handle);
+  document.addEventListener('mouseout', e => {
+    if (e.target.closest && e.target.closest('[data-hint]')) hideMenuHint();
+  });
+  document.addEventListener('focusout', e => {
+    if (e.target.closest && e.target.closest('[data-hint]')) hideMenuHint();
+  });
+})();
+
 function closeContextMenu() {
   const el = document.getElementById('ctx-menu');
   if (el) { el.classList.remove('open'); el.innerHTML = ''; }
+  hideMenuHint();
   _ctxOpen = false;
   _ctxItems = null;
 }
@@ -3763,6 +4212,10 @@ function openHelpModal() {
   let html = '<p style="color:var(--text-muted);margin-bottom:12px;font-size:12px">' +
     'Right-click any table, column, target collection, function circle, edge or the canvas itself for context actions. ' +
     'Press <kbd>?</kbd> to reopen this overlay.</p>';
+  html += '<label style="display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:12px;cursor:pointer">' +
+    `<input type="checkbox" id="pref-menu-hints" ${menuHintsEnabled() ? 'checked' : ''} ` +
+    'onchange="setMenuHints(this.checked)"> ' +
+    'Show explanatory hints on menu options (hover the <span style="opacity:.6">&#9432;</span>)</label>';
   for (const [scope, list] of Object.entries(groups)) {
     if (!list.length) continue;
     html += `<div class="prop-group"><div class="prop-group-title">${scope} shortcuts</div>`;
@@ -3922,21 +4375,31 @@ function _menuSourceTable(tableName) {
   const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
   const isMapped = !!collEntry;
   return [
-    { label: isMapped ? 'Re-run auto-map for this table' : 'Auto-map this table', icon: '\u2728', onClick: () => autoMapTable(tableName) },
+    { label: isMapped ? 'Re-run auto-map for this table' : 'Auto-map this table', icon: '\u2728', onClick: () => autoMapTable(tableName),
+      hint: 'Generate default property mappings for just this table from its columns and primary key.' },
     { label: collapsedTables.has(tableName) ? 'Expand columns' : 'Collapse columns', icon: collapsedTables.has(tableName) ? '\u25BE' : '\u25B8',
-      onClick: () => { onSourceCardClick(tableName); } },
+      onClick: () => { onSourceCardClick(tableName); },
+      hint: 'Show or hide this table\u2019s columns and connector ports.' },
     '-',
-    { label: 'Inspect table', icon: '\u2139', onClick: () => onSourceCardClick(tableName) },
-    { label: 'Inspect FKs', icon: '\u29C9', onClick: () => showSourceFkSummary(tableName) },
-    { label: 'Preview data', icon: '\u26ED', onClick: () => previewTable(currentSourceName, tableName) },
+    { label: 'Inspect table', icon: '\u2139', onClick: () => onSourceCardClick(tableName),
+      hint: 'Open the detail panel for this source table.' },
+    { label: 'Inspect FKs', icon: '\u29C9', onClick: () => showSourceFkSummary(tableName),
+      hint: 'List the declared and inferred foreign keys involving this table.' },
+    { label: 'Preview data', icon: '\u26ED', onClick: () => previewTable(currentSourceName, tableName),
+      hint: 'Fetch and show a small sample of rows from this table.' },
     '-',
-    { label: 'Copy table name', icon: '\u29C9', onClick: () => copyToClipboard(tableName) },
-    { label: 'Expand all tables', onClick: () => expandAllTables(true) },
-    { label: 'Collapse all tables', onClick: () => expandAllTables(false) },
+    { label: 'Copy table name', icon: '\u29C9', onClick: () => copyToClipboard(tableName),
+      hint: 'Copy the source table name to the clipboard.' },
+    { label: 'Expand all tables', onClick: () => expandAllTables(true),
+      hint: 'Expand every source table card.' },
+    { label: 'Collapse all tables', onClick: () => expandAllTables(false),
+      hint: 'Collapse every source table card.' },
     '-',
     isMapped
-      ? { label: 'Remove mapping', danger: true, icon: '\u2716', onClick: () => removeTableMapping(tableName) }
-      : { label: 'Add as document collection', icon: '\u2795', onClick: () => addTableMapping(tableName) },
+      ? { label: 'Remove mapping', danger: true, icon: '\u2716', onClick: () => removeTableMapping(tableName),
+          hint: 'Remove the target collection produced from this table.' }
+      : { label: 'Add as document collection', icon: '\u2795', onClick: () => addTableMapping(tableName),
+          hint: 'Create a target document (vertex) collection from this table.' },
   ];
 }
 
@@ -3974,17 +4437,20 @@ function _menuSourceColumn(tableName, colName) {
     }
   }
   return [
-    { label: 'Map to\u2026', icon: '\u2192', submenu: mapToSubmenu },
+    { label: 'Map to\u2026', icon: '\u2192', submenu: mapToSubmenu,
+      hint: 'Connect this column to a target property (or _key) on one of this table\u2019s collections.' },
     { label: isExcluded ? 'Include in mapping' : 'Exclude from mapping',
       icon: isExcluded ? '\u2713' : '\u2716',
-      onClick: () => collKey && toggleField(collKey, colName) },
+      onClick: () => collKey && toggleField(collKey, colName),
+      hint: isExcluded ? 'Bring this column back into the generated mapping.' : 'Skip this column so it is not written to the target document.' },
     '-',
     { label: 'Inspect type', icon: '\u2139', onClick: () => {
       const t = colInfo ? colInfo.type : 'unknown';
       const flags = [colInfo?.isPk && 'PK', colInfo?.isFk && 'FK'].filter(Boolean).join(', ') || 'regular';
       toast(`${tableName}.${colName}: ${t} (${flags})`, 'info');
-    } },
-    { label: 'Copy column name', icon: '\u29C9', onClick: () => copyToClipboard(colName) },
+    }, hint: 'Show this column\u2019s source data type and whether it is a primary or foreign key.' },
+    { label: 'Copy column name', icon: '\u29C9', onClick: () => copyToClipboard(colName),
+      hint: 'Copy the column name to the clipboard.' },
   ];
 }
 
@@ -3995,17 +4461,24 @@ function _menuTargetCollection(collKey) {
   const targetName = coll.targetCollection || collKey;
   const isEdge = coll.collectionType === 'edge';
   return [
-    { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => promptRenameCollection(collKey) },
+    { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => promptRenameCollection(collKey),
+      hint: 'Change the target collection name. If the target is already loaded, saving offers an in-place rename migration.' },
     { label: isEdge ? 'Convert to document collection' : 'Convert to edge collection',
-      icon: '\u21C4', onClick: () => toggleCollectionType(collKey) },
+      icon: '\u21C4', onClick: () => toggleCollectionType(collKey),
+      hint: isEdge ? 'Treat this as a vertex (document) collection instead of an edge.' : 'Treat this table as an edge collection (its two foreign keys become _from / _to endpoints).' },
     '-',
-    { label: 'Add edge from this collection\u2026', icon: '\u2192', onClick: () => beginAddEdgeFrom(targetName) },
-    { label: 'Reveal source table', icon: '\u2139', onClick: () => revealSourceTable(coll.sourceTable || collKey) },
+    { label: 'Add edge from this collection\u2026', icon: '\u2192', onClick: () => beginAddEdgeFrom(targetName),
+      hint: 'Start drawing a new edge originating from this collection to another target vertex.' },
+    { label: 'Reveal source table', icon: '\u2139', onClick: () => revealSourceTable(coll.sourceTable || collKey),
+      hint: 'Scroll to and highlight the source table that feeds this collection.' },
     '-',
-    { label: 'Inspect', icon: '\u2139', onClick: () => onTargetCardClick(collKey) },
-    { label: 'Copy collection name', icon: '\u29C9', onClick: () => copyToClipboard(targetName) },
+    { label: 'Inspect', icon: '\u2139', onClick: () => onTargetCardClick(collKey),
+      hint: 'Open the detail panel for this collection (properties, mappings, validation).' },
+    { label: 'Copy collection name', icon: '\u29C9', onClick: () => copyToClipboard(targetName),
+      hint: 'Copy the target collection name to the clipboard.' },
     '-',
-    { label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => removeTargetMapping(collKey) },
+    { label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => removeTargetMapping(collKey),
+      hint: 'Remove this collection from the mapping. Does not drop the collection in ArangoDB until the next load.' },
   ];
 }
 
@@ -4013,11 +4486,15 @@ function _menuTargetCollection(collKey) {
 function _menuTargetProperty(collKey, prop) {
   const coll = editState.collections[collKey];
   return [
-    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop) },
-    { label: 'Mark as _key source', icon: '\u29B7', disabled: prop === '_key', onClick: () => markPropAsKey(collKey, prop) },
-    { label: 'Unmap', danger: true, icon: '\u2716', onClick: () => unmapTargetProp(collKey, prop) },
+    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop),
+      hint: 'Define how this property\u2019s value is computed \u2014 identity pass-through or an AQL / KSQL / Python expression over one or more source columns.' },
+    { label: 'Mark as _key source', icon: '\u29B7', disabled: prop === '_key', onClick: () => markPropAsKey(collKey, prop),
+      hint: 'Use this property\u2019s source column to derive the document _key (the stable primary identifier).' },
+    { label: 'Unmap', danger: true, icon: '\u2716', onClick: () => unmapTargetProp(collKey, prop),
+      hint: 'Remove the mapping that populates this property.' },
     '-',
-    { label: 'Copy property name', icon: '\u29C9', onClick: () => copyToClipboard(prop) },
+    { label: 'Copy property name', icon: '\u29C9', onClick: () => copyToClipboard(prop),
+      hint: 'Copy the property name to the clipboard.' },
   ];
 }
 
@@ -4026,111 +4503,153 @@ function _menuFunctionCircle(collKey, prop) {
   const coll = editState.collections[collKey];
   const fx = coll ? findFieldExpression(coll, prop) : null;
   return [
-    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop) },
+    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop),
+      hint: 'Open the editor to change the transform expression that produces this target property.' },
     { label: 'Change engine', icon: '\u2699', submenu: [
       { label: 'AQL', onClick: () => setFxEngine(collKey, prop, 'aql') },
       { label: 'KSQL', onClick: () => setFxEngine(collKey, prop, 'ksql') },
       { label: 'Python', onClick: () => setFxEngine(collKey, prop, 'python') },
-    ]},
+    ], hint: 'Pick the expression language: AQL (bulk load), KSQL (streaming), or Python.' },
     '-',
     { label: 'Convert to identity', icon: '\u21BA',
       disabled: !fx || !fx.expression,
-      onClick: () => { removeFieldExpression(collKey, prop); markDirty(); renderMapper(); } },
+      onClick: () => { removeFieldExpression(collKey, prop); markDirty(); renderMapper(); },
+      hint: 'Drop the expression and pass the single source column through unchanged.' },
     { label: 'Remove function', danger: true, icon: '\u2716',
-      onClick: () => { removeFieldExpression(collKey, prop); markDirty(); renderMapper(); } },
+      onClick: () => { removeFieldExpression(collKey, prop); markDirty(); renderMapper(); },
+      hint: 'Delete this mapping function entirely.' },
   ];
 }
 
 // Connector menu
 function _menuConnector(pathEl) {
   const t = pathEl.dataset.type;
-  const items = [{ label: 'Inspect', icon: '\u2139', onClick: () => onConnectorClick(pathEl) }];
+  const items = [{ label: 'Inspect', icon: '\u2139', onClick: () => onConnectorClick(pathEl),
+    hint: 'Show the source and target endpoints this connector links.' }];
   if (t === 'column' || t === 'fn-output') {
     const collKey = pathEl.dataset.collKey;
     const prop = pathEl.dataset.targetProp;
     if (collKey && prop) {
-      items.push({ label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop) });
+      items.push({ label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop),
+        hint: 'Edit the transform expression for the target property this connector feeds.' });
     }
   }
   items.push('-');
-  items.push({ label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => deleteConnector(pathEl) });
+  items.push({ label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => deleteConnector(pathEl),
+    hint: 'Remove this source-to-target connection.' });
   return items;
 }
 
 // Target edge arrow menu
 function _menuTargetEdge(edgeColl) {
   return [
-    { label: 'Edit edge definition\u2026', icon: '\u270E', onClick: () => openEdgeEditor(edgeColl) },
-    { label: 'Reverse direction', icon: '\u21C4', onClick: () => reverseEdge(edgeColl) },
-    { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => renameEdgeCollection(edgeColl) },
+    { label: 'Edit edge definition\u2026', icon: '\u270E', onClick: () => openEdgeEditor(edgeColl),
+      hint: 'Edit the edge name, direction, from / to collections, and the key columns (including composite keys).' },
+    { label: 'Reverse direction', icon: '\u21C4', onClick: () => reverseEdge(edgeColl),
+      hint: 'Swap the _from and _to endpoints so the edge points the other way.' },
+    { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => renameEdgeCollection(edgeColl),
+      hint: 'Rename the edge collection. If already loaded, saving offers an in-place rename migration.' },
     '-',
-    { label: 'Inspect', icon: '\u2139', onClick: () => onEdgeCardClick(edgeColl) },
-    { label: 'Delete edge', danger: true, icon: '\u2716', onClick: () => deleteEdge(edgeColl) },
+    { label: 'Inspect', icon: '\u2139', onClick: () => onEdgeCardClick(edgeColl),
+      hint: 'Open the detail panel for this edge.' },
+    { label: 'Delete edge', danger: true, icon: '\u2716', onClick: () => deleteEdge(edgeColl),
+      hint: 'Remove this edge from the mapping.' },
   ];
 }
 
 // Source FK menu
 function _menuSourceFk(fromTable, toTable, fk) {
   return [
-    { label: 'Inspect FK', icon: '\u2139', onClick: () => onSourceFkClick(fromTable, toTable, fk) },
+    { label: 'Inspect FK', icon: '\u2139', onClick: () => onSourceFkClick(fromTable, toTable, fk),
+      hint: 'Show the columns and referenced table for this foreign-key relationship.' },
     { label: 'Promote to explicit edge collection', icon: '\u2192',
-      onClick: () => promoteFkToEdge(fromTable, toTable, fk) },
+      onClick: () => promoteFkToEdge(fromTable, toTable, fk),
+      hint: 'Turn this foreign key into a first-class edge collection in the target graph.' },
   ];
 }
 
 // Empty canvas menu
 function _menuCanvas() {
   return [
-    { label: 'Auto-map all', icon: '\u2728', shortcut: 'a', onClick: autoMap },
-    { label: 'Suggest foreign keys\u2026', icon: '\u2699', shortcut: 'i', onClick: () => suggestFks() },
-    { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping },
-    { label: 'Save', icon: '\u2630', shortcut: '\u2318S', onClick: saveMapping },
-    { label: 'Load\u2026', icon: '\u25B6', shortcut: '\u2318\u23CE', onClick: showLoadModal },
+    { label: 'Auto-map all', icon: '\u2728', shortcut: 'a', onClick: autoMap,
+      hint: 'Generate default mappings for every source table using column-name and primary-key heuristics. Existing manual edits are preserved.' },
+    { label: 'Apply naming convention\u2026', icon: 'Aa', onClick: openNamingConventionForm,
+      hint: 'Re-case all generated names at once (e.g. PascalCase collections, camelCase properties and edges). Manual renames and system attributes are left untouched.' },
+    { label: 'Suggest foreign keys\u2026', icon: '\u2699', shortcut: 'i', onClick: () => suggestFks(),
+      hint: 'Scan the source schema for likely foreign keys (by column name and value overlap) and propose new edges to accept or dismiss.' },
+    { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping,
+      hint: 'Check the current mapping for errors and warnings (missing keys, unresolved columns, reserved-attribute conflicts) without saving.' },
+    { label: 'Save', icon: '\u2630', shortcut: '\u2318S', onClick: saveMapping,
+      hint: 'Persist the mapping config. If the target has already been loaded and names changed, you will be offered an in-place migration.' },
+    { label: 'Load\u2026', icon: '\u25B6', shortcut: '\u2318\u23CE', onClick: showLoadModal,
+      hint: 'Run the ingestion pipeline: stream data from the source into ArangoDB using the saved mapping and parallelism settings.' },
     '-',
     { label: 'View as', icon: '\u25CD', submenu: [
       { label: 'Topology' + (currentLens === 'topology' ? '  \u2713' : ''), shortcut: '1', onClick: () => setLens('topology') },
       { label: 'Coverage' + (currentLens === 'coverage' ? '  \u2713' : ''), shortcut: '2', onClick: () => setLens('coverage') },
       { label: 'Validation' + (currentLens === 'validation' ? '  \u2713' : ''), shortcut: '3', onClick: () => setLens('validation') },
       { label: 'Diff' + (currentLens === 'diff' ? '  \u2713' : ''), shortcut: '4', onClick: () => setLens('diff') },
-    ]},
+    ], hint: 'Switch the graph lens. Lenses only recolor the stable layout \u2014 they never rebuild or relayout the graph.' },
     '-',
-    { label: 'Expand all tables', onClick: () => expandAllTables(true) },
-    { label: 'Collapse all tables', onClick: () => expandAllTables(false) },
-    { label: 'Show help', icon: '?', shortcut: '?', onClick: openHelpModal },
+    { label: 'Expand all tables', onClick: () => expandAllTables(true),
+      hint: 'Expand every source table card to reveal its columns and connector ports.' },
+    { label: 'Collapse all tables', onClick: () => expandAllTables(false),
+      hint: 'Collapse every source table card down to its header to reduce clutter.' },
+    { label: 'Show help', icon: '?', shortcut: '?', onClick: openHelpModal,
+      hint: 'Open the help overlay listing every keyboard shortcut and the right-click contract.' },
   ];
 }
 
 // Source sidebar item menu
 function _menuSourcesItem(name, type) {
   return [
-    { label: 'Re-introspect', icon: '\u21BA', onClick: () => snapshotSource(name) },
-    { label: 'Set as project source (manual)', icon: '\u2192', onClick: () => toast('Open the relevant project in the picker to switch source.', 'info') },
+    { label: 'Re-introspect', icon: '\u21BA', onClick: () => snapshotSource(name),
+      hint: 'Reconnect and re-read this source\u2019s schema, capturing a fresh snapshot of its tables, columns, and keys.' },
+    { label: 'Set as project source (manual)', icon: '\u2192', onClick: () => toast('Open the relevant project in the picker to switch source.', 'info'),
+      hint: 'Sources are bound to a project at creation; open the project in the picker to change its source.' },
     '-',
-    { label: 'Copy source name', icon: '\u29C9', onClick: () => copyToClipboard(name) },
+    { label: 'Copy source name', icon: '\u29C9', onClick: () => copyToClipboard(name),
+      hint: 'Copy the source name to the clipboard.' },
     '-',
-    { label: 'Remove source\u2026', icon: '\u2716', danger: true, onClick: () => confirmRemoveSource(name) },
+    { label: 'Remove source\u2026', icon: '\u2716', danger: true, onClick: () => confirmRemoveSource(name),
+      hint: 'Delete this source. You will be warned about dependent projects, snapshots, and loads before a cascade delete.' },
   ];
 }
 
 function _menuTargetsItem(name) {
   return [
-    { label: 'Introspect', icon: '\u21BA', onClick: () => introspectTarget(name) },
+    { label: 'Introspect', icon: '\u21BA', onClick: () => introspectTarget(name),
+      hint: 'Connect to this target database and read its existing vertex / edge collections and properties.' },
     '-',
-    { label: 'Copy target name', icon: '\u29C9', onClick: () => copyToClipboard(name) },
+    { label: 'Copy target name', icon: '\u29C9', onClick: () => copyToClipboard(name),
+      hint: 'Copy the target name to the clipboard.' },
     '-',
-    { label: 'Remove target', icon: '\u2716', danger: true, onClick: () => confirmRemoveTarget(name) },
+    { label: 'Remove target', icon: '\u2716', danger: true, onClick: () => confirmRemoveTarget(name),
+      hint: 'Delete this target connection from the catalog. The ArangoDB database itself is not dropped.' },
   ];
 }
 
 function _menuSourcesPanel() {
   return [
-    { label: 'New source\u2026', icon: '\u002B', onClick: () => openNewSourceForm() },
+    { label: 'New source\u2026', icon: '\u002B', onClick: () => openNewSourceForm(),
+      hint: 'Register a new data source (PostgreSQL, Snowflake, CSV, Kafka). Its schema is introspected automatically on save.' },
   ];
 }
 
 function _menuTargetsPanel() {
   return [
-    { label: 'New target\u2026', icon: '\u002B', onClick: () => openNewTargetForm() },
+    { label: 'New target\u2026', icon: '\u002B', onClick: () => openNewTargetForm(),
+      hint: 'Register a new ArangoDB target database connection.' },
+  ];
+}
+
+function _menuTargetCluster(endpoint) {
+  return [
+    { label: 'Add database here\u2026', icon: '\u002B', onClick: () => openNewTargetForm({ endpoint }),
+      hint: 'Register another target database on this same cluster endpoint.' },
+    '-',
+    { label: 'Copy endpoint', icon: '\u29C9', onClick: () => copyToClipboard(endpoint),
+      hint: 'Copy the cluster endpoint URL to the clipboard.' },
   ];
 }
 
@@ -4140,10 +4659,12 @@ function _menuHistoryRow(rec) {
     { label: 'View error details', icon: '\u2139', disabled: rec.status !== 'failed', onClick: () => {
       const idx = (window._historyCache || []).indexOf(rec);
       if (idx >= 0) showLoadErrorDetail(idx);
-    }},
-    { label: 'Re-load with same settings', icon: '\u21BB', onClick: () => reloadWithSameSettings(rec) },
+    }, hint: 'Open the dead-letter records and error messages captured during this run (failed runs only).' },
+    { label: 'Re-load with same settings', icon: '\u21BB', onClick: () => reloadWithSameSettings(rec),
+      hint: 'Start a new load using the same mapping and parallelism settings as this run.' },
     '-',
-    { label: 'Copy load ID', icon: '\u29C9', onClick: () => copyToClipboard(rec.id) },
+    { label: 'Copy load ID', icon: '\u29C9', onClick: () => copyToClipboard(rec.id),
+      hint: 'Copy this run\u2019s load ID to the clipboard.' },
   ];
 }
 
@@ -4198,6 +4719,10 @@ document.addEventListener('contextmenu', e => {
     ['.target-card', el => {
       const ck = el.dataset.key;
       if (ck) openContextMenu(_menuTargetCollection(ck), e.clientX, e.clientY, { header: 'Collection: ' + (editState.collections[ck]?.targetCollection || ck) });
+    }],
+    ['.target-cluster-header', el => {
+      const ep = el.closest('.target-cluster')?.dataset.endpoint;
+      openContextMenu(_menuTargetCluster(ep), e.clientX, e.clientY, { header: 'Cluster: ' + _clusterLabel(ep) });
     }],
     ['.source-item[data-target]', el => {
       const name = el.dataset.target;
@@ -4767,6 +5292,17 @@ function renderLegend() {
     </div>
     <div class="legend-body">
       <div class="legend-section">
+        <div class="legend-section-title">Color key</div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--accent)"></span></span>
+          <span class="legend-text">Blue = relational source <small>(non-Arango: PostgreSQL, CSV, Kafka)</small></span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-swatch"><span style="display:inline-block;width:12px;height:12px;border-radius:3px;background:var(--green)"></span></span>
+          <span class="legend-text">Green = ArangoDB target <small>(graph collections)</small></span>
+        </div>
+      </div>
+      <div class="legend-section">
         <div class="legend-section-title">Source nodes (left pane)</div>
         <div class="legend-row">
           <span class="legend-swatch"><span class="field-badge pk" style="font-size:9px">PK</span></span>
@@ -5174,10 +5710,14 @@ document.addEventListener('keydown', e => {
 }, true);
 
 // Toolbar lens chip cycles topology -> coverage -> validation -> diff -> topology
-document.getElementById('lens-chip').addEventListener('click', () => {
+function cycleLens() {
   const order = ['topology', 'coverage', 'validation', 'diff'];
   const i = order.indexOf(currentLens);
   setLens(order[(i + 1) % order.length]);
+}
+document.getElementById('lens-chip').addEventListener('click', cycleLens);
+document.getElementById('lens-chip').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cycleLens(); }
 });
 
 // Patch existing functions to also markDirty / refresh badges
@@ -5300,6 +5840,58 @@ selectProject = async function (name) {
 
 // ── Init ──
 
+// Draggable frame splitters — resize the fixed-width frame adjacent to each
+// handle; the flex canvas absorbs the remaining space. Widths persist locally.
+function initResizers() {
+  const RESTORE = ['sidebar-left', 'mapper-source-pane', 'mapper-target-pane', 'sidebar-right'];
+  RESTORE.forEach(id => {
+    try {
+      const w = localStorage.getItem('r2g_w_' + id);
+      const el = document.getElementById(id);
+      if (w && el) { el.style.width = w; el.style.minWidth = w; el.style.flexShrink = '0'; }
+    } catch (_) {}
+  });
+  document.querySelectorAll('.resizer').forEach(rz => {
+    rz.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const el = document.getElementById(rz.dataset.target);
+      if (!el) return;
+      const edge = rz.dataset.edge;
+      const floor = parseInt(rz.dataset.min || '120', 10);
+      const ceil = parseInt(rz.dataset.max || '760', 10);
+      rz.classList.add('dragging');
+      document.body.classList.add('resizing');
+      const onMove = ev => {
+        const rect = el.getBoundingClientRect();
+        let w = edge === 'right' ? (ev.clientX - rect.left) : (rect.right - ev.clientX);
+        w = Math.max(floor, Math.min(ceil, Math.round(w)));
+        el.style.width = w + 'px';
+        el.style.minWidth = w + 'px';
+        el.style.flexShrink = '0';
+        if (typeof scheduleRedraw === 'function') scheduleRedraw();
+      };
+      const onUp = () => {
+        rz.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        try { localStorage.setItem('r2g_w_' + rz.dataset.target, el.style.width); } catch (_) {}
+        if (typeof scheduleRedraw === 'function') scheduleRedraw();
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+    // Double-click a handle to reset that frame to its default width.
+    rz.addEventListener('dblclick', () => {
+      const el = document.getElementById(rz.dataset.target);
+      if (!el) return;
+      el.style.width = ''; el.style.minWidth = ''; el.style.flexShrink = '';
+      try { localStorage.removeItem('r2g_w_' + rz.dataset.target); } catch (_) {}
+      if (typeof scheduleRedraw === 'function') scheduleRedraw();
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   loadSources();
   loadTargets();
@@ -5307,6 +5899,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initExpressionEditor();
   renderLegend();
   setLens('topology');
+  initResizers();
 
   document.getElementById('mapper-source-pane').addEventListener('scroll', scheduleRedraw);
   document.getElementById('mapper-target-pane').addEventListener('scroll', scheduleRedraw);

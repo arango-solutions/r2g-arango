@@ -77,10 +77,16 @@ class DeltaTransformer:
         table_def = self.schema.tables.get(table_name)
         if table_def is None:
             return None
+        target_by_source = {
+            cm.source_table: cm.target_collection
+            for _, cm in self._cm_by_table.values()
+        }
         return EdgeTransformer(
             edge_def,
             table_def,
             key_separator=self.config.key_separator,
+            from_name=target_by_source.get(edge_def.from_collection),
+            to_name=target_by_source.get(edge_def.to_collection),
         )
 
     def _document_key_from_row(

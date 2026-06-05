@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from r2g.fk_inference import (
+    CsvValueSampler,
     InferenceOptions,
     InferredForeignKey,
     PostgresValueSampler,
@@ -471,3 +472,115 @@ def test_prefix_extraction_produces_expected_tables(col_name, expected_prefix):
         assert any(c.foreign_table == expected_prefix for c in out)
     else:
         assert all(c.columns != [col_name] for c in out)
+
+
+# ── CsvValueSampler ─────────────────────────────────────────────────
+
+
+class TestCsvValueSampler:
+    def _make_dir(self, tmp_path, files: dict[str, str]):
+        for name, content in files.items():
+            (tmp_path / name).write_text(content)
+        return CsvValueSampler(str(tmp_path), limit=1000)
+
+    def test_full_overlap_returns_one(self, tmp_path):
+        sampler = self._make_dir(
+            tmp_path,
+            {
+                "users.csv": "id,name\n1,a\n2,b\n3,c\n",
+                "orders.csv": "id,user_id\n10,1\n11,2\n12,3\n",
+            },
+        )
+        # Every distinct orders.user_id (1,2,3) exists in users.id.
+        assert sampler("orders", "user_id", "users", "id") == 1.0
+
+    def test_partial_overlap_is_fraction(self, tmp_path):
+        sampler = self._make_dir(
+            tmp_path,
+            {
+                "users.csv": "id\n1\n2\n",
+                "orders.csv": "id,user_id\n10,1\n11,2\n12,99\n",
+            },
+        )
+        # Distinct local values {1,2,99}; {1,2} present in foreign → 2/3.
+        assert sampler("orders", "user_id", "users", "id") == pytest.approx(2 / 3)
+
+    def test_zero_overlap_returns_zero(self, tmp_path):
+        sampler = self._make_dir(
+            tmp_path,
+            {
+                "users.csv": "id\n1\n2\n3\n",
+                "orders.csv": "id,user_id\n10,7\n11,8\n",
+            },
+        )
+        assert sampler("orders", "user_id", "users", "id") == 0.0
+
+    def test_int_vs_float_tokens_compared_as_text(self, tmp_path):
+        # Raw text comparison: "1" matches "1", "2.5" matches "2.5".
+        sampler = self._make_dir(
+            tmp_path,
+            {
+                "parent.csv": "key\n1\n2.5\n",
+                "child.csv": "id,key\n10,1\n11,2.5\n",
+            },
+        )
+        assert sampler("child", "key", "parent", "key") == 1.0
+
+    def test_missing_file_returns_none(self, tmp_path):
+        sampler = self._make_dir(tmp_path, {"users.csv": "id\n1\n"})
+        assert sampler("orders", "user_id", "users", "id") is None
+        assert sampler("users", "id", "ghost", "id") is None
+
+    def test_empty_local_column_returns_none(self, tmp_path):
+        sampler = self._make_dir(
+            tmp_path,
+            {
+                "users.csv": "id\n1\n",
+                "orders.csv": "id,user_id\n",  # header only, no rows
+            },
+        )
+        assert sampler("orders", "user_id", "users", "id") is None
+
+    def test_limit_is_clamped_to_minimum(self, tmp_path):
+        sampler = CsvValueSampler(str(tmp_path), limit=10)
+        assert sampler.limit >= 100
+
+    def test_integration_vetoes_bad_candidate(self, tmp_path):
+        (tmp_path / "users.csv").write_text("id\n1\n2\n3\n")
+        (tmp_path / "orders.csv").write_text("id,user_id\n10,7\n11,8\n12,9\n")
+        s = _schema(
+            _tbl("users", [("id", "integer", False, True)], pk=["id"]),
+            _tbl(
+                "orders",
+                [("id", "integer", False, True), ("user_id", "integer", False, False)],
+                pk=["id"],
+            ),
+        )
+        sampler = CsvValueSampler(str(tmp_path), limit=1000)
+        out = infer_foreign_keys(
+            s,
+            options=InferenceOptions(sample_overlap=True, overlap_veto_on_zero=True),
+            sampler=sampler,
+        )
+        # orders.user_id values never appear in users.id → vetoed.
+        assert out == []
+
+    def test_integration_boosts_good_candidate(self, tmp_path):
+        (tmp_path / "users.csv").write_text("id\n1\n2\n3\n")
+        (tmp_path / "orders.csv").write_text("id,user_id\n10,1\n11,2\n12,3\n")
+        s = _schema(
+            _tbl("users", [("id", "integer", False, True)], pk=["id"]),
+            _tbl(
+                "orders",
+                [("id", "integer", False, True), ("user_id", "integer", False, False)],
+                pk=["id"],
+            ),
+        )
+        sampler = CsvValueSampler(str(tmp_path), limit=1000)
+        out_no = infer_foreign_keys(s)
+        out_yes = infer_foreign_keys(
+            s,
+            options=InferenceOptions(sample_overlap=True),
+            sampler=sampler,
+        )
+        assert out_yes[0].confidence > out_no[0].confidence

@@ -46,7 +46,7 @@ _running_loads: dict[str, dict[str, Any]] = {}  # load_id -> {"thread", "queue",
 
 def create_app(catalog_dir: str | None = None) -> FastAPI:
     """Factory function for the FastAPI application."""
-    app = FastAPI(title="R2G Mapping Studio", version="0.1.0")
+    app = FastAPI(title="Relational-to-Graph Studio", version="0.1.0")
 
     app.add_middleware(
         CORSMiddleware,
@@ -57,6 +57,30 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
 
     catalog = CatalogManager(catalog_dir)
 
+    def _resolve_target(project: Any) -> tuple[str, str, str, str]:
+        """Resolve (endpoint, database, username, password) for a project's target.
+
+        Prefers an explicitly linked target, then a target matching the project's
+        endpoint+database, falling back to the project fields + env credentials.
+        """
+        target = None
+        target_name = getattr(project, "target_name", None)
+        if target_name:
+            target = catalog.get_target(target_name)
+        if target is None:
+            for _tgt in catalog.list_targets():
+                if _tgt.endpoint == project.arango_endpoint and _tgt.database == project.arango_database:
+                    target = _tgt
+                    break
+        if target is not None:
+            return target.endpoint, target.database, target.username, target.password
+        return (
+            project.arango_endpoint,
+            project.arango_database,
+            os.environ.get("ARANGO_USER", "root"),
+            os.environ.get("ARANGO_PASSWORD", ""),
+        )
+
     if _STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
@@ -65,7 +89,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         index_path = _STATIC_DIR / "index.html"
         if index_path.exists():
             return FileResponse(str(index_path), media_type="text/html")
-        return HTMLResponse("<h1>R2G Mapping Studio</h1><p>Frontend not built yet.</p>")
+        return HTMLResponse("<h1>Relational-to-Graph Studio</h1><p>Frontend not built yet.</p>")
 
     @app.get("/api/health")
     async def health():
@@ -216,13 +240,17 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
     async def infer_fks(name: str, body: InferFksRequest | None = None):
         """Return ranked FK candidates for the source's latest snapshot.
 
-        When ``sample: true`` is passed in the body, the engine runs
-        bounded value-overlap queries via :class:`PostgresValueSampler`
-        (PostgreSQL only for now; Snowflake sampling will land with
-        P6.4). Without sampling, the suggestions are name-heuristic
-        only and the endpoint is schema-metadata-only (safe / free).
+        When ``sample: true`` is passed in the body, the engine scores
+        value-overlap via :class:`PostgresValueSampler` (bounded
+        ``LEFT JOIN`` queries) for PostgreSQL sources or
+        :class:`CsvValueSampler` (Polars file reads) for CSV sources;
+        Snowflake sampling is not yet supported and falls back to the
+        name heuristic. Without sampling, the suggestions are
+        name-heuristic only and the endpoint is schema-metadata-only
+        (safe / free).
         """
         from r2g.fk_inference import (
+            CsvValueSampler,
             InferenceOptions,
             PostgresValueSampler,
             infer_foreign_keys,
@@ -259,11 +287,23 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                     sampler_used = True
                 except Exception as err:  # noqa: BLE001
                     logger.warning("fk_infer_sampler_init_failed", error=str(err))
+            elif stype == "csv":
+                try:
+                    params = source.source_params or {}
+                    sampler = CsvValueSampler(
+                        source.connection_string,
+                        delimiter=params.get("delimiter", ","),
+                        has_header=bool(params.get("has_header", True)),
+                        limit=req.sample_limit,
+                    )
+                    sampler_used = True
+                except Exception as err:  # noqa: BLE001
+                    logger.warning("fk_infer_sampler_init_failed", error=str(err))
             else:
                 logger.info(
                     "fk_infer_sampler_unsupported",
                     source_type=stype,
-                    note="value-overlap sampling is PostgreSQL-only; name heuristic still runs",
+                    note="value-overlap sampling supports PostgreSQL and CSV; name heuristic still runs",
                 )
 
         try:
@@ -352,6 +392,13 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
 
+    @app.delete("/api/projects/{name}")
+    async def delete_project(name: str):
+        """Delete a project (and its load history). Mapping file is left on disk."""
+        if not catalog.delete_project(name):
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        return {"deleted": name}
+
     @app.get("/api/projects/{name}/mapping")
     async def get_mapping(name: str):
         project = catalog.get_project(name)
@@ -430,6 +477,116 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.get("/api/projects/{name}/migration-plan")
+    async def migration_plan(name: str):
+        """Diff the *live* database state (last loaded mapping) against the
+        current saved mapping, returning the change-management plan.
+
+        ``loaded`` is False when the project has never been loaded; in that case
+        there is nothing in the database to migrate and the caller can just load.
+        """
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        snap = catalog.get_latest_snapshot(project.source_name)
+        if snap is None:
+            raise HTTPException(status_code=400, detail="No schema snapshot available")
+
+        loaded = getattr(project, "loaded_mapping", None)
+        if not loaded:
+            return {"loaded": False, "plan": {"changes": [], "actions": []}}
+
+        from r2g.mapping_diff import diff_mappings
+
+        try:
+            old_config = MappingConfig.model_validate(loaded)
+            new_config = ConfigManager.load_config(project.mapping_config_path)
+            plan = diff_mappings(old_config, new_config, snap.schema_data)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        return {"loaded": True, "loaded_at": str(getattr(project, "loaded_at", "")), "plan": plan.model_dump()}
+
+    @app.post("/api/projects/{name}/migrate")
+    async def migrate(name: str, body: MigrateRequest):
+        """Apply mapping changes to an already-loaded database in place.
+
+        Renames document/edge collections, reloads edges whose endpoints moved,
+        renames properties via AQL, and rebuilds the named graph. Runs
+        synchronously and returns an execution report.
+        """
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        snap = catalog.get_latest_snapshot(project.source_name)
+        if snap is None:
+            raise HTTPException(status_code=400, detail="No schema snapshot available")
+        loaded = getattr(project, "loaded_mapping", None)
+        if not loaded:
+            raise HTTPException(
+                status_code=400,
+                detail="Project has not been loaded yet; run a load instead of a migration.",
+            )
+
+        from r2g.mapping_diff import diff_mappings
+        from r2g.selective_reload import SelectiveReloader
+
+        old_config = MappingConfig.model_validate(loaded)
+        new_config = ConfigManager.load_config(project.mapping_config_path)
+        plan = diff_mappings(old_config, new_config, snap.schema_data)
+        if not plan.actions:
+            return {"migrated": True, "report": {"actions_executed": [], "actions_skipped": [], "errors": []}}
+
+        arango_endpoint, arango_database, arango_username, arango_password = _resolve_target(project)
+        if (arango_database or "").strip().lower() == "_system":
+            raise HTTPException(status_code=400, detail="Refusing to migrate the '_system' database.")
+
+        writer = ArangoWriter(
+            endpoint=arango_endpoint,
+            database=arango_database,
+            username=arango_username,
+            password=arango_password,
+        )
+
+        # A live source connector is only needed for edge reloads; build it
+        # best-effort so property-only / pure-rename plans still work offline.
+        source_connector = None
+        source = catalog.get_source(project.source_name)
+        if source is not None:
+            try:
+                from r2g.connectors.base import create_source_connector
+
+                source_connector = create_source_connector(
+                    source.source_type or "postgresql",
+                    source.connection_string,
+                    schema_name=snap.pg_schema,
+                    source_params=source.source_params,
+                )
+            except Exception as e:
+                logger.warning("migrate_source_unavailable", error=str(e))
+
+        reloader = SelectiveReloader(
+            writer=writer,
+            plan=plan,
+            schema=snap.schema_data,
+            config=new_config,
+            source_connector=source_connector,
+            graph_name=name,
+            on_duplicate="replace",
+            pg_schema=snap.pg_schema,
+        )
+        report = reloader.execute(dry_run=body.dry_run)
+        if not body.dry_run and not report.errors:
+            catalog.set_loaded_mapping(name, new_config.model_dump())
+        return {
+            "migrated": not body.dry_run and not report.errors,
+            "report": {
+                "actions_executed": report.actions_executed,
+                "actions_skipped": report.actions_skipped,
+                "errors": report.errors,
+                "rows_reloaded": report.rows_reloaded,
+            },
+        }
+
     @app.get("/api/projects/{name}/graph-data")
     async def get_graph_data(name: str):
         """Return D3-compatible graph data for the project mapping."""
@@ -486,29 +643,18 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         load_record = catalog.start_load(project_name=name, load_type="streaming")
         load_id = load_record.id
 
-        target = None
-        target_name = getattr(project, "target_name", None)
-        if target_name:
-            target = catalog.get_target(target_name)
-        if target is None:
-            for _tgt in catalog.list_targets():
-                if (
-                    _tgt.endpoint == project.arango_endpoint
-                    and _tgt.database == project.arango_database
-                ):
-                    target = _tgt
-                    break
+        arango_endpoint, arango_database, arango_username, arango_password = _resolve_target(project)
 
-        if target is not None:
-            arango_endpoint = target.endpoint
-            arango_database = target.database
-            arango_username = target.username
-            arango_password = target.password
-        else:
-            arango_endpoint = project.arango_endpoint
-            arango_database = project.arango_database
-            arango_username = os.environ.get("ARANGO_USER", "root")
-            arango_password = os.environ.get("ARANGO_PASSWORD", "")
+        # Never load into the ArangoDB system database; it is not a data graph.
+        if (arango_database or "").strip().lower() == "_system":
+            catalog.complete_load(load_id, 0, 0, [], "failed")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Refusing to load into the '_system' database. Configure a "
+                    "dedicated graph database for this project or target."
+                ),
+            )
 
         writer = ArangoWriter(
             endpoint=arango_endpoint,
@@ -565,6 +711,8 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                     r[0] for r in result.get("edges", [])
                 ]
                 catalog.complete_load(load_id, total_rows, total_errors, collections, "completed")
+                if not body.dry_run:
+                    catalog.set_loaded_mapping(name, config.model_dump())
             except Exception as exc:
                 import traceback as _tb
 
@@ -662,6 +810,34 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="No schema snapshot")
         config = ConfigManager.generate_default_config(snap.schema_data, source_schema=snap.pg_schema)
         return config.model_dump()
+
+    @app.post("/api/projects/{name}/apply-naming")
+    async def apply_naming(name: str, body: NamingConventionRequest):
+        """Re-case collection / property / edge names per a chosen convention.
+
+        Returns the transformed mapping (NOT persisted) so the UI can load it as
+        an editable draft for review before saving.
+        """
+        from r2g.naming import apply_naming_convention
+        from r2g.types import NamingConvention
+
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        try:
+            config = ConfigManager.load_config(project.mapping_config_path)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        snap = catalog.get_latest_snapshot(project.source_name)
+        convention = NamingConvention(
+            collections=body.collections,
+            properties=body.properties,
+            edges=body.edges,
+        )
+        new_config = apply_naming_convention(
+            config, convention, snap.schema_data if snap else None
+        )
+        return new_config.model_dump()
 
     # ── Target endpoints ───────────────────────────────────────────────
 
@@ -769,12 +945,29 @@ class TargetCreateRequest(BaseModel):
     description: str = ""
 
 
+class MigrateRequest(BaseModel):
+    """Parameters for POST /api/projects/{name}/migrate (in-place migration)."""
+
+    dry_run: bool = False
+
+
+class NamingConventionRequest(BaseModel):
+    """Case styles for POST /api/projects/{name}/apply-naming.
+
+    Each value is one of ``preserve`` | ``snake`` | ``camel`` | ``pascal``.
+    """
+
+    collections: str = "preserve"
+    properties: str = "preserve"
+    edges: str = "preserve"
+
+
 class InferFksRequest(BaseModel):
     """Parameters for POST /api/sources/{name}/infer-fks.
 
     Defaults are "cheap" — name-heuristic only, no warehouse queries.
     Set ``sample=true`` to opt into value-overlap sampling (PostgreSQL
-    only today).
+    and CSV today; Snowflake falls back to name-only).
     """
 
     sample: bool = False

@@ -51,6 +51,28 @@ class TestFKEdge:
         assert result["_label"] == "orders_to_users"
 
 
+class TestEndpointResolution:
+    def test_from_to_name_override_target_collections(self):
+        """When collections are renamed, _from/_to use the resolved target names."""
+        transformer = EdgeTransformer(
+            _edge_def(), _orders_table(), from_name="Order", to_name="User"
+        )
+        row = {"id": "10", "user_id": "3", "total": "99.99"}
+        result = transformer.transform_row(row)
+
+        assert result is not None
+        assert result["_from"] == "Order/10"
+        assert result["_to"] == "User/3"
+        # The edge collection label is unaffected by endpoint resolution.
+        assert result["_label"] == "orders_to_users"
+
+    def test_defaults_to_edge_def_collections(self):
+        transformer = EdgeTransformer(_edge_def(), _orders_table())
+        result = transformer.transform_row({"id": "1", "user_id": "2"})
+        assert result["_from"] == "orders/1"
+        assert result["_to"] == "users/2"
+
+
 class TestNullFK:
     def test_null_fk_returns_none(self):
         transformer = EdgeTransformer(_edge_def(), _orders_table())

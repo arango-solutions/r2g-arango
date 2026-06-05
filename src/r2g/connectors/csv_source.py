@@ -8,11 +8,16 @@ type strings (``integer`` / ``double precision`` / ``boolean`` /
 ``timestamp`` / ``text``) that the transformer's type map already
 understands.
 
-CSV has no notion of primary or foreign keys. We apply one light,
-documented heuristic so auto-mapping produces a usable ``_key``: a
-column named exactly ``id`` (case-insensitive) is treated as the
-primary key. Relationships can be recovered afterwards with FK
-inference (``r2g source infer-fks``).
+CSV has no notion of primary or foreign keys. We apply a small,
+documented heuristic so auto-mapping produces a usable ``_key``: the
+first of ``id`` / ``{table}_id`` / ``{singular(table)}_id`` /
+``{table}id`` / ``{singular(table)}id`` (case-insensitive) that exists
+and is **unique and non-null in the read sample** is treated as the
+primary key (e.g. ``customers.csv`` keyed on ``customer_id``). When the
+file has no data rows we fall back to a name-only match so introspection
+still proposes a key. Relationships can be recovered afterwards with FK
+inference (``r2g source infer-fks``), whose value-overlap sampling and
+name heuristics both rely on these detected keys.
 
 Both schema introspection (:meth:`CsvConnector.get_schema`) and bulk
 reads for loads (:class:`CsvSession`) are supported, so a CSV source
@@ -128,12 +133,12 @@ class CsvConnector:
             logger.error("csv_introspect_failed", path=str(path), error=str(e))
             raise RuntimeError(f"Failed to read CSV header for '{table_name}': {e}")
 
+        pk = self._detect_primary_key(table_name, frame)
+        pk_set = set(pk)
+
         columns: list[Column] = []
-        pk: list[str] = []
         for col_name, dtype in zip(frame.columns, frame.dtypes):
-            is_pk = col_name.lower() == "id"
-            if is_pk:
-                pk.append(col_name)
+            is_pk = col_name in pk_set
             columns.append(
                 Column(
                     name=col_name,
@@ -144,6 +149,61 @@ class CsvConnector:
             )
 
         return Table(name=table_name, columns=columns, primary_key=pk, foreign_keys=[])
+
+    @staticmethod
+    def _singularize(name: str) -> str:
+        """Best-effort singular form of a table name for key matching."""
+        n = name.lower()
+        if n.endswith("ies") and len(n) > 3:
+            return n[:-3] + "y"
+        if n.endswith("ses") or n.endswith("xes") or n.endswith("zes"):
+            return n[:-2]
+        if n.endswith("s") and not n.endswith("ss"):
+            return n[:-1]
+        return n
+
+    @staticmethod
+    def _is_unique_key(frame: "pl.DataFrame", col: str) -> bool:
+        """True when ``col`` is non-null and fully distinct in the sample."""
+        series = frame.get_column(col)
+        n = series.len()
+        if n == 0:
+            return False
+        return series.null_count() == 0 and series.n_unique() == n
+
+    def _detect_primary_key(self, table_name: str, frame: "pl.DataFrame") -> list[str]:
+        """Pick a single-column primary key by name + sample uniqueness.
+
+        Candidate names are tried in priority order; the first that maps
+        to a real column wins. With data rows present the winner must be
+        unique and non-null in the sample, so we never invent a key from
+        a non-unique column. With no data rows we accept the first
+        name match (legacy behaviour) so a fresh / empty export still
+        gets a proposed key.
+        """
+        by_lower: dict[str, str] = {}
+        for c in frame.columns:
+            by_lower.setdefault(c.lower(), c)
+
+        t = table_name.lower()
+        singular = self._singularize(t)
+        candidate_names: list[str] = []
+        for cand in ("id", f"{t}_id", f"{singular}_id", f"{t}id", f"{singular}id"):
+            real = by_lower.get(cand)
+            if real and real not in candidate_names:
+                candidate_names.append(real)
+
+        if not candidate_names:
+            return []
+
+        has_rows = frame.height > 0
+        if not has_rows:
+            return [candidate_names[0]]
+
+        for col in candidate_names:
+            if self._is_unique_key(frame, col):
+                return [col]
+        return []
 
 
 class CsvSession:

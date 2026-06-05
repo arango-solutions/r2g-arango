@@ -12,7 +12,12 @@ services:
       - "5432:5432"
     volumes:
       - r2g-pg-data:/var/lib/postgresql/data
-      - ./docker/northwind/northwind.sql:/docker-entrypoint-initdb.d/northwind.sql:ro
+      # 01- prefix: Northwind seeds the default POSTGRES_DB first.
+      - ./docker/northwind/northwind.sql:/docker-entrypoint-initdb.d/01-northwind.sql:ro
+      # 02- prefix: then load the extra demo DBs (Chinook, Pagila).
+      - ./docker/load-samples.sh:/docker-entrypoint-initdb.d/02-load-samples.sh:ro
+      - ./docker/chinook:/samples/chinook:ro
+      - ./docker/pagila:/samples/pagila:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-r2g} -d ${PG_DB:-northwind}"]
       interval: 5s
