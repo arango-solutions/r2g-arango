@@ -95,6 +95,7 @@
   /* Main layout */
   .main {
     display: flex; height: calc(100vh - 52px); margin-top: 52px;
+    position: relative;
   }
 
   /* Draggable splitters between frames */
@@ -335,6 +336,15 @@
     background: var(--accent); position: absolute; right: -5px;
     top: 50%; transform: translateY(-50%); z-index: 5;
   }
+  /* Card "show details" affordance (P5g.4): an explicit, obvious info gesture
+     so selecting/expanding a card never forces the detail panel open. */
+  .card-info-btn {
+    background: transparent; border: none; color: var(--text-muted);
+    cursor: pointer; font-size: 13px; line-height: 1; padding: 0 3px;
+    flex-shrink: 0; opacity: .5; transition: opacity .12s, color .12s;
+  }
+  .card-info-btn:hover { opacity: 1; color: var(--accent); }
+  .target-card .card-info-btn:hover { color: var(--green); }
   .source-card-body { overflow: hidden; }
   .source-card-body.collapsed { display: none; }
   .source-col-row {
@@ -425,12 +435,27 @@
   .connector.col-conn:hover { opacity: .7; stroke-width: 2; }
   .connector.edge-conn { stroke: var(--pink); stroke-dasharray: 6 3; opacity: .5; }
   .connector.edge-conn:hover { opacity: .9; stroke-width: 2.5; }
+  /* Coarse table->edge "spine" shown at the collapsed level (P5g.7). */
+  .connector.edge-table-conn { stroke-width: 2.5; stroke-dasharray: 7 4; opacity: .6; }
   .connector.drag-temp { stroke: var(--yellow); stroke-dasharray: 4 4; opacity: .8; stroke-width: 2; pointer-events: none; }
 
   /* Mapping function circles on connector lines */
   .func-circle { cursor: pointer; transition: all .15s; pointer-events: all; }
-  .func-circle.identity circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.3; r: 4; opacity: .55; }
-  .func-circle.identity:hover circle { opacity: 1; r: 6; }
+  .func-circle.identity circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.3; r: 5; opacity: .7; }
+  .func-circle.identity:hover circle { opacity: 1; r: 8; stroke-width: 1.8; }
+  /* "f" glyph marks a circle as an editable transformation node (P5g.9) so it
+     reads as an interactive function, not a line decoration. */
+  .func-circle .fn-fx {
+    font: italic 700 8px "Times New Roman", Georgia, serif; fill: var(--accent);
+    text-anchor: middle; dominant-baseline: central; pointer-events: none;
+    opacity: .85; transition: opacity .15s;
+  }
+  .func-circle.identity:hover .fn-fx { opacity: 1; }
+  /* `_key` is system-derived from the primary key, not an editable mapping (P5g.10):
+     mute + dash it and use a help cursor so it reads as informational, not editable. */
+  .func-circle.keynode { cursor: help; }
+  .func-circle.keynode circle { stroke: var(--muted); stroke-dasharray: 2.5 1.5; opacity: .75; }
+  .func-circle.keynode .fn-fx { fill: var(--muted); }
   .func-circle.expr circle { fill: var(--yellow); stroke: #000; stroke-width: 1.2; r: 7; }
   .func-circle.expr.aql circle { fill: var(--accent2); }
   .func-circle.expr.ksql circle { fill: var(--pink); }
@@ -565,24 +590,20 @@
     font-size: 10px; color: var(--text-muted); font-style: italic;
   }
 
-  /* Mapper legend */
-  .mapper-legend {
-    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 8px 16px; font-size: 10px; display: flex; gap: 16px; z-index: 10; white-space: nowrap;
-  }
-  .mapper-legend-item { display: flex; align-items: center; gap: 6px; }
-
-  /* Right detail panel — on-demand (P5g.4). Hidden until an entity is
-     selected; slides in by animating width so it never covers the target
-     pane and reclaims canvas space when closed. */
+  /* Right detail panel — on-demand floating overlay (P5g.4). It floats OVER the
+     workspace and is taken out of layout flow, so it never consumes width /
+     "real estate"; it slides in from the right edge when an entity is selected
+     and is dismissed with x or by clicking empty canvas. */
   .sidebar-right {
-    width: 0; min-width: 0; background: var(--surface);
-    border-left: 1px solid transparent; display: flex;
-    flex-direction: column; overflow: hidden; flex-shrink: 0;
-    transition: width .2s, min-width .2s;
+    position: absolute; top: 0; right: 0; bottom: 0; z-index: 80;
+    width: 320px; max-width: 80vw; background: var(--surface);
+    border-left: 1px solid var(--border);
+    box-shadow: -10px 0 28px rgba(0, 0, 0, .18);
+    display: flex; flex-direction: column; overflow: hidden;
+    transform: translateX(100%); opacity: 0; pointer-events: none;
+    transition: transform .2s ease, opacity .2s ease;
   }
-  .sidebar-right.open { width: 300px; min-width: 300px; border-left-color: var(--border); }
+  .sidebar-right.open { transform: translateX(0); opacity: 1; pointer-events: auto; }
   .detail-header { gap: 8px; }
   .detail-close {
     background: transparent; border: none; color: var(--text-muted);
@@ -878,11 +899,12 @@
 
   /* ── Phase E1: Comprehensive legend ───────────────────────────── */
   .mapper-legend {
-    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-    padding: 0; font-size: 10px; z-index: 10; white-space: normal;
-    max-width: 360px; overflow: hidden;
-    transform: none; left: 12px;
+    position: absolute; bottom: 12px; left: 12px; transform: none;
+    display: block; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 0; font-size: 10px; z-index: 10;
+    white-space: normal; width: 260px; max-width: 360px; overflow: hidden;
   }
+  .mapper-legend.collapsed { width: auto; }
   .mapper-legend.collapsed .legend-body { display: none; }
   .legend-header {
     display: flex; align-items: center; gap: 6px; padding: 6px 10px;
@@ -1248,6 +1270,7 @@ let editState = { collections: {}, edges: [], typeOverrides: {}, keySeparator: '
 let tablesInfo = [];
 let collapsedTables = new Set();
 let collapsedCollections = new Set();
+let collapsedEdges = new Set();
 let selectedConnector = null;
 let selectedCardKey = null;
 let dragState = null;
@@ -1868,6 +1891,8 @@ async function confirmRemoveTarget(name) {
 
 function _menuProject(name) {
   return [
+    { label: 'Open database\u2026', icon: '\u2197', onClick: () => openProjectDatabase(name),
+      hint: 'Open this project\u2019s target database in the ArangoDB web UI in a new tab.' },
     { label: 'Edit name & description\u2026', icon: '\u270E', onClick: () => openEditProjectForm(name),
       hint: 'Rename the project or change its description, target endpoint, and database. Does not touch already-loaded data.' },
     '-',
@@ -1877,6 +1902,30 @@ function _menuProject(name) {
     { label: 'Delete project', icon: '\u2716', danger: true, onClick: () => confirmDeleteProject(name),
       hint: 'Remove the project and its mapping from the catalog. Data already loaded into ArangoDB is not deleted.' },
   ];
+}
+
+// Resolve a project to its ArangoDB target {endpoint, database}: an explicit
+// target link wins, else the project's inline arango_endpoint/arango_database.
+function _resolveProjectTarget(name) {
+  const p = (window._projectsCache || []).find(x => x.name === name);
+  if (!p) return null;
+  let endpoint = p.arango_endpoint;
+  let database = p.arango_database;
+  if (p.target_name) {
+    const t = (window._targetsCache || []).find(x => x.name === p.target_name);
+    if (t) { endpoint = t.endpoint; database = t.database; }
+  }
+  if (!endpoint || !database) return null;
+  return { endpoint: String(endpoint).replace(/\/+$/, ''), database };
+}
+
+// Open the project's target database in the ArangoDB web UI (Aardvark), P5g.8.
+function openProjectDatabase(name) {
+  const tgt = _resolveProjectTarget(name);
+  if (!tgt) { toast('No target database is configured for this project', 'error'); return; }
+  const url = `${tgt.endpoint}/_db/${encodeURIComponent(tgt.database)}/_admin/aardvark/index.html#collections`;
+  window.open(url, '_blank', 'noopener');
+  toast('Opening ' + tgt.database + ' in ArangoDB\u2026', 'info');
 }
 
 function openProjectMenu(ev) {
@@ -1890,7 +1939,10 @@ function openProjectMenu(ev) {
 // single menu. Project-scoped actions are disabled until a project is open;
 // Settings is always available.
 function openActionsMenu(ev) {
-  if (ev) ev.preventDefault();
+  // stopPropagation: this is a left-click, so without it the same click bubbles
+  // to the document "click outside closes menu" handler and shuts the menu the
+  // instant it opens.
+  if (ev) { ev.preventDefault(); ev.stopPropagation(); }
   const dis = !currentProject;
   const items = [
     { label: 'Validate', icon: '\u2713', shortcut: '\u2318\u21E7V', disabled: dis,
@@ -1912,6 +1964,9 @@ function openActionsMenu(ev) {
       hint: 'View past load runs for this project with row counts, errors, and status.',
       onClick: showHistory },
     '-',
+    { label: 'Open database', icon: '\u2197', disabled: dis,
+      hint: 'Open this project\u2019s target database in the ArangoDB web UI in a new tab.',
+      onClick: () => openProjectDatabase(currentProject) },
     { label: 'Settings', icon: '\u2699',
       hint: 'Configure ingestion settings: parallel workers, batch size, duplicate handling, and drop-collections.',
       onClick: showSettings },
@@ -2172,6 +2227,7 @@ function renderSourcePane(tables) {
           <span class="expand-icon ${isCollapsed ? '' : 'open'}">&#9654;</span>
           <span class="table-name">${t.name}</span>
           <span class="col-count">${cols.length}</span>
+          <button class="card-info-btn" title="Show table details" aria-label="Show details for ${t.name}" onclick="event.stopPropagation();inspectSource('${t.name}')">&#9432;</button>
           <div class="source-dot" data-table="${t.name}"></div>
         </div>
         <div class="source-card-body${isCollapsed ? ' collapsed' : ''}" id="src-body-${t.name}">
@@ -2228,6 +2284,7 @@ function renderTargetPane() {
             <div class="target-dot" data-collection="${targetName}"></div>
             <span class="coll-name">${escHtml(targetName)}</span>
             <span class="coll-count">${props.length}</span>
+            <button class="card-info-btn" title="Show collection details" aria-label="Show details for ${escHtml(targetName)}" onclick="event.stopPropagation();inspectTarget('${key}')">&#9432;</button>
           </div>
           <div class="target-card-body${isCollapsed ? ' collapsed' : ''}" id="tgt-body-${key}">
             ${props.map(p => `
@@ -2246,13 +2303,16 @@ function renderTargetPane() {
   if (editState.edges.length) {
     html += '<div class="target-section-label edge-section">Edge Collections</div>';
     for (const edge of editState.edges) {
+      const edgeCollapsed = collapsedEdges.has(edge.edgeCollection);
       html += `
         <div class="target-card edge-card${selectedCardKey === 'edge:'+edge.edgeCollection ? ' selected' : ''}" data-edge="${edge.edgeCollection}">
-          <div class="target-card-header" onclick="onEdgeCardClick('${edge.edgeCollection}')">
+          <div class="target-card-header" onclick="toggleEdgeCard('${edge.edgeCollection}')">
+            <span class="expand-icon ${edgeCollapsed ? '' : 'open'}">&#9654;</span>
             <div class="target-dot" data-edge="${edge.edgeCollection}"></div>
             <span class="coll-name">${escHtml(edge.edgeCollection)}</span>
+            <button class="card-info-btn" title="Show edge details" aria-label="Show details for ${escHtml(edge.edgeCollection)}" onclick="event.stopPropagation();inspectEdge('${edge.edgeCollection}')">&#9432;</button>
           </div>
-          <div class="target-card-body">
+          <div class="target-card-body${edgeCollapsed ? ' collapsed' : ''}">
             <div class="target-prop-row" data-edge="${edge.edgeCollection}" data-prop="_from">
               <div class="target-prop-dot" data-edge="${edge.edgeCollection}" data-prop="_from"></div>
               <span class="prop-name">_from</span>
@@ -2351,14 +2411,22 @@ function drawConnectors() {
 
     // 2) Draw identity (pass-through) mappings for every non-excluded column that is
     //    neither claimed as a fieldExpression source nor the exclusive subject of one.
+    //    Group by target property so several columns mapping to the same property
+    //    (e.g. a composite key: order_id + product_id -> _key) render as ONE function
+    //    node with multiple inputs fanning into a single output (P5g.10).
+    const identityByTarget = new Map();
     for (const col of tableInfo.columns) {
       if (excluded.has(col.name)) continue;
       if (columnsClaimedByExpr.has(col.name)) continue;
       const tgtProp = pkCols.includes(col.name) ? '_key' : (fieldMappings[col.name] || col.name);
       if (exprByTarget.has(tgtProp)) continue; // already handled above
+      if (!identityByTarget.has(tgtProp)) identityByTarget.set(tgtProp, []);
+      identityByTarget.get(tgtProp).push(col.name);
+    }
+    for (const [tgtProp, cols] of identityByTarget) {
       drawFunctionMapping(svgEl, canvasRect, {
         collKey: key, sourceTable, targetCollection: targetColl,
-        targetProp: tgtProp, sources: [col.name], expression: '', engine: 'aql',
+        targetProp: tgtProp, sources: cols, expression: '', engine: 'aql',
       });
     }
   }
@@ -2366,6 +2434,27 @@ function drawConnectors() {
   for (const edge of editState.edges) {
     const fromEntry = Object.entries(editState.collections).find(
       ([k, c]) => (c.targetCollection || k) === edge.fromCollection);
+    const toEntry = Object.entries(editState.collections).find(
+      ([k, c]) => (c.targetCollection || k) === edge.toCollection);
+
+    // While the edge is COLLAPSED, show only the coarse table->edge spine so the
+    // relationship stays visible at the fully-collapsed level (P5g.7). Anchored
+    // on the FK-owning (from-side) source table; header dots always exist. Once
+    // the edge is expanded, this spine is replaced by the detailed attribute->
+    // _from/_to lines below (no duplicate).
+    if (collapsedEdges.has(edge.edgeCollection)) {
+      const anchorEntry = fromEntry || toEntry;
+      if (anchorEntry) {
+        const anchorTable = anchorEntry[1].sourceTable || anchorEntry[0];
+        drawOneConnector(svgEl, canvasRect,
+          `.source-dot[data-table="${anchorTable}"]`,
+          `.target-dot[data-edge="${edge.edgeCollection}"]`,
+          'connector edge-conn edge-table-conn',
+          { type: 'edge', edgeCollection: edge.edgeCollection, sourceTable: anchorTable });
+      }
+      continue;
+    }
+
     if (fromEntry && !collapsedTables.has(fromEntry[1].sourceTable || fromEntry[0])) {
       const srcTable = fromEntry[1].sourceTable || fromEntry[0];
       const fromField = edge.fromField.split(',')[0].trim();
@@ -2375,8 +2464,6 @@ function drawConnectors() {
         'connector edge-conn',
         { type: 'edge', edgeCollection: edge.edgeCollection, direction: 'from' });
     }
-    const toEntry = Object.entries(editState.collections).find(
-      ([k, c]) => (c.targetCollection || k) === edge.toCollection);
     if (toEntry && !collapsedTables.has(toEntry[1].sourceTable || toEntry[0])) {
       const srcTable = toEntry[1].sourceTable || toEntry[0];
       const toField = edge.toField.split(',')[0].trim();
@@ -2455,7 +2542,14 @@ function drawFunctionMapping(svgEl, canvasRect, opts) {
 
   if (fy < -50 || fy > canvasRect.height + 50) return;
 
-  const isIdentity = (!expression || !expression.trim()) && srcPts.length === 1;
+  // No expression yet => the un-styled "f" node (a single circle), whether it has one
+  // input (pass-through) or several (e.g. a composite key awaiting its construction
+  // expression). Multiple inputs fan into the one circle and out to one target (P5g.10).
+  const isIdentity = (!expression || !expression.trim());
+  // `_key` is always derived from the primary key (joined by key_separator) at load
+  // time and is NOT an editable transformation (P5g.10): editing it would be ignored
+  // by the loader and would desync edge _from/_to. Render it read-only/informational.
+  const isKey = (targetProp === '_key');
   const pathClass = 'connector col-conn';
 
   // Draw each source -> function circle
@@ -2495,7 +2589,7 @@ function drawFunctionMapping(svgEl, canvasRect, opts) {
   // Draw function circle with label
   const grp = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   const engineClass = (engine || 'aql').toLowerCase();
-  grp.setAttribute('class', 'func-circle ' + (isIdentity ? 'identity' : 'expr ' + engineClass));
+  grp.setAttribute('class', 'func-circle ' + (isIdentity ? 'identity' : 'expr ' + engineClass) + (isKey ? ' keynode' : ''));
   grp.dataset.collKey = collKey;
   grp.dataset.targetProp = targetProp;
   grp.dataset.sourceTable = sourceTable;
@@ -2520,19 +2614,46 @@ function drawFunctionMapping(svgEl, canvasRect, opts) {
     engineBadge.setAttribute('y', 2.5);
     engineBadge.textContent = (engine || 'aql').toUpperCase().slice(0, 3);
     grp.appendChild(engineBadge);
+  } else {
+    // Identity nodes get an italic "f" so they read as a clickable function.
+    const fx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    fx.setAttribute('class', 'fn-fx');
+    fx.textContent = '\u0192';
+    grp.appendChild(fx);
   }
 
   grp.addEventListener('click', e => {
     e.stopPropagation();
+    if (isKey) {
+      const keySep = editState.keySeparator || '_';
+      const cols = srcPts.map(p => p.col);
+      const built = cols.join(keySep);
+      toast(
+        `_key is the ${cols.length > 1 ? 'composite ' : ''}primary key: ` +
+        `${cols.join(' + ')} \u2192 "${built}" (joined by "${keySep}"). ` +
+        `It is derived automatically at load time and is not an editable mapping \u2014 ` +
+        `change it via the primary key or the key separator.`,
+        'info');
+      return;
+    }
     openExpressionEditor(collKey, targetProp);
   });
 
   // Tooltip via title element
   const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
   const sourcesLabel = srcPts.map(p => p.col).join(', ');
-  titleEl.textContent = isIdentity
-    ? `identity: ${sourcesLabel} \u2192 ${targetProp}`
-    : `${(engine || 'aql').toUpperCase()}: ${expression}\n  sources: ${sourcesLabel}\n  target: ${targetProp}\nClick to edit`;
+  const idLabel = srcPts.length > 1 ? 'composite / multi-source' : 'identity (pass-through)';
+  if (isKey) {
+    const keySep = editState.keySeparator || '_';
+    const built = srcPts.map(p => p.col).join(keySep);
+    titleEl.textContent =
+      `_key = ${srcPts.map(p => p.col).join(' + ')} \u2192 "${built}" (primary key joined by "${keySep}")\n` +
+      `Derived automatically (read-only); change via the primary key or key separator.`;
+  } else {
+    titleEl.textContent = isIdentity
+      ? `\u0192 ${idLabel}: ${sourcesLabel} \u2192 ${targetProp}\nClick to ${srcPts.length > 1 ? 'edit the key' : 'add a'} transformation`
+      : `\u0192 ${(engine || 'aql').toUpperCase()}: ${expression}\n  sources: ${sourcesLabel}\n  target: ${targetProp}\nClick to edit the transformation`;
+  }
   grp.appendChild(titleEl);
 
   svgEl.appendChild(grp);
@@ -2633,7 +2754,7 @@ function drawTargetGraphEdges() {
     path.dataset.edgeCollection = edge.edgeCollection;
     path.addEventListener('click', e => {
       e.stopPropagation();
-      onEdgeCardClick(edge.edgeCollection);
+      inspectEdge(edge.edgeCollection);
     });
     const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
     titleEl.textContent = `${edge.edgeCollection}: ${edge.fromCollection} \u2192 ${edge.toCollection}`;
@@ -2673,57 +2794,158 @@ function scheduleRedraw() {
 
 // ── Source card interactions ──
 
-function onSourceCardClick(tableName) {
-  if (collapsedTables.has(tableName)) {
-    collapsedTables.delete(tableName);
-  } else {
-    collapsedTables.add(tableName);
+// ── Progressive-disclosure cascade (P5g.7) ─────────────────────────
+// Document collections map 1:1 to a source table; edges relate two tables.
+// Expanding a table opens its whole relationship neighbourhood so every mapping
+// renders at the attribute->property level: the table, its document collection,
+// each edge that references it, and the table (+ collection) on the FAR side of
+// those edges. Collapsing tidies back down to the coarse table->edge spine.
+function _collKeysForTable(tableName) {
+  return Object.entries(editState.collections)
+    .filter(([k, c]) => (c.sourceTable || k) === tableName && c.collectionType !== 'edge')
+    .map(([k]) => k);
+}
+function _edgeEndpointTable(edge, dir) {
+  const collName = dir === 'from' ? edge.fromCollection : edge.toCollection;
+  const entry = Object.entries(editState.collections).find(([k, c]) => (c.targetCollection || k) === collName);
+  return entry ? (entry[1].sourceTable || entry[0]) : null;
+}
+function _edgesForTable(tableName) {
+  return editState.edges.filter(e =>
+    _edgeEndpointTable(e, 'from') === tableName || _edgeEndpointTable(e, 'to') === tableName);
+}
+function _setTableCollapsed(name, collapsed) { collapsed ? collapsedTables.add(name) : collapsedTables.delete(name); }
+function _setCollCollapsed(key, collapsed) { collapsed ? collapsedCollections.add(key) : collapsedCollections.delete(key); }
+function _setEdgeCollapsed(name, collapsed) { collapsed ? collapsedEdges.add(name) : collapsedEdges.delete(name); }
+
+// A table + its 1:1 document collection move together.
+function _setTableAndColl(tableName, collapsed) {
+  _setTableCollapsed(tableName, collapsed);
+  for (const ck of _collKeysForTable(tableName)) _setCollCollapsed(ck, collapsed);
+}
+
+// Expand a table's full neighbourhood: itself + collection, each referencing
+// edge, and the far-endpoint tables (+ their collections).
+function _expandNeighborhood(tableName) {
+  _setTableAndColl(tableName, false);
+  for (const e of _edgesForTable(tableName)) {
+    _setEdgeCollapsed(e.edgeCollection, false);
+    for (const dir of ['from', 'to']) {
+      const ot = _edgeEndpointTable(e, dir);
+      if (ot) _setTableAndColl(ot, false);
+    }
   }
-  const body = document.getElementById('src-body-' + tableName);
-  if (body) body.classList.toggle('collapsed');
-  const icon = document.querySelector(`.source-card[data-table="${tableName}"] .expand-icon`);
-  if (icon) icon.classList.toggle('open');
+}
+
+// After collapsing, return any edge with no open endpoint to its spine form.
+function _tidyEdges() {
+  for (const e of editState.edges) {
+    const f = _edgeEndpointTable(e, 'from');
+    const t = _edgeEndpointTable(e, 'to');
+    const anyOpen = (f && !collapsedTables.has(f)) || (t && !collapsedTables.has(t));
+    if (!anyOpen) _setEdgeCollapsed(e.edgeCollection, true);
+  }
+}
+
+function onSourceCardClick(tableName) {
+  const willExpand = collapsedTables.has(tableName);
+  if (willExpand) _expandNeighborhood(tableName);
+  else { _setTableAndColl(tableName, true); _tidyEdges(); }
   saveDisclosure();
 
+  // Header click expands/collapses + selects (paths highlight) but does NOT open
+  // the detail panel — use the card's info (i) button for that (P5g.4).
   selectedCardKey = 'src:' + tableName;
-  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
-  const card = document.querySelector(`.source-card[data-table="${tableName}"]`);
-  if (card) card.classList.add('selected');
-  openDetailPanel();
-  showSourceProps(tableName);
   deselectConnector();
-  scheduleRedraw();
+  renderMapper();
 }
 
 function onTargetCardClick(collKey) {
-  if (collapsedCollections.has(collKey)) collapsedCollections.delete(collKey);
-  else collapsedCollections.add(collKey);
-  const body = document.getElementById('tgt-body-' + collKey);
-  if (body) body.classList.toggle('collapsed');
+  const willExpand = collapsedCollections.has(collKey);
   const coll = editState.collections[collKey];
-  const targetName = coll?.targetCollection || collKey;
-  const icon = document.querySelector(`.target-card[data-key="${collKey}"] .expand-icon`);
-  if (icon) icon.classList.toggle('open');
+  const srcTable = coll ? (coll.sourceTable || collKey) : null;
+  if (willExpand) {
+    if (srcTable) _expandNeighborhood(srcTable);
+    else _setCollCollapsed(collKey, false);
+  } else {
+    _setCollCollapsed(collKey, true);
+    if (srcTable) _setTableCollapsed(srcTable, true);
+    _tidyEdges();
+  }
   saveDisclosure();
 
+  // Header click expands/collapses + selects but does not open the detail panel
+  // — use the card's info (i) button for that (P5g.4).
   selectedCardKey = 'tgt:' + collKey;
-  document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
-  const card = document.querySelector(`.target-card[data-collection="${targetName}"]`);
-  if (card) card.classList.add('selected');
-  openDetailPanel();
-  showTargetProps(collKey);
   deselectConnector();
-  scheduleRedraw();
+  renderMapper();
 }
 
-function onEdgeCardClick(edgeColl) {
+// Edge card header click: toggle the edge open/closed. Expanding an edge also
+// opens both endpoint tables (+ collections) so the _from/_to attribute mappings
+// are visible; collapsing returns it to the coarse table->edge spine.
+function toggleEdgeCard(edgeColl) {
+  const willExpand = collapsedEdges.has(edgeColl);
+  const e = editState.edges.find(x => x.edgeCollection === edgeColl);
+  if (willExpand) {
+    _setEdgeCollapsed(edgeColl, false);
+    if (e) for (const dir of ['from', 'to']) {
+      const ot = _edgeEndpointTable(e, dir);
+      if (ot) _setTableAndColl(ot, false);
+    }
+  } else {
+    _setEdgeCollapsed(edgeColl, true);
+  }
+  saveDisclosure();
+
   selectedCardKey = 'edge:' + edgeColl;
+  deselectConnector();
+  renderMapper();
+}
+
+// Paint the .selected class for whatever selectedCardKey points at, without a
+// full pane re-render (used by inspect/select that don't change disclosure).
+function _markSelectedCard() {
   document.querySelectorAll('.source-card,.target-card').forEach(el => el.classList.remove('selected'));
-  const card = document.querySelector(`.target-card[data-edge="${edgeColl}"]`);
-  if (card) card.classList.add('selected');
+  if (!selectedCardKey) return;
+  if (selectedCardKey.startsWith('src:')) {
+    document.querySelector(`.source-card[data-table="${selectedCardKey.slice(4)}"]`)?.classList.add('selected');
+  } else if (selectedCardKey.startsWith('tgt:')) {
+    const k = selectedCardKey.slice(4);
+    const coll = editState.collections[k];
+    const targetName = (coll && coll.targetCollection) || k;
+    document.querySelector(`.target-card[data-collection="${targetName}"]`)?.classList.add('selected');
+  } else if (selectedCardKey.startsWith('edge:')) {
+    document.querySelector(`.target-card[data-edge="${selectedCardKey.slice(5)}"]`)?.classList.add('selected');
+  }
+}
+
+// Info (i) button handlers — the explicit "show details" gesture (P5g.4).
+function inspectSource(tableName) {
+  selectedCardKey = 'src:' + tableName;
+  _markSelectedCard();
+  deselectConnector();
+  openDetailPanel();
+  showSourceProps(tableName);
+  applyPinnedHighlight();
+}
+function inspectTarget(collKey) {
+  selectedCardKey = 'tgt:' + collKey;
+  _markSelectedCard();
+  deselectConnector();
+  openDetailPanel();
+  showTargetProps(collKey);
+  applyPinnedHighlight();
+}
+
+// Edge info (i) button — open the detail panel for the edge.
+function inspectEdge(edgeColl) {
+  selectedCardKey = 'edge:' + edgeColl;
+  _markSelectedCard();
+  deselectConnector();
   openDetailPanel();
   showEdgeProps(edgeColl);
-  deselectConnector();
+  applyPinnedHighlight();
 }
 
 function onConnectorClick(pathEl) {
@@ -3104,14 +3326,32 @@ function openExpressionEditor(collKey, targetProp) {
   const tableInfo = tablesInfo.find(t => t.name === sourceTable);
   if (!tableInfo) { toast('Source table info missing', 'error'); return; }
 
+  // `_key` is derived from the primary key (joined by key_separator) at load time and
+  // is not an editable mapping (P5g.10) from any entry point (node, detail panel,
+  // context menu). Editing it would be ignored by the loader and desync edge _from/_to.
+  if (targetProp === '_key') {
+    const keySep = editState.keySeparator || '_';
+    const pkCols = tableInfo.columns.filter(c => c.isPk).map(c => c.name);
+    const cols = pkCols.length ? pkCols : ['(primary key)'];
+    toast(
+      `_key is the ${cols.length > 1 ? 'composite ' : ''}primary key: ` +
+      `${cols.join(' + ')} \u2192 "${cols.join(keySep)}" (joined by "${keySep}"). ` +
+      `It is derived automatically at load time and is not editable here \u2014 ` +
+      `change it via the primary key or the key separator.`,
+      'info');
+    return;
+  }
+
   // Ensure a FieldExpression exists; synthesize identity from the existing 1:1 mapping if needed.
   let fx = findFieldExpression(coll, targetProp);
   if (!fx) {
-    // Infer the identity source: reverse-lookup the fieldMappings dict for any
-    // source column that maps to targetProp, else the same-named column.
-    const invert = Object.entries(coll.fieldMappings || {}).find(([s, t]) => t === targetProp);
-    const defaultSrc = invert ? invert[0] : targetProp;
-    fx = { target: targetProp, sources: [defaultSrc], expression: '', engine: 'aql', description: '' };
+    // Infer the default input(s): reverse-lookup the fieldMappings dict for any source
+    // column(s) that map to targetProp (supports several inputs -> one output), else the
+    // same-named column. (`_key` is handled read-only above and never reaches here.)
+    const inverts = Object.entries(coll.fieldMappings || {})
+      .filter(([s, t]) => t === targetProp).map(([s]) => s);
+    const defaultSrcs = inverts.length ? inverts : [targetProp];
+    fx = { target: targetProp, sources: defaultSrcs, expression: '', engine: 'aql', description: '' };
   }
 
   exprEditorState = {
@@ -4847,7 +5087,7 @@ function _menuTargetEdge(edgeColl) {
     { label: 'Rename collection\u2026', icon: '\u270E', onClick: () => renameEdgeCollection(edgeColl),
       hint: 'Rename the edge collection. If already loaded, saving offers an in-place rename migration.' },
     '-',
-    { label: 'Inspect', icon: '\u2139', onClick: () => onEdgeCardClick(edgeColl),
+    { label: 'Inspect', icon: '\u2139', onClick: () => inspectEdge(edgeColl),
       hint: 'Open the detail panel for this edge.' },
     { label: 'Delete edge', danger: true, icon: '\u2716', onClick: () => deleteEdge(edgeColl),
       hint: 'Remove this edge from the mapping.' },
@@ -5068,31 +5308,41 @@ function saveDisclosure() {
   try {
     const t = (tablesInfo || []).map(x => x.name).filter(n => !collapsedTables.has(n));
     const c = Object.keys(editState.collections).filter(k => !collapsedCollections.has(k));
-    localStorage.setItem(_disclosureKey(), JSON.stringify({ t, c }));
+    const e = (editState.edges || []).map(x => x.edgeCollection).filter(n => !collapsedEdges.has(n));
+    localStorage.setItem(_disclosureKey(), JSON.stringify({ t, c, e }));
   } catch (e) { /* ignore */ }
 }
 function loadDisclosure() {
   collapsedTables = new Set((tablesInfo || []).map(t => t.name));
   collapsedCollections = new Set(Object.keys(editState.collections));
+  collapsedEdges = new Set((editState.edges || []).map(x => x.edgeCollection));
   try {
     const raw = localStorage.getItem(_disclosureKey());
     if (raw) {
       const o = JSON.parse(raw);
       (o.t || []).forEach(n => collapsedTables.delete(n));
       (o.c || []).forEach(k => collapsedCollections.delete(k));
+      (o.e || []).forEach(n => collapsedEdges.delete(n));
     }
   } catch (e) { /* defaults already set */ }
 }
 
+function _setAllEdgesCollapsed(collapsed) {
+  if (!collapsed) collapsedEdges.clear();
+  else (editState.edges || []).forEach(e => collapsedEdges.add(e.edgeCollection));
+}
 function expandAllTables(open) {
   if (open) collapsedTables.clear();
   else (tablesInfo || []).forEach(t => collapsedTables.add(t.name));
+  // Edge detail needs the endpoint tables open, so tie edges to this control.
+  _setAllEdgesCollapsed(!open);
   saveDisclosure();
   renderMapper();
 }
 function expandAllCollections(open) {
   if (open) collapsedCollections.clear();
   else Object.keys(editState.collections).forEach(k => collapsedCollections.add(k));
+  _setAllEdgesCollapsed(!open);
   saveDisclosure();
   renderMapper();
 }
@@ -5102,6 +5352,7 @@ function expandAll(open) {
     (tablesInfo || []).forEach(t => collapsedTables.add(t.name));
     Object.keys(editState.collections).forEach(k => collapsedCollections.add(k));
   }
+  _setAllEdgesCollapsed(!open);
   saveDisclosure();
   renderMapper();
 }
@@ -5143,7 +5394,8 @@ function renderHighlight(hl) {
 
   const matchedTargetProps = new Set();
   const matchedSourceCols = new Set();
-  document.querySelectorAll('#connector-svg path.connector, #connector-svg g.func-circle').forEach(p => {
+  const hlEls = document.querySelectorAll('#connector-svg path.connector, #connector-svg g.func-circle');
+  hlEls.forEach(p => {
     const d = p.dataset;
     let match = false;
     if (hl.edgeCollection) {
@@ -5165,6 +5417,23 @@ function renderHighlight(hl) {
       if (d.sourceCol) matchedSourceCols.add(d.sourceCol);
     }
   });
+
+  // A function mapping is drawn as TWO path segments plus the circle: the
+  // source->circle path carries `sourceCol`, but the circle->target (`fn-output`)
+  // path carries only `targetProp`. Matching on a single key therefore lights up
+  // just half the line. Second pass: propagate via the target props / source cols
+  // discovered above so the whole path (both halves + circle) highlights. (P5g.5)
+  if (matchedTargetProps.size || matchedSourceCols.size) {
+    hlEls.forEach(p => {
+      if (p.classList.contains('hl')) return;
+      const d = p.dataset;
+      const propHit = d.targetProp && matchedTargetProps.has(d.targetProp) &&
+        (!hl.targetCollection || d.targetCollection === hl.targetCollection);
+      const colHit = d.sourceCol && matchedSourceCols.has(d.sourceCol) &&
+        (!hl.sourceTable || d.sourceTable === hl.sourceTable);
+      if (propHit || colHit) p.classList.add('hl');
+    });
+  }
 
   // Light up the specific rows on either end of the matched connectors.
   if (hl.targetCollection) {
@@ -5791,9 +6060,9 @@ function renderLegend() {
         </div>
       </div>
       <div class="legend-section">
-        <div class="legend-section-title">Function nodes</div>
+        <div class="legend-section-title">Function nodes &mdash; click a circle to edit</div>
         <div class="legend-row">
-          <svg class="legend-swatch" width="28" height="14"><circle cx="14" cy="7" r="3" fill="transparent" stroke="#38bdf8" stroke-width="1.3" opacity=".7"/></svg>
+          <svg class="legend-swatch" width="28" height="14"><circle cx="14" cy="7" r="5" fill="transparent" stroke="#38bdf8" stroke-width="1.3" opacity=".7"/><text x="14" y="7" text-anchor="middle" dominant-baseline="central" font-family="Times New Roman,serif" font-style="italic" font-weight="700" font-size="8" fill="#38bdf8">&#402;</text></svg>
           <span class="legend-text">Identity (pass-through)</span>
         </div>
         <div class="legend-row">
@@ -5821,14 +6090,20 @@ function renderLegend() {
         </div>
       </div>
     </div>`;
-  // Restore collapsed state
-  if (window._legendCollapsed) el.classList.add('collapsed');
+  // Restore collapsed state — collapsed by default so it doesn't cover the canvas.
+  if (window._legendCollapsed === undefined) {
+    try { window._legendCollapsed = localStorage.getItem('r2g.legendOpen') !== '1'; }
+    catch (e) { window._legendCollapsed = true; }
+  }
+  el.classList.toggle('collapsed', !!window._legendCollapsed);
 }
 
 function toggleLegend() {
   const el = document.getElementById('mapper-legend');
   el.classList.toggle('collapsed');
   window._legendCollapsed = el.classList.contains('collapsed');
+  try { localStorage.setItem('r2g.legendOpen', window._legendCollapsed ? '0' : '1'); }
+  catch (e) { /* ignore */ }
 }
 
 // ════════════════════════════════════════════════════════════════════
