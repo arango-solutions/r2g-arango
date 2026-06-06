@@ -269,13 +269,7 @@ def create_app(
     @app.delete("/api/sources/{name}")
     async def remove_source(name: str, cascade: bool = False):
         try:
-            import inspect
-
-            sig = inspect.signature(catalog.remove_source)
-            if "cascade" in sig.parameters:
-                result = catalog.remove_source(name, cascade=cascade)
-            else:
-                result = catalog.remove_source(name)
+            result = catalog.remove_source(name, cascade=cascade)
             if not result:
                 raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
         except HTTPException:
@@ -964,14 +958,10 @@ def create_app(
 
     @app.get("/api/targets")
     async def list_targets():
-        if not hasattr(catalog, "list_targets"):
-            return []
         return [_redact_target(t.model_dump()) for t in catalog.list_targets()]
 
     @app.post("/api/targets", status_code=201)
     async def add_target(body: TargetCreateRequest):
-        if not hasattr(catalog, "add_target"):
-            raise HTTPException(status_code=501, detail="Target management not yet available")
         try:
             target = catalog.add_target(
                 name=body.name,
@@ -987,16 +977,12 @@ def create_app(
 
     @app.delete("/api/targets/{name}")
     async def remove_target(name: str):
-        if not hasattr(catalog, "remove_target"):
-            raise HTTPException(status_code=501, detail="Target management not yet available")
         if not catalog.remove_target(name):
             raise HTTPException(status_code=404, detail=f"Target '{name}' not found")
         return {"removed": name}
 
     @app.post("/api/targets/{name}/introspect")
     async def introspect_target(name: str):
-        if not hasattr(catalog, "get_target"):
-            raise HTTPException(status_code=501, detail="Target management not yet available")
         target = catalog.get_target(name)
         if not target:
             raise HTTPException(status_code=404, detail=f"Target '{name}' not found")

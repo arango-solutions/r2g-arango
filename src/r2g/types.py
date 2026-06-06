@@ -199,20 +199,6 @@ class CollectionMapping(BaseModel):
     field_expressions: List[FieldExpression] = Field(default_factory=list)
 
 
-class TypeMapping(BaseModel):
-    """PostgreSQL to JSON type coercion rules."""
-    pg_type: str
-    json_type: str  # "string", "integer", "float", "boolean", "array", "object"
-
-
-class TargetGraphSchema(BaseModel):
-    """Schema of an ArangoDB target database, obtained via introspection."""
-
-    document_collections: list[dict[str, Any]] = Field(default_factory=list)
-    edge_collections: list[dict[str, Any]] = Field(default_factory=list)
-    graphs: list[dict[str, Any]] = Field(default_factory=list)
-
-
 NameCase = Literal["preserve", "snake", "camel", "pascal"]
 
 

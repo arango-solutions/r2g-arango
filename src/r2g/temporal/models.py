@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import sys
 import time
-from enum import Enum
 
 from pydantic import BaseModel, Field
 
@@ -37,13 +36,6 @@ FIELD_EXPIRED = "expired"
 FIELD_VERSION = "_version"
 FIELD_PROXY = "_proxy"
 FIELD_TTL = "ttlExpireAt"
-
-
-class HasVersionDirection(str, Enum):
-    """Direction of a ``hasVersion`` edge relative to its entity version."""
-
-    INBOUND = "inbound"   # ProxyIn -> Entity
-    OUTBOUND = "outbound"  # Entity -> ProxyOut
 
 
 def now_ts() -> float:

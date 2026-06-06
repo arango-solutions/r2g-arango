@@ -2190,6 +2190,11 @@ async function selectProject(name) {
   } catch (e) {
     toast('Failed to load project: ' + e.message, 'error');
   }
+  // Project just (re)loaded: clear dirty state and refresh dependent views.
+  clearDirty();
+  loadBottomTimeline();
+  setLens(currentLens);
+  requestValidation();
 }
 
 // ── Mapper rendering ──
@@ -2226,6 +2231,12 @@ function renderMapper() {
     drawSourceGraphEdges();
     drawTargetGraphEdges();
   });
+
+  // Paint-only lens + validation badges after the layout refresh, and re-wire
+  // edge drag handles on the freshly-rendered target cards.
+  applyLens();
+  paintValidationBadges();
+  _wireTargetCardEdgeDrag();
 }
 
 function renderSourcePane(tables) {
@@ -3188,6 +3199,7 @@ function showConnectorProps(pathEl) {
 function editCollection(key, prop, value) {
   if (!editState.collections[key]) editState.collections[key] = {};
   editState.collections[key][prop] = value;
+  markDirty();
 }
 
 function toggleField(collKey, fieldName) {
@@ -3201,12 +3213,14 @@ function toggleField(collKey, fieldName) {
   if (selectedCardKey && selectedCardKey.startsWith('src:')) {
     showSourceProps(selectedCardKey.slice(4));
   }
+  markDirty();
 }
 
 function editEdgeName(idx, newName, oldName) {
   if (idx >= 0 && editState.edges[idx]) {
     editState.edges[idx].edgeCollection = newName;
   }
+  markDirty();
 }
 
 // ── Drag-and-drop for creating field mappings ──
@@ -3605,6 +3619,7 @@ function saveExpressionEditor() {
   closeExpressionEditor();
   renderMapper();
   toast(`Saved mapping function for ${targetProp}`, 'success');
+  markDirty();
 }
 
 function resetExpressionEditor() {
@@ -3614,6 +3629,7 @@ function resetExpressionEditor() {
   closeExpressionEditor();
   renderMapper();
   toast(`Reset ${targetProp} to identity`, 'info');
+  markDirty();
 }
 
 function initExpressionEditor() {
@@ -3866,21 +3882,6 @@ function buildMappingPayload() {
     type_overrides: editState.typeOverrides || {},
     key_separator: editState.keySeparator || '_',
   };
-}
-
-async function saveMapping() {
-  if (!currentProject) return;
-  try {
-    const payload = buildMappingPayload();
-    await apiFetch(`/api/projects/${currentProject}/mapping`, {
-      method: 'PUT',
-      body: JSON.stringify(payload)
-    });
-    toast('Mapping saved successfully', 'success');
-    await maybePromptMigration();
-  } catch (e) {
-    toast('Save failed: ' + e.message, 'error');
-  }
 }
 
 // After saving, if the database has already been loaded and the saved mapping
@@ -4163,58 +4164,6 @@ function showLoadModal() {
     '<button class="btn" onclick="closeModal()">Cancel</button>' +
     '<button class="btn btn-primary" onclick="executeLoad()">Run</button>');
 }
-
-async function executeLoad() {
-  const body = {
-    workers: parseInt(document.getElementById('load-workers').value) || 1,
-    batch_size: parseInt(document.getElementById('load-batch').value) || 10000,
-    on_duplicate: document.getElementById('load-on-dup').value,
-    drop_collections: document.getElementById('load-drop').checked,
-    dry_run: document.getElementById('load-dry-run').checked,
-    graph_name: document.getElementById('load-graph-name').value || null,
-  };
-  const includeTables = document.getElementById('load-include').value.trim();
-  if (includeTables) body.include_tables = includeTables.split(',').map(s => s.trim());
-  closeModal();
-
-  try {
-    const result = await apiFetch(`/api/projects/${currentProject}/load`, {
-      method: 'POST',
-      body: JSON.stringify(body)
-    });
-    toast('Load started', 'success');
-    showProgressView(result.load_id);
-  } catch (e) {
-    let detail = e.message;
-    let parsed = null;
-    try { parsed = JSON.parse(e.message); } catch (_) {}
-    if (parsed && parsed.detail) {
-      if (typeof parsed.detail === 'string') {
-        detail = parsed.detail;
-      } else if (parsed.detail.validation_errors) {
-        const errs = parsed.detail.validation_errors;
-        const items = Array.isArray(errs) ? errs : [String(errs)];
-        let html = '<div class="prop-group"><div class="prop-group-title">Validation errors</div>';
-        html += '<ul style="margin:4px 0 0 18px;line-height:1.6;color:var(--red);font-size:12px">';
-        items.forEach(it => { html += `<li>${escHtml(typeof it === 'string' ? it : JSON.stringify(it))}</li>`; });
-        html += '</ul></div>';
-        html += '<div class="prop-group"><div class="prop-group-title">Next steps</div><div style="color:var(--text-muted);font-size:12px">Fix the mapping or re-introspect the source schema, then try again.</div></div>';
-        openModal('Cannot start load', html);
-        return;
-      } else {
-        detail = JSON.stringify(parsed.detail);
-      }
-    }
-    let html = '<div class="prop-group"><div class="prop-group-title">The load did not start</div>';
-    html += `<pre style="white-space:pre-wrap;word-break:break-word;color:var(--red);font-size:12px;margin:0">${escHtml(detail)}</pre></div>`;
-    openModal('Cannot start load', html);
-  }
-}
-
-// Legacy overlay-based progress view replaced by floating card (Phase D).
-// Thin shims keep external callers working.
-function showProgressView(loadId) { return showProgressViewFloating(loadId); }
-function closeProgressView() { closeFloatingCard('load-progress'); }
 
 // ── Auto-Map ──
 
@@ -6466,44 +6415,8 @@ document.getElementById('lens-chip').addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); cycleLens(); }
 });
 
-// Patch existing functions to also markDirty / refresh badges
-const _origToggleField = toggleField;
-toggleField = function (collKey, fieldName) {
-  _origToggleField(collKey, fieldName);
-  markDirty();
-};
-const _origEditCollection = editCollection;
-editCollection = function (key, prop, value) {
-  _origEditCollection(key, prop, value);
-  markDirty();
-};
-const _origEditEdgeName = editEdgeName;
-editEdgeName = function (idx, newName, oldName) {
-  _origEditEdgeName(idx, newName, oldName);
-  markDirty();
-};
-const _origSaveExpr = saveExpressionEditor;
-saveExpressionEditor = function () {
-  _origSaveExpr();
-  markDirty();
-};
-const _origResetExpr = resetExpressionEditor;
-resetExpressionEditor = function () {
-  _origResetExpr();
-  markDirty();
-};
-const _origRenderMapper = renderMapper;
-renderMapper = function () {
-  _origRenderMapper();
-  // Re-apply paint-only lens after layout refresh
-  applyLens();
-  paintValidationBadges();
-  _wireTargetCardEdgeDrag();
-};
-
-// Replace executeLoad's progress view with the floating one
-const _origExecuteLoad = executeLoad;
-executeLoad = async function () {
+// Start a load and report progress via a floating card.
+async function executeLoad() {
   const body = {
     workers: parseInt(document.getElementById('load-workers').value) || 1,
     batch_size: parseInt(document.getElementById('load-batch').value) || 10000,
@@ -6543,11 +6456,10 @@ executeLoad = async function () {
     html += `<pre style="white-space:pre-wrap;word-break:break-word;color:var(--red);font-size:12px;margin:0">${escHtml(detail)}</pre></div>`;
     openModal('Cannot start load', html);
   }
-};
+}
 
-// Patch saveMapping to clearDirty on success
-const _origSaveMapping = saveMapping;
-saveMapping = async function () {
+// Save the mapping, then offer DB reconciliation if a rename affects a loaded DB.
+async function saveMapping() {
   if (!currentProject) return;
   try {
     const payload = buildMappingPayload();
@@ -6575,17 +6487,7 @@ saveMapping = async function () {
       ],
     });
   }
-};
-
-// Patch selectProject to refresh bottom strip and validation
-const _origSelectProject = selectProject;
-selectProject = async function (name) {
-  await _origSelectProject(name);
-  clearDirty();
-  loadBottomTimeline();
-  setLens(currentLens);
-  requestValidation();
-};
+}
 
 // ── Init ──
 

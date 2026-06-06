@@ -80,17 +80,17 @@ breaking behaviour.
 ## 3. Dead / unreachable code
 
 ### Python
-- [ ] `types.py:208-213` `TargetGraphSchema` — unused (wire to Arango snapshot or delete). **S-M/Low.**
-- [ ] `types.py:202-205` `TypeMapping` — unused. **S/Low.**
-- [ ] `temporal/models.py:42-46` `HasVersionDirection` — exported, never used. **S/Low.**
-- [ ] `ui/server.py:198-204` `inspect.signature` cascade shim — unreachable (`remove_source` always has `cascade`). **S/Low.**
-- [ ] `ui/server.py:873-905` four `hasattr(catalog, …)` target guards — unreachable (methods always exist). **S/Low.**
+- [x] `TargetGraphSchema` — **DELETED** (types.py).
+- [x] `TypeMapping` — **DELETED** (types.py).
+- [x] `HasVersionDirection` — **DELETED** (temporal/models.py + `__init__` export + now-unused `Enum` import).
+- [x] `inspect.signature` cascade shim — **REMOVED**; calls `catalog.remove_source(name, cascade=cascade)` directly.
+- [x] four `hasattr(catalog, …)` target guards — **REMOVED** (methods always exist on `CatalogManager`).
 
-### JS (`index.html`) — includes a functional regression
-- [ ] **REGRESSION — `saveMapping` migration prompt dropped.** End-of-file monkey-patch (`6529-6554`) shadows the original `saveMapping` (`3850-3863`) and **does not call `maybePromptMigration()`** (`3867-3890`), so post-save migration prompting is now unreachable. **Fix:** make the patch delegate to `_origSaveMapping()` (like the `selectProject` patch) and re-hook the prompt. **S/Med — behaviour gap, prioritise.**
-- [ ] `executeLoad` duplicated: original (`4146-4191`) shadowed by patch (`6485-6525`); `_origExecuteLoad`/`_origSaveMapping` assigned but unused (`6484,6528`). Delete dead copies. **S/Low.**
-- [ ] `closeProgressView()` (`4196`) zero callers; `showProgressView` thin alias bypassed. **S/Low.**
-- [ ] End-of-file monkey-patch block (`6448-6564`) reassigns `toggleField`, `editCollection`, `saveMapping`, `executeLoad`, `renderMapper`, `selectProject` — fold into authoring-time definitions. **L/Med.**
+### JS (`index.html`)
+- [x] **REGRESSION — `saveMapping` migration prompt** — fixed in step 1 (re-added `maybePromptMigration()`), and now folded into a single canonical `saveMapping`.
+- [x] `executeLoad` duplicate copies + unused `_orig*` consts — **DELETED**.
+- [x] `closeProgressView()` (zero callers) and the bypassed `showProgressView` alias — **DELETED**.
+- [x] End-of-file monkey-patch block — **FOLDED** into authoring-time definitions: side-effects (`markDirty`, lens/badge repaint, `_wireTargetCardEdgeDrag`, post-load `clearDirty`/`loadBottomTimeline`/`setLens`/`requestValidation`) inlined into `toggleField`/`editCollection`/`editEdgeName`/`saveExpressionEditor`/`resetExpressionEditor`/`renderMapper`/`selectProject`; `executeLoad`/`saveMapping` promoted to single declarations. Block removed.
 
 ---
 

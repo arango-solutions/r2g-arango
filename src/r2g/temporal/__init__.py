@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from r2g.temporal.models import (
     NEVER_EXPIRES,
-    HasVersionDirection,
     TemporalConfig,
     TemporalNaming,
     is_current,
@@ -20,7 +19,6 @@ from r2g.temporal.models import (
 
 __all__ = [
     "NEVER_EXPIRES",
-    "HasVersionDirection",
     "TemporalConfig",
     "TemporalNaming",
     "is_current",
