@@ -2437,20 +2437,27 @@ function drawConnectors() {
     const toEntry = Object.entries(editState.collections).find(
       ([k, c]) => (c.targetCollection || k) === edge.toCollection);
 
-    // While the edge is COLLAPSED, show only the coarse table->edge spine so the
-    // relationship stays visible at the fully-collapsed level (P5g.7). Anchored
-    // on the FK-owning (from-side) source table; header dots always exist. Once
-    // the edge is expanded, this spine is replaced by the detailed attribute->
-    // _from/_to lines below (no duplicate).
+    // While the edge is COLLAPSED, show a coarse table->edge spine so the
+    // relationship stays visible at the fully-collapsed level (P5g.7). An edge's
+    // _from and _to normally come from two DISTINCT source tables, so draw one
+    // spine per distinct endpoint table (deduped) rather than a single line, which
+    // would misrepresent the edge as relating to one table. A genuine self-edge
+    // (from and to resolve to the same table) collapses to one line. Header dots
+    // always exist. Once expanded, the spine is replaced by the detailed
+    // attribute->_from/_to lines below (no duplicate).
     if (collapsedEdges.has(edge.edgeCollection)) {
-      const anchorEntry = fromEntry || toEntry;
-      if (anchorEntry) {
-        const anchorTable = anchorEntry[1].sourceTable || anchorEntry[0];
+      const endpointTables = [];
+      if (fromEntry) endpointTables.push(fromEntry[1].sourceTable || fromEntry[0]);
+      if (toEntry) endpointTables.push(toEntry[1].sourceTable || toEntry[0]);
+      const seenTables = new Set();
+      for (const t of endpointTables) {
+        if (seenTables.has(t)) continue;
+        seenTables.add(t);
         drawOneConnector(svgEl, canvasRect,
-          `.source-dot[data-table="${anchorTable}"]`,
+          `.source-dot[data-table="${t}"]`,
           `.target-dot[data-edge="${edge.edgeCollection}"]`,
           'connector edge-conn edge-table-conn',
-          { type: 'edge', edgeCollection: edge.edgeCollection, sourceTable: anchorTable });
+          { type: 'edge', edgeCollection: edge.edgeCollection, sourceTable: t });
       }
       continue;
     }
