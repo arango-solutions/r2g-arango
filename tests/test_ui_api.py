@@ -780,3 +780,24 @@ class TestDraftValidationWithExpressions:
         body = resp.json()
         assert body["valid"] is False
         assert any("@nope" in m for m in body["issues"])
+
+
+class TestStaticAssetSafety:
+    def test_no_inline_handler_js_string_interpolation(self):
+        """Guard against DOM XSS: inline event handlers must not interpolate a
+        value into a JS string literal (e.g. onclick="fn('${x}')"), since that
+        vector survives HTML-escaping (the parser decodes entities before the JS
+        runs). Untrusted values must flow through data-* + this.dataset instead.
+        """
+        import re
+
+        from r2g.ui.server import _STATIC_DIR
+
+        html = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        pat = re.compile(r"on\w+=\"[^\"]*'\$\{")
+        offenders = [
+            ln.strip()
+            for ln in html.splitlines()
+            if pat.search(ln) and not ln.lstrip().startswith("//")
+        ]
+        assert offenders == [], offenders

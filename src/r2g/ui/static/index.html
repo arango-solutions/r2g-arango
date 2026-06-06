@@ -1409,7 +1409,7 @@ async function loadSources() {
           <div class="source-name">${_htmlEscape(s.name)}</div>
           <div class="source-type">${_htmlEscape(s.source_type || 'postgres')}</div>
         </div>
-        <button class="btn-sm" onclick="snapshotSource('${_htmlEscape(s.name)}')" title="Re-introspect schema">Snap</button>
+        <button class="btn-sm" onclick="snapshotSource(this.closest('.source-item').dataset.source)" title="Re-introspect schema">Snap</button>
       </div>
     `).join('');
   } catch (e) {
@@ -1486,13 +1486,12 @@ function renderTargets(targets) {
             <div class="source-name">${_htmlEscape(t.database || '_system')}</div>
             <div class="source-type">${_htmlEscape(t.name)}<span class="target-meta">${_htmlEscape(meta)}</span></div>
           </div>
-          <button class="btn-sm" onclick="event.stopPropagation();introspectTarget('${_htmlEscape(t.name)}')" title="Introspect target graph">Intro</button>
+          <button class="btn-sm" onclick="event.stopPropagation();introspectTarget(this.closest('.source-item').dataset.target)" title="Introspect target graph">Intro</button>
         </div>`;
     }).join('');
-    const safeKey = key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     return `
-      <div class="target-cluster${isCollapsed ? ' collapsed' : ''}" data-endpoint="${_htmlEscape(g.endpoint)}">
-        <div class="target-cluster-header" onclick="toggleCluster('${safeKey}')" title="${_htmlEscape(g.endpoint)}">
+      <div class="target-cluster${isCollapsed ? ' collapsed' : ''}" data-endpoint="${_htmlEscape(g.endpoint)}" data-key="${_htmlEscape(key)}">
+        <div class="target-cluster-header" onclick="toggleCluster(this.closest('.target-cluster').dataset.key)" title="${_htmlEscape(g.endpoint)}">
           <span class="tree-caret">\u25BE</span>
           <span class="cluster-name">${_htmlEscape(_clusterLabel(g.endpoint))}</span>
           <span class="cluster-count">${g.targets.length}</span>
@@ -2077,7 +2076,7 @@ function renderProjects() {
     const disp = _htmlEscape(p.mapping_name || p.name);
     const desc = _htmlEscape(p.mapping_description || '');
     return `<div class="project-item${p.name === currentProject ? ' active' : ''}" data-project="${nm}" title="${desc}"
-        onclick="selectProject('${nm}')" oncontextmenu="event.preventDefault();_projectItemMenu(event,'${nm}')">
+        onclick="selectProject(this.dataset.project)" oncontextmenu="event.preventDefault();_projectItemMenu(event,this.dataset.project)">
       <span class="pi-icon">&#9670;</span><span class="pi-name">${disp}</span>
     </div>`;
   }).join('');
@@ -2243,22 +2242,22 @@ function renderSourcePane(tables) {
     const excluded = new Set(collEntry ? (collEntry[1].excludeFields || []) : []);
 
     return `
-      <div class="source-card${selectedCardKey === 'src:'+t.name ? ' selected' : ''}" data-table="${t.name}">
-        <div class="source-card-header" onclick="onSourceCardClick('${t.name}')">
+      <div class="source-card${selectedCardKey === 'src:'+t.name ? ' selected' : ''}" data-table="${escHtml(t.name)}">
+        <div class="source-card-header" onclick="onSourceCardClick(this.closest('.source-card').dataset.table)">
           <span class="expand-icon ${isCollapsed ? '' : 'open'}">&#9654;</span>
-          <span class="table-name">${t.name}</span>
+          <span class="table-name">${escHtml(t.name)}</span>
           <span class="col-count">${cols.length}</span>
-          <button class="card-info-btn" title="Show table details" aria-label="Show details for ${t.name}" onclick="event.stopPropagation();inspectSource('${t.name}')">&#9432;</button>
-          <div class="source-dot" data-table="${t.name}"></div>
+          <button class="card-info-btn" title="Show table details" aria-label="Show details for ${escHtml(t.name)}" onclick="event.stopPropagation();inspectSource(this.closest('.source-card').dataset.table)">&#9432;</button>
+          <div class="source-dot" data-table="${escHtml(t.name)}"></div>
         </div>
-        <div class="source-card-body${isCollapsed ? ' collapsed' : ''}" id="src-body-${t.name}">
+        <div class="source-card-body${isCollapsed ? ' collapsed' : ''}" id="src-body-${escHtml(t.name)}">
           ${cols.map(c => `
-            <div class="source-col-row${excluded.has(c.name) ? ' excluded' : ''}" data-table="${t.name}" data-col="${c.name}">
+            <div class="source-col-row${excluded.has(c.name) ? ' excluded' : ''}" data-table="${escHtml(t.name)}" data-col="${escHtml(c.name)}">
               ${c.isPk ? '<span class="field-badge pk">PK</span>' : ''}
               ${c.isFk ? '<span class="field-badge fk">FK</span>' : ''}
-              <span class="col-name">${c.name}</span>
-              <span class="field-type">${c.type}</span>
-              <div class="source-col-dot" data-table="${t.name}" data-col="${c.name}"></div>
+              <span class="col-name">${escHtml(c.name)}</span>
+              <span class="field-type">${escHtml(c.type)}</span>
+              <div class="source-col-dot" data-table="${escHtml(t.name)}" data-col="${escHtml(c.name)}"></div>
             </div>
           `).join('')}
         </div>
@@ -2299,18 +2298,18 @@ function renderTargetPane() {
 
       const isCollapsed = collapsedCollections.has(key);
       html += `
-        <div class="target-card${selectedCardKey === 'tgt:'+key ? ' selected' : ''}" data-collection="${targetName}" data-key="${key}">
-          <div class="target-card-header" onclick="onTargetCardClick('${key}')">
+        <div class="target-card${selectedCardKey === 'tgt:'+key ? ' selected' : ''}" data-collection="${escHtml(targetName)}" data-key="${escHtml(key)}">
+          <div class="target-card-header" onclick="onTargetCardClick(this.closest('.target-card').dataset.key)">
             <span class="expand-icon ${isCollapsed ? '' : 'open'}">&#9654;</span>
-            <div class="target-dot" data-collection="${targetName}"></div>
+            <div class="target-dot" data-collection="${escHtml(targetName)}"></div>
             <span class="coll-name">${escHtml(targetName)}</span>
             <span class="coll-count">${props.length}</span>
-            <button class="card-info-btn" title="Show collection details" aria-label="Show details for ${escHtml(targetName)}" onclick="event.stopPropagation();inspectTarget('${key}')">&#9432;</button>
+            <button class="card-info-btn" title="Show collection details" aria-label="Show details for ${escHtml(targetName)}" onclick="event.stopPropagation();inspectTarget(this.closest('.target-card').dataset.key)">&#9432;</button>
           </div>
-          <div class="target-card-body${isCollapsed ? ' collapsed' : ''}" id="tgt-body-${key}">
+          <div class="target-card-body${isCollapsed ? ' collapsed' : ''}" id="tgt-body-${escHtml(key)}">
             ${props.map(p => `
-              <div class="target-prop-row" data-collection="${targetName}" data-prop="${p.name}" data-source="${p.source}">
-                <div class="target-prop-dot" data-collection="${targetName}" data-prop="${p.name}"></div>
+              <div class="target-prop-row" data-collection="${escHtml(targetName)}" data-prop="${escHtml(p.name)}" data-source="${escHtml(p.source)}">
+                <div class="target-prop-dot" data-collection="${escHtml(targetName)}" data-prop="${escHtml(p.name)}"></div>
                 <span class="prop-name">${escHtml(p.name)}</span>
                 <span class="field-type">${escHtml(p.source !== p.name ? '\u2190 ' + p.source : p.type)}</span>
               </div>
@@ -2326,21 +2325,21 @@ function renderTargetPane() {
     for (const edge of editState.edges) {
       const edgeCollapsed = collapsedEdges.has(edge.edgeCollection);
       html += `
-        <div class="target-card edge-card${selectedCardKey === 'edge:'+edge.edgeCollection ? ' selected' : ''}" data-edge="${edge.edgeCollection}">
-          <div class="target-card-header" onclick="toggleEdgeCard('${edge.edgeCollection}')">
+        <div class="target-card edge-card${selectedCardKey === 'edge:'+edge.edgeCollection ? ' selected' : ''}" data-edge="${escHtml(edge.edgeCollection)}">
+          <div class="target-card-header" onclick="toggleEdgeCard(this.closest('.target-card').dataset.edge)">
             <span class="expand-icon ${edgeCollapsed ? '' : 'open'}">&#9654;</span>
-            <div class="target-dot" data-edge="${edge.edgeCollection}"></div>
+            <div class="target-dot" data-edge="${escHtml(edge.edgeCollection)}"></div>
             <span class="coll-name">${escHtml(edge.edgeCollection)}</span>
-            <button class="card-info-btn" title="Show edge details" aria-label="Show details for ${escHtml(edge.edgeCollection)}" onclick="event.stopPropagation();inspectEdge('${edge.edgeCollection}')">&#9432;</button>
+            <button class="card-info-btn" title="Show edge details" aria-label="Show details for ${escHtml(edge.edgeCollection)}" onclick="event.stopPropagation();inspectEdge(this.closest('.target-card').dataset.edge)">&#9432;</button>
           </div>
           <div class="target-card-body${edgeCollapsed ? ' collapsed' : ''}">
-            <div class="target-prop-row" data-edge="${edge.edgeCollection}" data-prop="_from">
-              <div class="target-prop-dot" data-edge="${edge.edgeCollection}" data-prop="_from"></div>
+            <div class="target-prop-row" data-edge="${escHtml(edge.edgeCollection)}" data-prop="_from">
+              <div class="target-prop-dot" data-edge="${escHtml(edge.edgeCollection)}" data-prop="_from"></div>
               <span class="prop-name">_from</span>
               <span class="field-type">${escHtml(edge.fromCollection)}</span>
             </div>
-            <div class="target-prop-row" data-edge="${edge.edgeCollection}" data-prop="_to">
-              <div class="target-prop-dot" data-edge="${edge.edgeCollection}" data-prop="_to"></div>
+            <div class="target-prop-row" data-edge="${escHtml(edge.edgeCollection)}" data-prop="_to">
+              <div class="target-prop-dot" data-edge="${escHtml(edge.edgeCollection)}" data-prop="_to"></div>
               <span class="prop-name">_to</span>
               <span class="field-type">${escHtml(edge.toCollection)}</span>
             </div>
@@ -3031,13 +3030,13 @@ function showSourceProps(tableName) {
       <div class="prop-group-title">Configuration</div>
       <div class="prop-row">
         <span class="prop-label">Target name</span>
-        <input class="prop-input" value="${escHtml(targetName)}"
-          onchange="editCollection('${collKey}', 'targetCollection', this.value); renderMapper();">
+        <input class="prop-input" data-coll="${escHtml(collKey)}" value="${escHtml(targetName)}"
+          onchange="editCollection(this.dataset.coll, 'targetCollection', this.value); renderMapper();">
       </div>
       <div class="prop-row">
         <span class="prop-label">Join table</span>
-        <input type="checkbox" class="prop-checkbox" ${coll.isJoinTable ? 'checked' : ''}
-          onchange="editCollection('${collKey}', 'isJoinTable', this.checked)">
+        <input type="checkbox" class="prop-checkbox" data-coll="${escHtml(collKey)}" ${coll.isJoinTable ? 'checked' : ''}
+          onchange="editCollection(this.dataset.coll, 'isJoinTable', this.checked)">
       </div>
     </div>`;
   }
@@ -3047,18 +3046,19 @@ function showSourceProps(tableName) {
     const isExcl = excluded.has(c.name);
     html += `
       <div class="field-item ${isExcl ? 'excluded' : ''}"
-           onclick="toggleField('${collKey || tableName}', '${c.name}')">
+           data-coll="${escHtml(collKey || tableName)}" data-col="${escHtml(c.name)}"
+           onclick="toggleField(this.dataset.coll, this.dataset.col)">
         ${c.isPk ? '<span class="field-badge pk">PK</span>' : ''}
         ${c.isFk ? '<span class="field-badge fk">FK</span>' : ''}
-        <span>${c.name}</span>
-        <span class="field-type">${c.type}</span>
+        <span>${escHtml(c.name)}</span>
+        <span class="field-type">${escHtml(c.type)}</span>
       </div>`;
   });
   html += '</div></div>';
 
   const srcName = currentSourceName || document.querySelector('.source-name')?.textContent;
   if (srcName) {
-    html += `<div class="prop-group"><button class="btn" onclick="previewTable('${srcName}','${tableName}')">Preview Data</button></div>`;
+    html += `<div class="prop-group"><button class="btn" data-src="${escHtml(srcName)}" data-table="${escHtml(tableName)}" onclick="previewTable(this.dataset.src, this.dataset.table)">Preview Data</button></div>`;
   }
 
   body.innerHTML = html;
@@ -3081,8 +3081,8 @@ function showTargetProps(collKey) {
       <div class="prop-group-title">Configuration</div>
       <div class="prop-row">
         <span class="prop-label">Target name</span>
-        <input class="prop-input" value="${escHtml(targetName)}"
-          onchange="editCollection('${collKey}', 'targetCollection', this.value); renderMapper();">
+        <input class="prop-input" data-coll="${escHtml(collKey)}" value="${escHtml(targetName)}"
+          onchange="editCollection(this.dataset.coll, 'targetCollection', this.value); renderMapper();">
       </div>
       <div class="prop-row">
         <span class="prop-label">Source table</span>
@@ -3090,8 +3090,8 @@ function showTargetProps(collKey) {
       </div>
       <div class="prop-row">
         <span class="prop-label">Join table</span>
-        <input type="checkbox" class="prop-checkbox" ${coll.isJoinTable ? 'checked' : ''}
-          onchange="editCollection('${collKey}', 'isJoinTable', this.checked)">
+        <input type="checkbox" class="prop-checkbox" data-coll="${escHtml(collKey)}" ${coll.isJoinTable ? 'checked' : ''}
+          onchange="editCollection(this.dataset.coll, 'isJoinTable', this.checked)">
       </div>
     </div>`;
 
@@ -3119,8 +3119,8 @@ function showEdgeProps(edgeColl) {
       <div class="prop-group-title">Edge Configuration</div>
       <div class="prop-row">
         <span class="prop-label">Edge collection</span>
-        <input class="prop-input" value="${escHtml(edge.edgeCollection)}"
-          onchange="editEdgeName(${edgeIdx}, this.value, '${escHtml(edge.edgeCollection)}'); renderMapper();">
+        <input class="prop-input" data-edge="${escHtml(edge.edgeCollection)}" value="${escHtml(edge.edgeCollection)}"
+          onchange="editEdgeName(${edgeIdx}, this.value, this.dataset.edge); renderMapper();">
       </div>
     </div>
     <div class="prop-group">
@@ -3152,7 +3152,7 @@ function showConnectorProps(pathEl) {
     const targetProp = pathEl.dataset.targetProp;
     const coll = collKey ? editState.collections[collKey] : null;
     const fx = coll ? findFieldExpression(coll, targetProp) : null;
-    const exprSnippet = fx && fx.expression ? fx.expression : '<em style="color:var(--text-muted)">identity pass-through</em>';
+    const exprSnippet = fx && fx.expression ? escHtml(fx.expression) : '<em style="color:var(--text-muted)">identity pass-through</em>';
     const engine = fx ? (fx.engine || 'aql') : 'aql';
     const sources = fx ? (fx.sources || []) : (pathEl.dataset.sourceCol ? [pathEl.dataset.sourceCol] : []);
     body.innerHTML = `
@@ -3170,7 +3170,7 @@ function showConnectorProps(pathEl) {
         <div class="prop-group-title">Expression</div>
         <div style="background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; font-family:'SF Mono',monospace; font-size:11px; color:var(--green); white-space:pre-wrap; word-break:break-all;">${exprSnippet}</div>
       </div>
-      ${collKey && targetProp ? `<div class="prop-group"><button class="btn btn-primary" onclick="openExpressionEditor('${collKey}', '${escHtml(targetProp)}')">Edit Function</button></div>` : ''}
+      ${collKey && targetProp ? `<div class="prop-group"><button class="btn btn-primary" data-coll="${escHtml(collKey)}" data-prop="${escHtml(targetProp)}" onclick="openExpressionEditor(this.dataset.coll, this.dataset.prop)">Edit Function</button></div>` : ''}
       <div class="prop-group"><div class="prop-group-title" style="color:var(--text-muted);font-size:11px">Press Delete to exclude this column</div></div>`;
   } else if (t === 'edge') {
     header.textContent = 'Edge Mapping';
