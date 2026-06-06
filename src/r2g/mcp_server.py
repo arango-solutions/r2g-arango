@@ -415,25 +415,15 @@ def preview_table(
     limit = max(1, min(limit, 100))
 
     try:
-        import psycopg
-        from psycopg import sql
-        from psycopg.rows import dict_row
+        from r2g.connectors.postgres import preview_table_rows
 
         schema_name = snap.pg_schema or "public"
-        query = sql.SQL("SELECT * FROM {}.{} LIMIT %s").format(
-            sql.Identifier(schema_name),
-            sql.Identifier(table_name),
-        )
         conn_str = _resolve_conn_string(source.connection_string)
-        with psycopg.connect(conn_str, row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                cur.execute(query, (limit,))
-                rows = cur.fetchall()
-
+        rows = preview_table_rows(conn_str, schema_name, table_name, limit)
         return {
             "table": table_name,
             "count": len(rows),
-            "rows": _serialize_rows(rows),
+            "rows": rows,
         }
     except Exception as e:
         return {"error": str(e)}
@@ -684,5 +674,3 @@ def _schema_summary(schema) -> dict[str, Any]:
         }
     return {"tables": tables_summary, "table_count": len(tables_summary)}
 
-
-from r2g.connectors.base import serialize_rows as _serialize_rows  # noqa: E402

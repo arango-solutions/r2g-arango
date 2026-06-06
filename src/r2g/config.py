@@ -252,6 +252,20 @@ class ConfigManager:
     """Load, save, and synthesize table-to-graph mapping configuration."""
 
     @staticmethod
+    def target_by_source_table(config: MappingConfig) -> dict[str, str]:
+        """Map each collection's ``source_table`` to its ``target_collection``.
+
+        Edge ``from_collection`` / ``to_collection`` reference *source-table*
+        keys; this lookup resolves them to the collection names that actually
+        hold the data, so renames don't break edge endpoints. Shared by the
+        named-graph builder and every edge-transformer construction site.
+        """
+        return {
+            cm.source_table: cm.target_collection
+            for cm in config.collections.values()
+        }
+
+    @staticmethod
     def graph_edge_definitions(config: MappingConfig) -> list[dict[str, Any]]:
         """Build ArangoDB named-graph edge definitions from a mapping config.
 
@@ -260,9 +274,7 @@ class ConfigManager:
         the named graph references the collections that actually hold the data
         even after collections are renamed.
         """
-        target_by_source = {
-            cm.source_table: cm.target_collection for cm in config.collections.values()
-        }
+        target_by_source = ConfigManager.target_by_source_table(config)
         defs: list[dict[str, Any]] = []
         for edge in config.edges:
             defs.append({

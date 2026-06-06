@@ -77,10 +77,9 @@ class DeltaTransformer:
         table_def = self.schema.tables.get(table_name)
         if table_def is None:
             return None
-        target_by_source = {
-            cm.source_table: cm.target_collection
-            for _, cm in self._cm_by_table.values()
-        }
+        from r2g.config import ConfigManager
+
+        target_by_source = ConfigManager.target_by_source_table(self.config)
         return EdgeTransformer(
             edge_def,
             table_def,

@@ -395,20 +395,11 @@ def create_app(
             )
         limit = max(1, min(int(limit), 1000))
         try:
-            import psycopg
-            from psycopg import sql
-            from psycopg.rows import dict_row
+            from r2g.connectors.postgres import preview_table_rows
 
             schema_name = snap.pg_schema or "public"
-            query = sql.SQL("SELECT * FROM {}.{} LIMIT %s").format(
-                sql.Identifier(schema_name),
-                sql.Identifier(table),
-            )
-            with psycopg.connect(source.connection_string, row_factory=dict_row) as conn:
-                with conn.cursor() as cur:
-                    cur.execute(query, (limit,))
-                    rows = cur.fetchall()
-            return {"table": table, "rows": _serialize_rows(rows), "count": len(rows)}
+            rows = preview_table_rows(source.connection_string, schema_name, table, limit)
+            return {"table": table, "rows": rows, "count": len(rows)}
         except HTTPException:
             raise
         except Exception as e:
@@ -1058,5 +1049,3 @@ class InferFksRequest(BaseModel):
     min_confidence: float = 0.4
     veto_on_zero_overlap: bool = True
 
-
-from r2g.connectors.base import serialize_rows as _serialize_rows  # noqa: E402

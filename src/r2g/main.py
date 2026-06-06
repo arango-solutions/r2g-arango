@@ -213,10 +213,7 @@ def transform_edges(
 
         reader = DumpReader(dump_file)
         out_path = Path(output_file)
-        target_by_source = {
-            cm.source_table: cm.target_collection
-            for cm in mapping.collections.values()
-        }
+        target_by_source = ConfigManager.target_by_source_table(mapping)
         transformers = [
             (
                 e,
@@ -361,10 +358,7 @@ def transform_all(
                 summary.append((target_coll, "document", n))
                 progress.advance(task_id)
 
-            target_by_source = {
-                cm.source_table: cm.target_collection
-                for cm in mapping.collections.values()
-            }
+            target_by_source = ConfigManager.target_by_source_table(mapping)
             for edge, dump_path, table_def in edge_jobs:
                 progress.update(task_id, description=f"Edges: {edge.edge_collection}")
                 out_file = out_root / f"{edge.edge_collection}.jsonl"
@@ -586,12 +580,14 @@ def ingest_schema(
     pg_schema: str = typer.Option("public", "--pg-schema", help="PostgreSQL schema name to introspect"),
 ) -> None:
     """Connect to PostgreSQL and extract schema metadata."""
-    from r2g.connectors.postgres import PostgresConnector
+    from r2g.connectors.base import create_source_connector
 
     console.print("[green]Connecting to PostgreSQL...[/green]")
 
     try:
-        connector = PostgresConnector(connection_string, schema_name=pg_schema)
+        connector = create_source_connector(
+            "postgresql", connection_string, schema_name=pg_schema
+        )
         schema = connector.get_schema()
 
         console.print(f"[green]Successfully extracted schema with {len(schema.tables)} tables.[/green]")
@@ -727,9 +723,11 @@ def stream(
             )
             source_label = f"{source.source_type} ({source_name})"
         else:
-            from r2g.connectors.postgres import PostgresConnector
+            from r2g.connectors.base import create_source_connector
 
-            source_connector = PostgresConnector(pg_conn, schema_name=pg_schema)
+            source_connector = create_source_connector(
+                "postgresql", pg_conn, schema_name=pg_schema
+            )
             source_label = pg_conn.split("@")[-1] if pg_conn and "@" in pg_conn else pg_conn
 
         pipeline = StreamingPipeline(
@@ -1037,14 +1035,16 @@ def dump_tables(
     """
     import psycopg
 
-    from r2g.connectors.postgres import PostgresConnector
+    from r2g.connectors.base import create_source_connector
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
     try:
         pg_schema_name = schema_filter or "public"
-        connector = PostgresConnector(connection_string, schema_name=pg_schema_name)
+        connector = create_source_connector(
+            "postgresql", connection_string, schema_name=pg_schema_name
+        )
         schema = connector.get_schema()
         table_names = sorted(schema.tables.keys())
 

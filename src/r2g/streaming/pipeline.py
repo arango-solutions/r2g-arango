@@ -389,10 +389,9 @@ class StreamingPipeline:
                 w.drop_collection(edge_name)
             w.ensure_collection(edge_name, edge=True)
 
-        target_by_source = {
-            cm.source_table: cm.target_collection
-            for cm in self.config.collections.values()
-        }
+        from r2g.config import ConfigManager
+
+        target_by_source = ConfigManager.target_by_source_table(self.config)
         transformer = EdgeTransformer(
             edge_def,
             table_def,
