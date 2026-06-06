@@ -1278,11 +1278,27 @@ let rafPending = false;
 
 // ── Helpers ──
 
+function _apiToken() {
+  try { return localStorage.getItem('r2g.apiToken') || ''; } catch (e) { return ''; }
+}
+
+function _authHeaders(extra) {
+  const h = { 'Content-Type': 'application/json', ...(extra || {}) };
+  const tok = _apiToken();
+  if (tok) h['Authorization'] = 'Bearer ' + tok;
+  return h;
+}
+
 async function apiFetch(path, opts = {}) {
-  const res = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json', ...opts.headers },
-    ...opts
-  });
+  let res = await fetch(API + path, { headers: _authHeaders(opts.headers), ...opts });
+  // Local-first auth: if the API requires a token, prompt once and retry.
+  if (res.status === 401) {
+    const entered = prompt('This R2G API requires an access token. Paste the token shown in the server console:');
+    if (entered) {
+      try { localStorage.setItem('r2g.apiToken', entered.trim()); } catch (e) {}
+      res = await fetch(API + path, { headers: _authHeaders(opts.headers), ...opts });
+    }
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);

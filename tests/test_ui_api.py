@@ -265,6 +265,33 @@ class TestProjectEndpoints:
         })
         assert resp.status_code == 400
 
+    def test_create_project_rejects_traversal_name(self, client):
+        self._add_source(client)
+        resp = client.post("/api/projects", json={
+            "name": "../escape",
+            "source_name": "src",
+        })
+        assert resp.status_code == 400
+
+    def test_mapping_path_is_confined_to_catalog_dir(self, client, tmp_path, catalog_dir):
+        """A client-supplied mapping path must never be used as a write target."""
+        self._add_source(client)
+        evil = tmp_path / "evil.yaml"  # outside the catalog dir
+        resp = client.post("/api/projects", json={
+            "name": "confined",
+            "source_name": "src",
+            "mapping_config_path": str(evil),
+        })
+        assert resp.status_code == 201
+        stored = resp.json()["mapping_config_path"]
+        # Persisted path is derived under <catalog>/projects/<name>/, not the
+        # client path.
+        assert str(catalog_dir) in stored
+        assert stored.endswith("projects/confined/mapping.yaml")
+        # Saving the mapping writes to the safe path, never to the evil path.
+        client.put("/api/projects/confined/mapping", json=MappingConfig().model_dump())
+        assert not evil.exists()
+
     def test_create_project_with_metadata(self, client, tmp_path):
         self._add_source(client)
         mapping_path = str(tmp_path / "mapping.yaml")
@@ -331,6 +358,29 @@ class TestProjectEndpoints:
     def test_delete_project_not_found(self, client):
         resp = client.delete("/api/projects/nope")
         assert resp.status_code == 404
+
+
+class TestApiAuth:
+    def _app_client(self, catalog_dir, **kwargs):
+        from starlette.testclient import TestClient
+
+        return TestClient(create_app(catalog_dir=catalog_dir, **kwargs))
+
+    def test_loopback_no_token_is_open(self, catalog_dir):
+        client = self._app_client(catalog_dir)
+        assert client.get("/api/sources").status_code == 200
+
+    def test_token_required_when_configured(self, catalog_dir):
+        client = self._app_client(catalog_dir, api_token="s3cr3t")
+        assert client.get("/api/sources").status_code == 401
+        assert client.get("/api/health").status_code == 200  # health stays open
+        ok = client.get("/api/sources", headers={"Authorization": "Bearer s3cr3t"})
+        assert ok.status_code == 200
+
+    def test_non_loopback_bind_generates_token(self, catalog_dir):
+        app = create_app(catalog_dir=catalog_dir, host="0.0.0.0")
+        assert app.state.api_auth_required is True
+        assert app.state.api_token
 
 
 class TestMappingEndpoints:

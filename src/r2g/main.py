@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -1698,7 +1699,17 @@ def ui_cmd(
     if project:
         console.print(f"  Default project: {project}")
 
-    app_instance = create_app(catalog_dir=catalog_dir)
+    app_instance = create_app(catalog_dir=catalog_dir, host=host)
+    if getattr(app_instance.state, "api_auth_required", False):
+        token = app_instance.state.api_token
+        if os.environ.get("R2G_API_TOKEN"):
+            console.print("  [yellow]API auth enabled[/yellow] (using R2G_API_TOKEN).")
+        else:
+            console.print(
+                "  [yellow]API auth enabled[/yellow] (non-loopback bind). "
+                "Paste this token into the UI when prompted:"
+            )
+            console.print(f"    [bold]{token}[/bold]")
     uvicorn.run(app_instance, host=host, port=port, log_level="info")
 
 

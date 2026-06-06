@@ -4,13 +4,15 @@ import asyncio
 import json
 import os
 import queue
+import re
+import secrets
 import threading
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -69,18 +71,65 @@ _STATIC_DIR = Path(__file__).parent / "static"
 _running_loads: dict[str, dict[str, Any]] = {}  # load_id -> {"thread", "queue", "pipeline"}
 
 
-def create_app(catalog_dir: str | None = None) -> FastAPI:
-    """Factory function for the FastAPI application."""
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
+# Valid project names: keep them filesystem-safe so they cannot escape the
+# per-project mapping directory (no separators, no traversal).
+_PROJECT_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.\-]*")
+
+
+def create_app(
+    catalog_dir: str | None = None,
+    *,
+    host: str = "127.0.0.1",
+    api_token: str | None = None,
+) -> FastAPI:
+    """Factory function for the FastAPI application.
+
+    Local-first auth model (P5g/security): when bound to a loopback host with no
+    token configured, the API is open (frictionless local use). When bound to a
+    non-loopback host, or when ``R2G_API_TOKEN`` / ``api_token`` is set, a Bearer
+    token is required on all ``/api`` routes (except ``/api/health`` and the SSE
+    ``/stream`` endpoints, which are gated by their unguessable load id).
+    """
     app = FastAPI(title="Relational-to-Graph Studio", version="0.1.0")
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # ── CORS: same-origin only by default (the bundled UI is same-origin). ──
+    cors_origins = [o.strip() for o in os.environ.get("R2G_CORS_ORIGINS", "").split(",") if o.strip()]
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    # ── Optional Bearer-token auth. ──
+    token = (api_token or os.environ.get("R2G_API_TOKEN") or "").strip()
+    loopback = host in _LOOPBACK_HOSTS
+    require_auth = bool(token) or not loopback
+    if require_auth and not token:
+        token = secrets.token_urlsafe(32)
+    app.state.api_token = token
+    app.state.api_auth_required = require_auth
+
+    if require_auth:
+        @app.middleware("http")
+        async def _require_token(request: Request, call_next):
+            path = request.url.path
+            protected = (
+                path.startswith("/api/")
+                and path != "/api/health"
+                and not path.endswith("/stream")
+            )
+            if protected and request.method != "OPTIONS":
+                if request.headers.get("authorization", "") != f"Bearer {token}":
+                    return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return await call_next(request)
 
     catalog = CatalogManager(catalog_dir)
+    # Mapping files for API-created projects are confined here, never to a
+    # client-supplied path (prevents path traversal / arbitrary file writes).
+    _projects_root = (Path(catalog_dir).expanduser() if catalog_dir else Path.home() / ".r2g") / "projects"
 
     def _resolve_target(project: Any) -> tuple[str, str, str, str]:
         """Resolve (endpoint, database, username, password) for a project's target.
@@ -413,19 +462,38 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
 
     @app.post("/api/projects", status_code=201)
     async def create_project(body: ProjectCreateRequest):
+        if not _PROJECT_NAME_RE.fullmatch(body.name or "") or ".." in (body.name or ""):
+            raise HTTPException(status_code=400, detail="Invalid project name")
+        # The mapping file is always confined to <catalog>/projects/<name>/.
+        # If the client passed a path to an existing, parseable mapping, import
+        # its contents into the safe location (read-only); otherwise start empty.
+        safe_path = _projects_root / body.name / "mapping.yaml"
+        seed = MappingConfig()
+        if body.mapping_config_path:
+            try:
+                p = Path(body.mapping_config_path).expanduser()
+                if p.is_file():
+                    seed = ConfigManager.load_config(p)
+            except Exception:
+                seed = MappingConfig()
         try:
             project = catalog.create_project(
                 name=body.name,
                 source_name=body.source_name,
-                mapping_config_path=body.mapping_config_path,
+                mapping_config_path=str(safe_path),
                 arango_endpoint=body.arango_endpoint,
                 arango_database=body.arango_database,
                 mapping_name=body.mapping_name,
                 mapping_description=body.mapping_description,
             )
-            return project.model_dump()
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        if not safe_path.exists():
+            try:
+                ConfigManager.save_config(seed, str(safe_path))
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=_safe_detail(e))
+        return project.model_dump()
 
     @app.patch("/api/projects/{name}")
     async def update_project_metadata(name: str, body: ProjectUpdateRequest):
@@ -963,7 +1031,9 @@ class SourceCreateRequest(BaseModel):
 class ProjectCreateRequest(BaseModel):
     name: str
     source_name: str
-    mapping_config_path: str
+    # Optional: if it points to an existing mapping file, its contents are
+    # imported. The persisted location is always derived server-side.
+    mapping_config_path: str = ""
     arango_endpoint: str = "http://localhost:8529"
     arango_database: str = "_system"
     mapping_name: str = ""
