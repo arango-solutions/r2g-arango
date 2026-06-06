@@ -1323,8 +1323,13 @@ function setActionButtons(enabled) {
   });
 }
 
+// Unified HTML escaper (P5g/security): null-safe and also escapes quotes so
+// it is safe in attribute-VALUE contexts, not just text. NOTE: this is NOT
+// sufficient for inline event handlers (e.g. onclick="fn('${x}')"), where the
+// HTML parser decodes entities before the JS runs — those must use event
+// delegation + dataset instead. Delegates to _htmlEscape (hoisted).
 function escHtml(s) {
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return _htmlEscape(s);
 }
 
 // ── YAML serializer ──

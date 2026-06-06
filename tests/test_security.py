@@ -17,7 +17,39 @@ from r2g.security import (
     load_secret_key,
     redact_connection_string,
     redact_for_display,
+    scrub_dsn_credentials,
 )
+
+
+class TestScrubDsnCredentials:
+    def test_scrubs_embedded_dsn_credentials(self):
+        msg = "could not connect to postgresql://alice:s3cret@db.internal:5432/app"
+        out = scrub_dsn_credentials(msg)
+        assert "s3cret" not in out
+        assert "alice" not in out
+        assert "postgresql://***:***@db.internal:5432/app" in out
+
+    def test_leaves_credential_free_text_untouched(self):
+        assert scrub_dsn_credentials("plain error, no dsn") == "plain error, no dsn"
+        assert scrub_dsn_credentials("") == ""
+
+
+class TestLogRedactionProcessor:
+    def test_processor_masks_sensitive_keys_and_dsns(self):
+        from r2g.log import _redact_secrets
+
+        event = {
+            "event": "load_failed",
+            "password": "hunter2",
+            "connection_string": "postgresql://u:p@h:5432/d",
+            "error": "timeout talking to postgresql://u:p@h:5432/d",
+            "count": "5",
+        }
+        out = _redact_secrets(None, "error", dict(event))
+        assert "hunter2" not in out["password"]
+        assert ":p@" not in out["connection_string"]
+        assert "u:p@" not in out["error"]
+        assert out["count"] == "5"
 
 
 @pytest.fixture

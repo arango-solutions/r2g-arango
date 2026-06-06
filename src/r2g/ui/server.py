@@ -38,6 +38,17 @@ def _redact_target(dump: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _safe_detail(exc: Exception) -> str:
+    """Stringify an exception for a client ``detail`` with DSN credentials scrubbed.
+
+    Connection/driver errors frequently embed the full connection string
+    (``scheme://user:pass@host``); strip the credentials before returning.
+    """
+    from r2g.security import scrub_dsn_credentials
+
+    return scrub_dsn_credentials(str(exc))
+
+
 def _redact_dlq_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """Mask source-row VALUES in a DLQ entry returned to API clients.
 
@@ -244,11 +255,11 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
             snap = catalog.create_snapshot(name, schema, pg_schema=pg_schema)
             return {"id": snap.id, "tables": len(schema.tables), "captured_at": snap.captured_at.isoformat()}
         except ImportError as e:
-            raise HTTPException(status_code=501, detail=str(e))
+            raise HTTPException(status_code=501, detail=_safe_detail(e))
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=_safe_detail(e))
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=_safe_detail(e))
 
     @app.post("/api/sources/{name}/infer-fks")
     async def infer_fks(name: str, body: InferFksRequest | None = None):
@@ -711,9 +722,9 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
                 source_params=source.source_params,
             )
         except ImportError as e:
-            raise HTTPException(status_code=501, detail=str(e))
+            raise HTTPException(status_code=501, detail=_safe_detail(e))
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=_safe_detail(e))
 
         from r2g.dlq import DeadLetterQueue
 
@@ -932,7 +943,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
             )
             return intro.introspect()
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=_safe_detail(e))
 
     return app
 

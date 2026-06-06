@@ -23,6 +23,7 @@ process still has the plaintext.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 
@@ -138,6 +139,24 @@ def redact_for_display(value: str, keep: int = 3) -> str:
     if len(value) <= keep:
         return "***"
     return "***" + value[-keep:]
+
+
+# Matches credentials embedded in a DSN anywhere within a larger string, e.g.
+# "could not connect to postgresql://user:secret@host:5432/db" in an error message.
+_DSN_CRED_RE = re.compile(r"([A-Za-z][\w+.\-]*://)[^\s:/@]+:[^\s:/@]+@")
+
+
+def scrub_dsn_credentials(text: str) -> str:
+    """Replace ``scheme://user:pass@`` credential pairs anywhere in ``text``.
+
+    Used to sanitize free-form strings (log fields, error messages) that may
+    have a connection string embedded in them. Leaves the rest of the text
+    intact so the message is still useful.
+    """
+
+    if not text:
+        return text
+    return _DSN_CRED_RE.sub(r"\1***:***@", text)
 
 
 def redact_connection_string(url: str) -> str:
