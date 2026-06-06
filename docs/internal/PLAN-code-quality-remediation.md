@@ -1,0 +1,154 @@
+# Code-Quality Remediation Plan
+
+> Internal working doc. Re-audited **2026-06-05** against the current codebase
+> (post Phase 5g UI work). Supersedes the ad-hoc plan from the original audit.
+> Baseline: **1000 passing, 6 skipped, 80% line coverage** (`pytest --cov`).
+
+## How this plan was produced
+
+A coverage run plus three read-only audits (security; duplication & dead code;
+documentation drift). The first remediation pass already landed as commit
+`a3be84b` ("Code-quality pass…"); the items below reflect what is **still open**
+plus **new** findings introduced by the large UI/feature growth since then.
+
+Legend — Effort: S (≲1h) / M (≲half day) / L (multi-day). Risk: chance of
+breaking behaviour.
+
+---
+
+## 0. Already done (commit `a3be84b`)
+
+- [x] SQL injection in table preview fixed (`ui/server.py`, `mcp_server.py`) — snapshot allowlist + `psycopg.sql.Identifier`. Re-verified safe.
+- [x] MCP credential redaction for source/target tools + resources. Re-verified on primary paths.
+- [x] `catalog.json` written `0600`. Re-verified (`catalog.py:147-149`).
+- [x] Deleted dead `transformers/converter.py`. Confirmed gone.
+- [x] Wired `DeadLetterQueue` into `StreamingPipeline` (PRD P5b.3.3).
+- [x] First doc-drift pass (test count, UI port, Phase 5 status, CDC/secrets claims).
+
+---
+
+## 1. Security (highest priority)
+
+### Still open from prior audit
+- [ ] **HIGH — Unauthenticated mutating REST API + `CORS allow_origins=["*"]`** (`ui/server.py:51-56` and all POST/PUT/PATCH/DELETE routes). Mitigated only by default `127.0.0.1` bind (overridable to `0.0.0.0`). **Fix:** auth (token/API key/session), restrict CORS to known origins, warn loudly on non-localhost bind. **Effort M, Risk Med** (touches every route + UI fetch calls).
+- [ ] **HIGH — Path traversal** via unconstrained `mapping_config_path` / MCP `save_path` (`catalog.py:306`, `ui/server.py:395,432,444`, `config.py:319-334`, `mcp_server.py:314-315,348,600-601`). **Fix:** resolve+jail under `~/.r2g/projects/{name}/`; reject `..` and out-of-jail absolute paths. **Effort M, Risk Med.**
+- [ ] **MED — SSE / status leak full Python tracebacks** to any client (`ui/server.py:755-761,808,779-796`). **Fix:** strip traceback from client events; log server-side with a correlation id; return generic message. **Effort S, Risk Low.**
+- [ ] **MED — No log redaction** of secrets/DSNs (`log.py:7-33`; raw `error=str(e)` at `server.py:289,373,589`, `fk_inference.py:690,722-726`). **Fix:** structlog redaction processor; never log raw driver errors. **Effort S-M, Risk Low.**
+
+### New findings
+- [ ] **HIGH — Server-side SSRF** via target introspect (`ui/server.py:902-918`, `arango_reader.py:38-39`) and source registration/snapshot (`ui/server.py:215-237`, `kafka_source.py` schema-registry URL). User-supplied endpoints → outbound connects to internal IPs / cloud metadata. **Fix:** allowlist / block RFC1918 + link-local unless explicitly allowed; require auth. **Effort M, Risk Med.**
+- [ ] **HIGH — Unauthenticated destructive ops** (full PG→Arango load, collection drops, in-place migrate) at `ui/server.py:533-612,644-777`. Folds into the auth item above. **Effort (covered by auth), Risk Med.**
+- [ ] **MED — DOM XSS** in mapper panes: schema table/column names injected unescaped into `innerHTML` and inline `onclick='…${t.name}…'` (`index.html:2225-2240,3028-3033,3150`); expression snippets inserted raw (`index.html:3150,1326-1328`). Hostile DB object names / crafted snapshot can execute script. **Fix:** escape everywhere (single escaper), drop inline `onclick` for `addEventListener` + `dataset`. **Effort M, Risk Med.**
+- [ ] **MED — Verbose exception strings** returned to clients (`detail=str(e)`) on snapshot/mapping/migrate/introspect (`ui/server.py:237,435,463,502,530,635,661,920`). Can leak DSN fragments/paths. **Fix:** map to safe messages, log details server-side. **Effort S, Risk Low.**
+- [ ] **MED — DLQ PII exposure**: `/load/{id}/errors` returns full failed source `row` dicts unauthenticated (`ui/server.py:820-826`, `dlq.py:27-43`). **Fix:** redact/summarize + auth + cap fields. **Effort S, Risk Low.**
+- [ ] **MED — MCP has no auth** (`mcp_server.py`, SSE mode network-exposed via `main.py:1705-1729`); error responses return raw `str(e)`. **Fix:** token auth, bind localhost, sanitize errors. **Effort M, Risk Low.**
+- [ ] **MED — CSV source arbitrary directory read** (`csv_source.py:93-107`): connection string is any path; reads all `*.csv` there. **Fix:** restrict to configured base dir. **Effort S, Risk Low.**
+- [ ] **LOW — DoS / rate-limit gaps** on expression compile/preview and `infer-fks?sample=true` (unauthenticated, expensive); preview-modal header/title not escaped; `~/.r2g` dir + DLQ files use default perms; `openProjectDatabase` opens user-controlled endpoint (`index.html:1922-1928`, already `noopener`). **Effort S each, Risk Low.**
+
+### Verified safe (no action)
+- No `eval`/`exec` in app code (expression engine uses a closed AST walker, `expressions.py:16-20,505`); no `subprocess`/`shell=True`; preview SQL not bypassable; secrets encrypted at rest (Fernet).
+
+---
+
+## 2. Duplication
+
+### Still open from prior audit
+- [ ] `target_by_source` dict build — canonical helper exists (`config.py:263-276`) but **4 inline copies** remain (`cdc/delta_transformer.py:80-89`, `main.py:215-227`, `main.py:363-375`, `streaming/pipeline.py:392-401`). **Fix:** `ConfigManager.target_by_source_table()` + `edge_transformer()` helpers. **Effort M, Risk Med.**
+- [ ] Source-connector dispatch — improved (factory in `connectors/base.py:66-117`) but **legacy direct `PostgresConnector`** bypasses at `main.py:588-593,729-731,1039-1046`. **Effort S, Risk Low.**
+- [ ] FK value-sampler dispatch duplicated (`ui/server.py:276-307` vs `main.py:2004-2024`). **Fix:** `fk_inference.create_value_sampler(...)`. **Effort S, Risk Low.**
+- [ ] CSV extension tuple + table→file resolution duplicated (`csv_source.py:62,233-237` vs `fk_inference.py:761,788-793`). **Fix:** shared `CSV_EXTENSIONS` + `resolve_csv_table_path()`. **Effort S, Risk Low.**
+- [ ] `_singularize`/`_pluralize` heuristics diverged (`fk_inference.py:352-371` vs `csv_source.py:154-163`). **Fix:** consolidate in `naming.py`. **Effort S, Risk Low.**
+- [ ] `SUPPORTED_SOURCE_TYPES` (`connectors/base.py:63`) vs `KNOWN_TYPES` (`catalog.py:167-174`) maintained separately. **Fix:** import the one list. **Effort S, Risk Low.**
+- [ ] `_serialize_rows` byte-identical in `ui/server.py:1006-1024` and `mcp_server.py:702-719`. **Fix:** shared util. **Effort S, Risk Low.**
+
+### New (Python)
+- [ ] `_redact_source`/`_redact_target` identical in `ui/server.py:26-38` and `mcp_server.py:44-59` → move to `security.py`. **S/Low.**
+- [ ] Postgres table-preview logic duplicated (`ui/server.py:335-369` vs `mcp_server.py:399-450`) → shared `preview_postgres_table()` (keep identifier validation centralized). **M/Med.**
+- [ ] Source-type defaulting / PG-alias checks (`source_type or "postgresql"`, `in ("postgresql","postgres","pg")`) ~14 sites → `normalize_source_type()` + `is_postgresql()`. **S/Low.**
+- [ ] Python `_resolve_target` vs JS `_resolveProjectTarget` → expose `GET /api/projects/{name}/target-url`. **M/Low.**
+
+### New (JS, `index.html`)
+- [ ] Dual HTML escapers `escHtml` vs `_htmlEscape` (latter escapes quotes) used inconsistently across ~80 sites → single `htmlEscape(s,{attrs})`. **S/Low.** (Also closes part of the XSS item.)
+- [ ] `Object.entries(editState.collections).find(([k,c]) => (c.sourceTable||k)===t)` ~12 sites → `_collEntryForSourceTable()`. **S/Low.**
+- [ ] FK shape normalization `fk.columns||[fk.column]` / `foreign_table||foreignTable` 5+ sites → `_normalizeFk()`. **S/Low.**
+- [ ] `_key` read-only toast/tooltip copy in 3 blocks → `_keyReadOnlyMessage()`. **S/Low.**
+- [ ] `drawSourceGraphEdges`/`drawTargetGraphEdges` near-identical → `drawPaneGraphEdges({...})`. **M/Med.**
+- [ ] 15 `_menu*` context-menu builders repeat item/copy/inspect patterns (~300 lines) → `menuItem()`, `menuCopy()`, `menuEditExpression()`. **L/Low.**
+
+---
+
+## 3. Dead / unreachable code
+
+### Python
+- [ ] `types.py:208-213` `TargetGraphSchema` — unused (wire to Arango snapshot or delete). **S-M/Low.**
+- [ ] `types.py:202-205` `TypeMapping` — unused. **S/Low.**
+- [ ] `temporal/models.py:42-46` `HasVersionDirection` — exported, never used. **S/Low.**
+- [ ] `ui/server.py:198-204` `inspect.signature` cascade shim — unreachable (`remove_source` always has `cascade`). **S/Low.**
+- [ ] `ui/server.py:873-905` four `hasattr(catalog, …)` target guards — unreachable (methods always exist). **S/Low.**
+
+### JS (`index.html`) — includes a functional regression
+- [ ] **REGRESSION — `saveMapping` migration prompt dropped.** End-of-file monkey-patch (`6529-6554`) shadows the original `saveMapping` (`3850-3863`) and **does not call `maybePromptMigration()`** (`3867-3890`), so post-save migration prompting is now unreachable. **Fix:** make the patch delegate to `_origSaveMapping()` (like the `selectProject` patch) and re-hook the prompt. **S/Med — behaviour gap, prioritise.**
+- [ ] `executeLoad` duplicated: original (`4146-4191`) shadowed by patch (`6485-6525`); `_origExecuteLoad`/`_origSaveMapping` assigned but unused (`6484,6528`). Delete dead copies. **S/Low.**
+- [ ] `closeProgressView()` (`4196`) zero callers; `showProgressView` thin alias bypassed. **S/Low.**
+- [ ] End-of-file monkey-patch block (`6448-6564`) reassigns `toggleField`, `editCollection`, `saveMapping`, `executeLoad`, `renderMapper`, `selectProject` — fold into authoring-time definitions. **L/Med.**
+
+---
+
+## 4. Test coverage (80% overall)
+
+Raise coverage on the weak modules (current → suggested focus):
+- [ ] `main.py` **46%** — CLI command handlers largely untested (biggest gap: 598 missed stmts). **L.**
+- [ ] `connectors/postgres.py` **51%** — connector/session paths. **M.**
+- [ ] `mcp_server.py` **59%** — tool handlers + redaction/error paths. **M.**
+- [ ] `selective_reload.py` **67%** — reload executor. **M.**
+- [ ] `ui/server.py` **73%** — error branches, SSE, introspect. **M.**
+- [ ] `input/dump_reader.py` **76%**, `node_transformer.py` **77%**, `streaming/pipeline.py` **78%**. **S-M.**
+
+---
+
+## 5. Documentation drift
+
+### Status mismatches (highest value — cheap, high signal)
+- [ ] **PRD Phase 5g still "Planned" but implemented.** Flip header (`PRD.md:487`), status table (line 10), §3 intro (line 86), document history (line 571), and items **P5g.1–P5g.10** to **Implemented**. Note two **partials**: P5g.3 explorer defaults **open** (not collapsed); P5g.7 optional "show only unmapped / only edges" **filters not built**. **S/Low.**
+- [ ] **Test count** README (`513`) and PRD history (`567`): 998 → **1006 collected (1000 unit + 6 integration)**. **S.**
+- [ ] **PRD P5c.1.5 AQL delegation** "Not started" → **Done** for streaming (`node_transformer.py:34-87`, `pipeline.py:227-361`, tests exist). **S.**
+- [ ] **PRD P5c.2.5 expression editor** "preview/highlight deferred" → **Done** (`index.html:3632-3709,3488-3514`, `ui/server.py:135`). **S.**
+- [ ] **Package name** `r2g[…]` → `r2g-arango[…]` across PRD (`47,128,195,563`). **S.**
+
+### README gaps
+- [ ] CLI reference table stops at `stream`; missing `ui`, `mcp`, `secrets *`, `source *`, `project *`, `history`, `mapping-diff`, `selective-reload`. **M.**
+- [ ] Quick start `stream` omits catalog `--source` path; `r2g source dump` under-documented vs legacy `dump-tables`. **S.**
+- [ ] Stale reference to deleted `transformers/converter.py` (`README.md:131`); project-structure tree outdated; mermaid + prerequisites still PostgreSQL-only; roadmap lacks Phase 5g. **S-M.**
+- [ ] CDC section omits `--temporal`/`--ttl-seconds`/`--smart-field` flags. **S.**
+
+### Internal docs
+- [ ] `docs/internal/PLAN-mapping-ui-catalog-reingest.md` heavily stale (502/845/673 test counts, `reload --changes-only` → `selective-reload`, sidebar wording, package name). Add archive banner or bulk-update. **S.**
+
+---
+
+## Recommended order
+
+1. **Quick correctness + truthfulness wins (½ day, low risk):**
+   fix the `saveMapping` migration-prompt regression; strip SSE/status tracebacks;
+   redact DLQ responses + verbose `detail=str(e)`; flip PRD Phase 5g / P5c statuses
+   and the 1006 test count. *(Ships visible value, no behaviour risk.)*
+2. **Security hardening (highest priority, 1–2 days):**
+   API auth + CORS lockdown (covers destructive-ops exposure) → path jail →
+   SSRF allowlist → log redaction → DOM XSS pass (pairs with the escaper merge).
+3. **Dead-code removal (low risk, fast):**
+   delete server shims, unused types (`TargetGraphSchema`/`TypeMapping`/`HasVersionDirection`),
+   shadowed JS `executeLoad`/`closeProgressView`/`_orig*`; fold the JS monkey-patch block.
+4. **Deduplication (incremental):**
+   `_serialize_rows`, `_redact_*`, FK sampler factory, CSV path helper, source-type
+   normalizer, `SUPPORTED_SOURCE_TYPES`; then `target_by_source` helper, Postgres
+   preview helper, JS escaper unification + small JS helpers; menu-builder refactor last.
+5. **Docs completeness (after code settles):**
+   README CLI table + multi-source quick start; internal PLAN archive banner.
+6. **Coverage (ongoing):**
+   target `main.py`, `postgres.py`, `mcp_server.py`, `selective_reload.py`, `ui/server.py`.
+
+**Rationale:** Step 1 is cheap and removes a live behaviour gap + doc lies before
+the next demo. Step 2 is the only class of issue that is remotely exploitable and
+should precede any public/non-localhost deployment. Steps 3–4 reduce the surface
+that keeps regenerating bugs (e.g. the monkey-patch regression). Docs and coverage
+trail the code so they don't churn against in-flight changes.

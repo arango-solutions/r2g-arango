@@ -6536,6 +6536,9 @@ saveMapping = async function () {
     toast('Mapping saved successfully', 'success');
     clearDirty();
     requestValidation();
+    // Offer DB reconciliation when a saved rename affects an already-loaded
+    // database. This was lost when this patch shadowed the original saveMapping.
+    await maybePromptMigration();
   } catch (e) {
     // Replace toast-only failure with floating-card failure (Phase H polish)
     openFloatingCard({

@@ -37,6 +37,20 @@ def _redact_target(dump: dict[str, Any]) -> dict[str, Any]:
     out["password"] = redact_for_display(out.get("password") or "")
     return out
 
+
+def _redact_dlq_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Mask source-row VALUES in a DLQ entry returned to API clients.
+
+    Failed rows can contain PII; expose only which fields were present (and the
+    error/collection metadata needed to debug), not their values.
+    """
+    out = dict(entry)
+    row = out.get("row")
+    if isinstance(row, dict):
+        out["row_fields"] = sorted(row.keys())
+        out["row"] = {k: ("<null>" if v is None else "<redacted>") for k, v in row.items()}
+    return out
+
 logger = get_logger(__name__)
 
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -745,19 +759,20 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
 
                 err_type = type(exc).__name__
                 err_msg = str(exc) or err_type
-                tb_str = _tb.format_exc()
+                # Keep the full traceback server-side only; never stream it to
+                # clients (it leaks paths/internals). Clients get type + message.
                 logger.error(
                     "load_pipeline_failed",
                     load_id=load_id,
                     error_type=err_type,
                     error=err_msg,
+                    traceback=_tb.format_exc(),
                 )
                 progress_queue.put(
                     {
                         "event": "error",
                         "error": err_msg,
                         "error_type": err_type,
-                        "traceback": tb_str,
                     }
                 )
                 catalog.complete_load(
@@ -822,7 +837,7 @@ def create_app(catalog_dir: str | None = None) -> FastAPI:
         from r2g.dlq import DeadLetterQueue
 
         dlq = DeadLetterQueue(load_id)
-        errors = dlq.read_errors(limit=limit, offset=offset)
+        errors = [_redact_dlq_entry(e) for e in dlq.read_errors(limit=limit, offset=offset)]
         return {"load_id": load_id, "errors": errors, "count": len(errors)}
 
     # ── Auto-map endpoint ──────────────────────────────────────────────
