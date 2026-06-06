@@ -54,17 +54,17 @@ breaking behaviour.
 
 ### Still open from prior audit
 - [ ] `target_by_source` dict build — canonical helper exists (`config.py:263-276`) but **4 inline copies** remain (`cdc/delta_transformer.py:80-89`, `main.py:215-227`, `main.py:363-375`, `streaming/pipeline.py:392-401`). **Fix:** `ConfigManager.target_by_source_table()` + `edge_transformer()` helpers. **Effort M, Risk Med.**
-- [ ] Source-connector dispatch — improved (factory in `connectors/base.py:66-117`) but **legacy direct `PostgresConnector`** bypasses at `main.py:588-593,729-731,1039-1046`. **Effort S, Risk Low.**
-- [ ] FK value-sampler dispatch duplicated (`ui/server.py:276-307` vs `main.py:2004-2024`). **Fix:** `fk_inference.create_value_sampler(...)`. **Effort S, Risk Low.**
-- [ ] CSV extension tuple + table→file resolution duplicated (`csv_source.py:62,233-237` vs `fk_inference.py:761,788-793`). **Fix:** shared `CSV_EXTENSIONS` + `resolve_csv_table_path()`. **Effort S, Risk Low.**
-- [ ] `_singularize`/`_pluralize` heuristics diverged (`fk_inference.py:352-371` vs `csv_source.py:154-163`). **Fix:** consolidate in `naming.py`. **Effort S, Risk Low.**
-- [ ] `SUPPORTED_SOURCE_TYPES` (`connectors/base.py:63`) vs `KNOWN_TYPES` (`catalog.py:167-174`) maintained separately. **Fix:** import the one list. **Effort S, Risk Low.**
-- [ ] `_serialize_rows` byte-identical in `ui/server.py:1006-1024` and `mcp_server.py:702-719`. **Fix:** shared util. **Effort S, Risk Low.**
+- [ ] Source-connector dispatch — improved (factory in `connectors/base.py`) but **legacy direct `PostgresConnector`** bypasses remain in `main.py`. **Effort S, Risk Low.**
+- [x] FK value-sampler dispatch duplicated → **DONE:** `fk_inference.create_value_sampler(...)`, used by both `ui/server.py` and `main.py`.
+- [x] CSV extension tuple + table→file resolution duplicated → **DONE:** shared `CSV_EXTENSIONS` + `resolve_csv_table_path()` in `csv_source.py`; `fk_inference` imports them.
+- [x] `_singularize`/`_pluralize` heuristics diverged → **DONE:** consolidated as `naming.pluralize` / `naming.singularize` (union heuristic: `ses`/`ches`/`shes`/`xes`/`zes`); both callers reuse them.
+- [x] `SUPPORTED_SOURCE_TYPES` vs `KNOWN_TYPES` maintained separately → **DONE:** `catalog.add_source` imports `SUPPORTED_SOURCE_TYPES` (empty/unknown still rejected).
+- [x] `_serialize_rows` byte-identical in `ui/server.py` and `mcp_server.py` → **DONE:** shared `connectors.base.serialize_rows`.
 
 ### New (Python)
-- [ ] `_redact_source`/`_redact_target` identical in `ui/server.py:26-38` and `mcp_server.py:44-59` → move to `security.py`. **S/Low.**
-- [ ] Postgres table-preview logic duplicated (`ui/server.py:335-369` vs `mcp_server.py:399-450`) → shared `preview_postgres_table()` (keep identifier validation centralized). **M/Med.**
-- [ ] Source-type defaulting / PG-alias checks (`source_type or "postgresql"`, `in ("postgresql","postgres","pg")`) ~14 sites → `normalize_source_type()` + `is_postgresql()`. **S/Low.**
+- [x] `_redact_source`/`_redact_target` identical in `ui/server.py` and `mcp_server.py` → **DONE:** moved to `security.redact_source_dump` / `redact_target_dump`; both import as `_redact_source`/`_redact_target`.
+- [ ] Postgres table-preview logic duplicated (`ui/server.py` vs `mcp_server.py`) → shared `preview_postgres_table()` (keep identifier validation centralized). **M/Med.**
+- [x] Source-type defaulting / PG-alias checks → **DONE (sampler sites):** `connectors.base.normalize_source_type()` + `is_postgresql()` added and used by the factory, catalog, and both FK-sampler call sites. Remaining scattered `in ("postgresql","postgres","pg")` checks can adopt them opportunistically.
 - [ ] Python `_resolve_target` vs JS `_resolveProjectTarget` → expose `GET /api/projects/{name}/target-url`. **M/Low.**
 
 ### New (JS, `index.html`)

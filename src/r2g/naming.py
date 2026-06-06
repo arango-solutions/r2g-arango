@@ -43,6 +43,40 @@ def split_identifier(name: str) -> list[str]:
     return [w for w in words if w]
 
 
+def pluralize(word: str) -> str:
+    """Best-effort English plural for table / relationship name heuristics.
+
+    Intentionally simple (no irregular-noun table): ``y`` after a consonant →
+    ``ies``; sibilant endings (``s``/``x``/``z``/``ch``/``sh``) → ``es``; else
+    append ``s``. Used only for fuzzy name matching, never for stored names.
+    """
+    if not word:
+        return word
+    if word.endswith("y") and len(word) > 1 and word[-2] not in "aeiou":
+        return word[:-1] + "ies"
+    if word.endswith(("s", "x", "z", "ch", "sh")):
+        return word + "es"
+    return word + "s"
+
+
+def singularize(word: str) -> str:
+    """Best-effort English singular, the inverse of :func:`pluralize`.
+
+    ``ies`` → ``y``; ``ses``/``ches``/``shes``/``xes``/``zes`` → drop ``es``; a
+    trailing ``s`` (but not ``ss``) → drop ``s``. Used only for fuzzy name
+    matching (e.g. ``orders`` ↔ ``order``), never for stored names.
+    """
+    if not word:
+        return word
+    if word.endswith("ies") and len(word) > 3:
+        return word[:-3] + "y"
+    if word.endswith(("ses", "ches", "shes", "xes", "zes")):
+        return word[:-2]
+    if word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 def convert_identifier(name: str, style: NameCase) -> str:
     """Re-case ``name`` into ``style``.
 

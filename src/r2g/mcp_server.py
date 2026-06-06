@@ -41,22 +41,8 @@ def _resolve_conn_string(raw: str) -> str:
     return raw
 
 
-def _redact_source(dump: dict[str, Any]) -> dict[str, Any]:
-    """Mask the connection string of a serialized SourceConfig for output."""
-    from r2g.security import redact_connection_string
-
-    out = dict(dump)
-    out["connection_string"] = redact_connection_string(out.get("connection_string") or "")
-    return out
-
-
-def _redact_target(dump: dict[str, Any]) -> dict[str, Any]:
-    """Mask the password of a serialized TargetConfig for output."""
-    from r2g.security import redact_for_display
-
-    out = dict(dump)
-    out["password"] = redact_for_display(out.get("password") or "")
-    return out
+from r2g.security import redact_source_dump as _redact_source  # noqa: E402
+from r2g.security import redact_target_dump as _redact_target  # noqa: E402
 
 
 # ── Catalog: Sources ─────────────────────────────────────────────────
@@ -699,21 +685,4 @@ def _schema_summary(schema) -> dict[str, Any]:
     return {"tables": tables_summary, "table_count": len(tables_summary)}
 
 
-def _serialize_rows(rows: list[dict]) -> list[dict]:
-    import datetime as dt
-    from decimal import Decimal
-
-    result = []
-    for row in rows:
-        converted = {}
-        for k, v in row.items():
-            if isinstance(v, (dt.datetime, dt.date)):
-                converted[k] = v.isoformat()
-            elif isinstance(v, Decimal):
-                converted[k] = float(v)
-            elif isinstance(v, bytes):
-                converted[k] = v.hex()
-            else:
-                converted[k] = v
-        result.append(converted)
-    return result
+from r2g.connectors.base import serialize_rows as _serialize_rows  # noqa: E402

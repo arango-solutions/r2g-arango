@@ -159,6 +159,20 @@ def scrub_dsn_credentials(text: str) -> str:
     return _DSN_CRED_RE.sub(r"\1***:***@", text)
 
 
+def redact_source_dump(dump: dict) -> dict:
+    """Return a copy of a serialized ``SourceConfig`` with its DSN masked."""
+    out = dict(dump)
+    out["connection_string"] = redact_connection_string(out.get("connection_string") or "")
+    return out
+
+
+def redact_target_dump(dump: dict) -> dict:
+    """Return a copy of a serialized ``TargetConfig`` with its password masked."""
+    out = dict(dump)
+    out["password"] = redact_for_display(out.get("password") or "")
+    return out
+
+
 def redact_connection_string(url: str) -> str:
     """Redact the password component of a DSN-style connection string.
 

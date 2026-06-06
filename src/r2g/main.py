@@ -1993,10 +1993,10 @@ def source_infer_fks(
     """
     from rich.table import Table as RichTable
 
+    from r2g.connectors.base import normalize_source_type
     from r2g.fk_inference import (
-        CsvValueSampler,
         InferenceOptions,
-        PostgresValueSampler,
+        create_value_sampler,
         infer_foreign_keys,
     )
 
@@ -2013,26 +2013,19 @@ def source_infer_fks(
         raise typer.Exit(code=1)
 
     sampler = None
-    stype = (source.source_type or "postgresql").lower()
-    if sample and stype in ("postgresql", "postgres", "pg"):
-        sampler = PostgresValueSampler(
+    if sample:
+        sampler = create_value_sampler(
+            source.source_type,
             source.connection_string,
-            schema_name=snap.pg_schema,
+            pg_schema=snap.pg_schema,
+            source_params=source.source_params,
             limit=sample_limit,
         )
-    elif sample and stype == "csv":
-        params = source.source_params or {}
-        sampler = CsvValueSampler(
-            source.connection_string,
-            delimiter=params.get("delimiter", ","),
-            has_header=bool(params.get("has_header", True)),
-            limit=sample_limit,
-        )
-    elif sample:
-        console.print(
-            f"[yellow]--sample is only supported for PostgreSQL and CSV sources (got "
-            f"'{stype}'); falling back to name-only inference.[/yellow]"
-        )
+        if sampler is None:
+            console.print(
+                f"[yellow]--sample is only supported for PostgreSQL and CSV sources (got "
+                f"'{normalize_source_type(source.source_type)}'); falling back to name-only inference.[/yellow]"
+            )
 
     opts = InferenceOptions(min_confidence=min_confidence, sample_overlap=bool(sampler))
     try:

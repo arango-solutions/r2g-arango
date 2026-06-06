@@ -164,14 +164,16 @@ class CatalogManager:
         # Catalog accepts any *known* source type so future types
         # (csv, kafka) can be pre-registered; the connector factory
         # remains the strict gate on what we can actually introspect.
-        KNOWN_TYPES = ("postgresql", "snowflake", "csv", "kafka")
+        # Single source of truth for the type list lives in connectors.base.
+        from r2g.connectors.base import SUPPORTED_SOURCE_TYPES
+
         normalized = (source_type or "").strip().lower()
         if normalized in ("postgres", "pg"):
             normalized = "postgresql"
-        if normalized not in KNOWN_TYPES:
+        if normalized not in SUPPORTED_SOURCE_TYPES:
             raise ValueError(
                 f"Unsupported source_type '{source_type}'. "
-                f"Expected one of: {', '.join(KNOWN_TYPES)}."
+                f"Expected one of: {', '.join(SUPPORTED_SOURCE_TYPES)}."
             )
         source_type = normalized
         catalog = self._load()

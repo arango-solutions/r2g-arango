@@ -62,6 +62,49 @@ class SourceConnector(Protocol):
 
 SUPPORTED_SOURCE_TYPES: tuple[str, ...] = ("postgresql", "snowflake", "csv", "kafka")
 
+# Aliases that all mean PostgreSQL. Missing/empty source types default to PG.
+_PG_ALIASES: frozenset[str] = frozenset({"postgresql", "postgres", "pg"})
+
+
+def normalize_source_type(source_type: str | None) -> str:
+    """Canonicalize a source-type string.
+
+    Empty/``None`` defaults to ``"postgresql"`` (R2G's historical default) and
+    the ``postgres`` / ``pg`` aliases fold to ``"postgresql"``.
+    """
+    key = (source_type or "postgresql").strip().lower()
+    return "postgresql" if key in _PG_ALIASES else key
+
+
+def is_postgresql(source_type: str | None) -> bool:
+    """True when ``source_type`` denotes PostgreSQL (incl. ``postgres`` / ``pg``)."""
+    return normalize_source_type(source_type) == "postgresql"
+
+
+def serialize_rows(rows: list[dict]) -> list[dict]:
+    """Convert non-JSON-serializable DB values to JSON-safe forms.
+
+    ``datetime``/``date`` → ISO string, ``Decimal`` → float, ``bytes`` → hex.
+    Used by the data-preview paths in the UI and MCP servers.
+    """
+    import datetime as dt
+    from decimal import Decimal
+
+    result = []
+    for row in rows:
+        converted = {}
+        for k, v in row.items():
+            if isinstance(v, (dt.datetime, dt.date)):
+                converted[k] = v.isoformat()
+            elif isinstance(v, Decimal):
+                converted[k] = float(v)
+            elif isinstance(v, bytes):
+                converted[k] = v.hex()
+            else:
+                converted[k] = v
+        result.append(converted)
+    return result
+
 
 def create_source_connector(
     source_type: str,
@@ -82,9 +125,9 @@ def create_source_connector(
     ``topic``). PostgreSQL and Snowflake ignore it.
     """
 
-    key = (source_type or "").strip().lower()
+    key = normalize_source_type(source_type)
     params = source_params or {}
-    if key in ("postgresql", "postgres", "pg"):
+    if key == "postgresql":
         from r2g.connectors.postgres import PostgresConnector
 
         return PostgresConnector(connection_string, schema_name=schema_name)

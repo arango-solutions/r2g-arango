@@ -20,24 +20,10 @@ from r2g.catalog import CatalogManager
 from r2g.config import ConfigManager, validate_config
 from r2g.connectors.arango_writer import ArangoWriter
 from r2g.log import get_logger
-from r2g.security import redact_connection_string, redact_for_display
+from r2g.security import redact_source_dump as _redact_source
+from r2g.security import redact_target_dump as _redact_target
 from r2g.streaming.pipeline import StreamingPipeline
 from r2g.types import MappingConfig
-
-
-def _redact_source(dump: dict[str, Any]) -> dict[str, Any]:
-    """Mask the connection string in a ``SourceConfig`` dict for API display."""
-    out = dict(dump)
-    cs = out.get("connection_string") or ""
-    out["connection_string"] = redact_connection_string(cs)
-    return out
-
-
-def _redact_target(dump: dict[str, Any]) -> dict[str, Any]:
-    """Mask the password in a ``TargetConfig`` dict for API display."""
-    out = dict(dump)
-    out["password"] = redact_for_display(out.get("password") or "")
-    return out
 
 
 def _safe_detail(exc: Exception) -> str:
@@ -317,10 +303,10 @@ def create_app(
         name-heuristic only and the endpoint is schema-metadata-only
         (safe / free).
         """
+        from r2g.connectors.base import normalize_source_type
         from r2g.fk_inference import (
-            CsvValueSampler,
             InferenceOptions,
-            PostgresValueSampler,
+            create_value_sampler,
             infer_foreign_keys,
         )
 
@@ -344,35 +330,23 @@ def create_app(
         sampler = None
         sampler_used = False
         if req.sample:
-            stype = (source.source_type or "postgresql").lower()
-            if stype in ("postgresql", "postgres", "pg"):
-                try:
-                    sampler = PostgresValueSampler(
-                        source.connection_string,
-                        schema_name=snap.pg_schema,
-                        limit=req.sample_limit,
-                    )
-                    sampler_used = True
-                except Exception as err:  # noqa: BLE001
-                    logger.warning("fk_infer_sampler_init_failed", error=str(err))
-            elif stype == "csv":
-                try:
-                    params = source.source_params or {}
-                    sampler = CsvValueSampler(
-                        source.connection_string,
-                        delimiter=params.get("delimiter", ","),
-                        has_header=bool(params.get("has_header", True)),
-                        limit=req.sample_limit,
-                    )
-                    sampler_used = True
-                except Exception as err:  # noqa: BLE001
-                    logger.warning("fk_infer_sampler_init_failed", error=str(err))
-            else:
-                logger.info(
-                    "fk_infer_sampler_unsupported",
-                    source_type=stype,
-                    note="value-overlap sampling supports PostgreSQL and CSV; name heuristic still runs",
+            try:
+                sampler = create_value_sampler(
+                    source.source_type,
+                    source.connection_string,
+                    pg_schema=snap.pg_schema,
+                    source_params=source.source_params,
+                    limit=req.sample_limit,
                 )
+                sampler_used = sampler is not None
+                if sampler is None:
+                    logger.info(
+                        "fk_infer_sampler_unsupported",
+                        source_type=normalize_source_type(source.source_type),
+                        note="value-overlap sampling supports PostgreSQL and CSV; name heuristic still runs",
+                    )
+            except Exception as err:  # noqa: BLE001
+                logger.warning("fk_infer_sampler_init_failed", error=str(err))
 
         try:
             candidates = infer_foreign_keys(
@@ -1085,22 +1059,4 @@ class InferFksRequest(BaseModel):
     veto_on_zero_overlap: bool = True
 
 
-def _serialize_rows(rows: list[dict]) -> list[dict]:
-    """Convert non-JSON-serializable types to strings."""
-    import datetime as dt
-    from decimal import Decimal
-
-    result = []
-    for row in rows:
-        converted = {}
-        for k, v in row.items():
-            if isinstance(v, (dt.datetime, dt.date)):
-                converted[k] = v.isoformat()
-            elif isinstance(v, Decimal):
-                converted[k] = float(v)
-            elif isinstance(v, bytes):
-                converted[k] = v.hex()
-            else:
-                converted[k] = v
-        result.append(converted)
-    return result
+from r2g.connectors.base import serialize_rows as _serialize_rows  # noqa: E402

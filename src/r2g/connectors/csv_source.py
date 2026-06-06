@@ -34,6 +34,7 @@ import polars as pl
 
 from r2g.input.dump_reader import DumpReader
 from r2g.log import get_logger
+from r2g.naming import singularize
 from r2g.types import Column, Schema, Table
 
 logger = get_logger(__name__)
@@ -59,7 +60,18 @@ _POLARS_TYPE_MAP: dict[str, str] = {
     "String": "text",
 }
 
-_CSV_EXTENSIONS = (".csv", ".tsv", ".txt")
+CSV_EXTENSIONS = (".csv", ".tsv", ".txt")
+
+
+def resolve_csv_table_path(directory: Path, table: str) -> Path | None:
+    """Return ``<directory>/<table><ext>`` for the first matching CSV extension,
+    or ``None`` if no such file exists. Shared by the connector and the FK
+    value-overlap sampler so the table→file convention stays in one place."""
+    for ext in CSV_EXTENSIONS:
+        candidate = directory / f"{table}{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _polars_dtype_to_type(dtype: Any) -> str:
@@ -97,12 +109,12 @@ class CsvConnector:
             raise RuntimeError(f"CSV source directory not found: {self.directory}")
         files: dict[str, Path] = {}
         for path in sorted(self.directory.iterdir()):
-            if path.is_file() and path.suffix.lower() in _CSV_EXTENSIONS:
+            if path.is_file() and path.suffix.lower() in CSV_EXTENSIONS:
                 files[path.stem] = path
         if not files:
             raise RuntimeError(
                 f"No CSV/TSV files found in {self.directory} "
-                f"(looked for {', '.join(_CSV_EXTENSIONS)})"
+                f"(looked for {', '.join(CSV_EXTENSIONS)})"
             )
         return files
 
@@ -151,18 +163,6 @@ class CsvConnector:
         return Table(name=table_name, columns=columns, primary_key=pk, foreign_keys=[])
 
     @staticmethod
-    def _singularize(name: str) -> str:
-        """Best-effort singular form of a table name for key matching."""
-        n = name.lower()
-        if n.endswith("ies") and len(n) > 3:
-            return n[:-3] + "y"
-        if n.endswith("ses") or n.endswith("xes") or n.endswith("zes"):
-            return n[:-2]
-        if n.endswith("s") and not n.endswith("ss"):
-            return n[:-1]
-        return n
-
-    @staticmethod
     def _is_unique_key(frame: "pl.DataFrame", col: str) -> bool:
         """True when ``col`` is non-null and fully distinct in the sample."""
         series = frame.get_column(col)
@@ -186,7 +186,7 @@ class CsvConnector:
             by_lower.setdefault(c.lower(), c)
 
         t = table_name.lower()
-        singular = self._singularize(t)
+        singular = singularize(t)
         candidate_names: list[str] = []
         for cand in ("id", f"{t}_id", f"{singular}_id", f"{t}id", f"{singular}id"):
             real = by_lower.get(cand)
@@ -230,11 +230,10 @@ class CsvSession:
         self.directory = Path(connection_string).expanduser()
 
     def _resolve(self, table: str) -> Path:
-        for ext in _CSV_EXTENSIONS:
-            candidate = self.directory / f"{table}{ext}"
-            if candidate.is_file():
-                return candidate
-        raise RuntimeError(f"No CSV file for table '{table}' in {self.directory}")
+        path = resolve_csv_table_path(self.directory, table)
+        if path is None:
+            raise RuntimeError(f"No CSV file for table '{table}' in {self.directory}")
+        return path
 
     def _reader(self, table: str) -> DumpReader:
         return DumpReader(

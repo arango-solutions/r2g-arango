@@ -349,26 +349,8 @@ def _candidate_tables_for_prefix(
     return candidates
 
 
-def _pluralize(s: str) -> str:
-    if not s:
-        return s
-    if s.endswith("y") and len(s) > 1 and s[-2] not in "aeiou":
-        return s[:-1] + "ies"
-    if s.endswith(("s", "x", "z", "ch", "sh")):
-        return s + "es"
-    return s + "s"
-
-
-def _singularize(s: str) -> str:
-    if not s:
-        return s
-    if s.endswith("ies") and len(s) > 3:
-        return s[:-3] + "y"
-    if s.endswith("ches") or s.endswith("shes") or s.endswith("xes") or s.endswith("zes"):
-        return s[:-2]
-    if s.endswith("s") and not s.endswith("ss"):
-        return s[:-1]
-    return s
+from r2g.naming import pluralize as _pluralize  # noqa: E402
+from r2g.naming import singularize as _singularize  # noqa: E402
 
 
 def _make_candidate(
@@ -758,8 +740,6 @@ class CsvValueSampler:
     protocol is provided for parity with :class:`PostgresValueSampler`.
     """
 
-    _CSV_EXTENSIONS = (".csv", ".tsv", ".txt")
-
     def __init__(
         self,
         connection_string: str,
@@ -786,11 +766,9 @@ class CsvValueSampler:
         self.close()
 
     def _resolve(self, table: str):
-        for ext in self._CSV_EXTENSIONS:
-            candidate = self.directory / f"{table}{ext}"
-            if candidate.is_file():
-                return candidate
-        return None
+        from r2g.connectors.csv_source import resolve_csv_table_path
+
+        return resolve_csv_table_path(self.directory, table)
 
     def _distinct_text_values(self, table: str, column: str) -> Optional[set[str]]:
         """Return the set of distinct, non-empty textual values for a column,
@@ -841,3 +819,33 @@ class CsvValueSampler:
             return None
         overlap = len(local_vals & foreign_vals) / len(local_vals)
         return float(overlap)
+
+
+def create_value_sampler(
+    source_type: str | None,
+    connection_string: str,
+    *,
+    pg_schema: str = "public",
+    source_params: dict | None = None,
+    limit: int = 10_000,
+):
+    """Build a value-overlap sampler for a source, or ``None`` if unsupported.
+
+    PostgreSQL (incl. ``postgres`` / ``pg`` aliases) → :class:`PostgresValueSampler`,
+    CSV → :class:`CsvValueSampler`; any other type returns ``None`` (the caller
+    should fall back to name-only inference). Connector / import errors are
+    allowed to propagate so callers can decide whether to log-and-continue.
+    """
+    from r2g.connectors.base import is_postgresql, normalize_source_type
+
+    params = source_params or {}
+    if is_postgresql(source_type):
+        return PostgresValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if normalize_source_type(source_type) == "csv":
+        return CsvValueSampler(
+            connection_string,
+            delimiter=params.get("delimiter", ","),
+            has_header=bool(params.get("has_header", True)),
+            limit=limit,
+        )
+    return None
