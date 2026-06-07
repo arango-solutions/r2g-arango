@@ -471,28 +471,7 @@
     pointer-events: none; user-select: none;
   }
 
-  /* In-pane graph edge layers (source FK edges, target edge-coll arrows) */
-  .pane-graph-svg {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 1;
-  }
-  .pane-graph-svg path.pane-edge {
-    fill: none; stroke: var(--text-muted); stroke-width: 1; opacity: .35;
-    stroke-dasharray: 3 3; pointer-events: stroke; cursor: pointer;
-    transition: opacity .15s, stroke-width .15s;
-  }
-  .pane-graph-svg path.pane-edge.fk-edge { stroke: var(--yellow); }
-  .pane-graph-svg path.pane-edge.coll-edge { stroke: var(--pink); stroke-dasharray: 4 2; }
-  .pane-graph-svg path.pane-edge:hover { opacity: .9; stroke-width: 2; }
-  .pane-graph-svg path.pane-edge.selected { opacity: 1; stroke-width: 2.5; filter: drop-shadow(0 0 4px rgba(251,191,36,.6)); }
-  .pane-graph-svg text.pane-edge-label {
-    font-size: 9px; fill: var(--text-muted); font-weight: 600;
-    pointer-events: none; user-select: none; text-anchor: middle;
-  }
-  .pane-graph-svg rect.pane-edge-label-bg {
-    fill: var(--surface); opacity: .9;
-  }
-  /* Make pane scroll containers positionable for the SVG layer */
+  /* Pane scroll containers positionable for absolutely-positioned children */
   .mapper-source-pane, .mapper-target-pane { position: relative; }
   .mapper-source-pane .source-card, .mapper-target-pane .target-card { position: relative; z-index: 2; }
 
@@ -1118,7 +1097,6 @@
           <button class="pane-tool-btn" onclick="expandAllTables(false)" aria-label="Collapse all source tables" data-hint="Collapse every source table to show only table-to-collection mappings.">&#9633;&#8722;</button>
         </span>
       </div>
-      <svg class="pane-graph-svg" id="source-graph-svg"></svg>
       <div id="source-cards">
         <div class="empty-state">Select a project</div>
       </div>
@@ -1157,7 +1135,6 @@
           <button class="pane-tool-btn" onclick="expandAllCollections(false)" aria-label="Collapse all collections" data-hint="Collapse every target collection to show only table-to-collection mappings.">&#9633;&#8722;</button>
         </span>
       </div>
-      <svg class="pane-graph-svg" id="target-graph-svg"></svg>
       <div id="target-cards">
         <div class="empty-state">Select a project</div>
       </div>
@@ -2237,8 +2214,6 @@ function renderMapper() {
 
   requestAnimationFrame(() => {
     drawConnectors();
-    drawSourceGraphEdges();
-    drawTargetGraphEdges();
   });
 
   // Paint-only lens + validation badges after the layout refresh, and re-wire
@@ -2731,146 +2706,11 @@ function drawFunctionMapping(svgEl, canvasRect, opts) {
   svgEl.appendChild(grp);
 }
 
-// Draw FK edges between source table cards (mini ER graph in the left pane).
-// Shared inter-card edge renderer for both mapper panes. The source pane draws
-// FK arcs on its left margin (`side: 'left'`); the target pane draws
-// edge-collection arcs on its right margin (`side: 'right'`). Callers supply a
-// readiness check and an `edges()` factory returning per-arc descriptors
-// ({ fromSelector, toSelector, dataset, onClick, title }).
-function drawPaneGraphEdges(opts) {
-  const SVGNS = 'http://www.w3.org/2000/svg';
-  const pane = document.getElementById(opts.paneId);
-  const svgEl = document.getElementById(opts.svgId);
-  if (!pane || !svgEl || !opts.ready()) {
-    if (svgEl) svgEl.innerHTML = '';
-    return;
-  }
-  const paneRect = pane.getBoundingClientRect();
-  svgEl.innerHTML = '';
-  svgEl.setAttribute('viewBox', `0 0 ${paneRect.width} ${pane.scrollHeight}`);
-  svgEl.setAttribute('width', paneRect.width);
-  svgEl.setAttribute('height', pane.scrollHeight);
-
-  const left = opts.side === 'left';
-  const defs = document.createElementNS(SVGNS, 'defs');
-  defs.innerHTML =
-    `<marker id="${opts.markerId}" viewBox="0 -4 8 8" refX="6" refY="0" markerWidth="6" markerHeight="6" orient="auto">` +
-    `<path d="M0,-4L8,0L0,4" fill="${opts.markerFill}" opacity="${left ? '0.8' : '0.9'}"/></marker>`;
-  svgEl.appendChild(defs);
-
-  for (const e of opts.edges()) {
-    const fromCard = pane.querySelector(e.fromSelector);
-    const toCard = pane.querySelector(e.toSelector);
-    if (!fromCard || !toCard) continue;
-    const fr = fromCard.getBoundingClientRect();
-    const tr = toCard.getBoundingClientRect();
-    const y1 = fr.top + fr.height / 2 - paneRect.top + pane.scrollTop;
-    const y2 = tr.top + tr.height / 2 - paneRect.top + pane.scrollTop;
-    if (Math.abs(y1 - y2) < 4) continue;
-    let d;
-    let cls;
-    if (left) {
-      const x = 6;
-      const curve = Math.max(14, Math.min(40, Math.abs(y1 - y2) * 0.25));
-      d = `M${x},${y1} C${x - curve},${y1} ${x - curve},${y2} ${x},${y2}`;
-      cls = 'pane-edge fk-edge';
-    } else {
-      const x = paneRect.width - 6;
-      const curve = Math.max(16, Math.min(44, Math.abs(y1 - y2) * 0.28));
-      d = `M${x},${y1} C${x + curve},${y1} ${x + curve},${y2} ${x},${y2}`;
-      cls = 'pane-edge coll-edge';
-    }
-    const path = document.createElementNS(SVGNS, 'path');
-    path.setAttribute('d', d);
-    path.setAttribute('class', cls);
-    path.setAttribute('marker-end', `url(#${opts.markerId})`);
-    if (e.dataset) {
-      for (const [k, v] of Object.entries(e.dataset)) path.dataset[k] = v;
-    }
-    path.addEventListener('click', ev => {
-      ev.stopPropagation();
-      e.onClick();
-    });
-    const titleEl = document.createElementNS(SVGNS, 'title');
-    titleEl.textContent = e.title;
-    path.appendChild(titleEl);
-    svgEl.appendChild(path);
-  }
-}
-
-function drawSourceGraphEdges() {
-  drawPaneGraphEdges({
-    paneId: 'mapper-source-pane',
-    svgId: 'source-graph-svg',
-    markerId: 'src-arrow',
-    markerFill: '#fbbf24',
-    side: 'left',
-    ready: () => !!(tablesInfo && tablesInfo.length),
-    edges: () => {
-      const out = [];
-      for (const tbl of tablesInfo) {
-        for (const fk of (tbl.foreignKeys || tbl.fks || [])) {
-          const nfk = _normalizeFk(fk);
-          const targetTable = nfk.foreignTable;
-          if (!targetTable) continue;
-          out.push({
-            fromSelector: `.source-card[data-table="${tbl.name}"] .source-card-header`,
-            toSelector: `.source-card[data-table="${targetTable}"] .source-card-header`,
-            dataset: { fromTable: tbl.name, toTable: targetTable },
-            onClick: () => onSourceFkClick(tbl.name, targetTable, fk),
-            title: `FK: ${tbl.name}(${nfk.columns.join(', ')}) \u2192 ${targetTable}(${nfk.foreignColumns.join(', ')})`,
-          });
-        }
-      }
-      return out;
-    },
-  });
-}
-
-// Draw arrows between target vertex-collection cards for each edge-collection definition.
-function drawTargetGraphEdges() {
-  drawPaneGraphEdges({
-    paneId: 'mapper-target-pane',
-    svgId: 'target-graph-svg',
-    markerId: 'tgt-arrow',
-    markerFill: '#f472b6',
-    side: 'right',
-    ready: () => !!(editState && editState.edges),
-    edges: () => (editState.edges || []).map(edge => ({
-      fromSelector: `.target-card[data-collection="${edge.fromCollection}"] .target-card-header`,
-      toSelector: `.target-card[data-collection="${edge.toCollection}"] .target-card-header`,
-      dataset: { edgeCollection: edge.edgeCollection },
-      onClick: () => inspectEdge(edge.edgeCollection),
-      title: `${edge.edgeCollection}: ${edge.fromCollection} \u2192 ${edge.toCollection}`,
-    })),
-  });
-}
-
-function onSourceFkClick(fromTable, toTable, fk) {
-  const header = document.getElementById('props-header');
-  const body = document.getElementById('props-body');
-  openDetailPanel();
-  header.textContent = 'FK Relationship';
-  const nfk = _normalizeFk(fk);
-  const cols = nfk.columns.join(', ');
-  const fcols = nfk.foreignColumns.join(', ');
-  body.innerHTML = `
-    <div class="prop-group">
-      <div class="prop-group-title">Source foreign key</div>
-      <div class="prop-row"><span class="prop-label">From table</span><span class="prop-value" style="color:var(--accent)">${escHtml(fromTable)}</span></div>
-      <div class="prop-row"><span class="prop-label">Column(s)</span><span class="prop-value" style="color:var(--yellow)">${escHtml(cols)}</span></div>
-      <div class="prop-row"><span class="prop-label">References</span><span class="prop-value" style="color:var(--green)">${escHtml(toTable)}(${escHtml(fcols)})</span></div>
-    </div>
-  `;
-}
-
 function scheduleRedraw() {
   if (!rafPending) {
     rafPending = true;
     requestAnimationFrame(() => {
       drawConnectors();
-      drawSourceGraphEdges();
-      drawTargetGraphEdges();
       rafPending = false;
     });
   }
@@ -5103,17 +4943,6 @@ function _menuTargetEdge(edgeColl) {
   ];
 }
 
-// Source FK menu
-function _menuSourceFk(fromTable, toTable, fk) {
-  return [
-    { label: 'Inspect FK', icon: '\u2139', onClick: () => onSourceFkClick(fromTable, toTable, fk),
-      hint: 'Show the columns and referenced table for this foreign-key relationship.' },
-    { label: 'Promote to explicit edge collection', icon: '\u2192',
-      onClick: () => promoteFkToEdge(fromTable, toTable, fk),
-      hint: 'Turn this foreign key into a first-class edge collection in the target graph.' },
-  ];
-}
-
 // Empty canvas menu
 function _menuCanvas() {
   return [
@@ -5224,16 +5053,6 @@ document.addEventListener('contextmenu', e => {
     }],
     ['#connector-svg path.connector', el => {
       openContextMenu(_menuConnector(el), e.clientX, e.clientY, { header: 'Connector' });
-    }],
-    ['#target-graph-svg path.coll-edge', el => {
-      const ec = el.dataset.edgeCollection;
-      if (ec) openContextMenu(_menuTargetEdge(ec), e.clientX, e.clientY, { header: 'Edge: ' + ec });
-    }],
-    ['#source-graph-svg path.fk-edge', el => {
-      const ft = el.dataset.fromTable, tt = el.dataset.toTable;
-      const tbl = tablesInfo.find(t => t.name === ft);
-      const fk = tbl ? (tbl.foreignKeys || tbl.fks || []).find(f => _normalizeFk(f).foreignTable === tt) : null;
-      openContextMenu(_menuSourceFk(ft, tt, fk || {}), e.clientX, e.clientY, { header: 'FK ' + ft + ' \u2192 ' + tt });
     }],
     ['.source-col-row .source-col-dot, .source-col-row', el => {
       const row = el.closest('.source-col-row');
@@ -5489,16 +5308,28 @@ function showSourceFkSummary(tableName) {
   if (!t) return;
   const fks = t.foreignKeys || t.fks || [];
   if (!fks.length) { toast('No FKs from ' + tableName, 'info'); return; }
-  let html = '<table class="data-table"><thead><tr><th>From column(s)</th><th>References</th></tr></thead><tbody>';
-  fks.forEach(fk => {
+  let html = '<table class="data-table"><thead><tr><th>From column(s)</th><th>References</th><th></th></tr></thead><tbody>';
+  fks.forEach((fk, idx) => {
     const nfk = _normalizeFk(fk);
     const cols = nfk.columns.join(', ');
     const ft = nfk.foreignTable;
     const fcols = nfk.foreignColumns.join(', ');
-    html += `<tr><td>${escHtml(cols)}</td><td>${escHtml(ft)}(${escHtml(fcols)})</td></tr>`;
+    const canPromote = ft && _collEntryForSourceTable(tableName) && _collEntryForSourceTable(ft);
+    const btn = canPromote
+      ? `<button class="btn-sm" data-promote-fk="${idx}" data-promote-to="${escHtml(ft)}" title="Create an explicit edge collection from this foreign key.">Promote to edge \u2192</button>`
+      : '';
+    html += `<tr><td>${escHtml(cols)}</td><td>${escHtml(ft)}(${escHtml(fcols)})</td><td>${btn}</td></tr>`;
   });
   html += '</tbody></table>';
   openModal('Foreign keys from ' + tableName, html);
+  document.querySelectorAll('#modal-body [data-promote-fk]').forEach(b => {
+    b.addEventListener('click', () => {
+      const fk = fks[Number(b.dataset.promoteFk)];
+      const toTable = b.dataset.promoteTo;
+      closeModal();
+      promoteFkToEdge(tableName, toTable, fk);
+    });
+  });
 }
 
 function autoMapTable(tableName) {
