@@ -1907,6 +1907,16 @@ async function confirmRemoveTarget(name) {
   }
 }
 
+// ── Context-menu item factories ──
+// Keep the repeated "Copy …" and "Edit expression…" items consistent (same
+// icon + wiring) across the 15+ _menu* builders below.
+function menuCopy(label, value, hint) {
+  return { label, icon: '\u29C9', onClick: () => copyToClipboard(value), hint };
+}
+function menuEditExpression(collKey, prop, hint) {
+  return { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop), hint };
+}
+
 // ── Project management (edit / delete) ──
 
 function _menuProject(name) {
@@ -1916,8 +1926,7 @@ function _menuProject(name) {
     { label: 'Edit name & description\u2026', icon: '\u270E', onClick: () => openEditProjectForm(name),
       hint: 'Rename the project or change its description, target endpoint, and database. Does not touch already-loaded data.' },
     '-',
-    { label: 'Copy project name', icon: '\u29C9', onClick: () => copyToClipboard(name),
-      hint: 'Copy this project\u2019s name to the clipboard.' },
+    menuCopy('Copy project name', name, 'Copy this project\u2019s name to the clipboard.'),
     '-',
     { label: 'Delete project', icon: '\u2716', danger: true, onClick: () => confirmDeleteProject(name),
       hint: 'Remove the project and its mapping from the catalog. Data already loaded into ArangoDB is not deleted.' },
@@ -2249,7 +2258,7 @@ function renderSourcePane(tables) {
     const cols = t.columns || [];
     const isCollapsed = collapsedTables.has(t.name);
     const sourceTable = t.name;
-    const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === sourceTable);
+    const collEntry = _collEntryForSourceTable(sourceTable);
     const excluded = new Set(collEntry ? (collEntry[1].excludeFields || []) : []);
 
     return `
@@ -2372,6 +2381,39 @@ function getCollectionEntry(targetCollName) {
   );
 }
 
+// Find the [key, collection] entry whose *source table* is `table`. Collections
+// may be keyed by source-table name or carry an explicit `sourceTable`.
+function _collEntryForSourceTable(table) {
+  return Object.entries(editState.collections).find(
+    ([k, c]) => (c.sourceTable || k) === table
+  );
+}
+
+// Normalize a foreign key to a stable shape. FKs reach the client either from a
+// schema snapshot (snake_case, array `columns`) or as an inferred candidate
+// (camelCase, scalar `column`); this hides that difference.
+function _normalizeFk(fk) {
+  return {
+    columns: fk.columns || [fk.column],
+    foreignTable: fk.foreign_table || fk.foreignTable,
+    foreignColumns: fk.foreign_columns || [fk.foreignColumn || fk.foreign_column],
+  };
+}
+
+// Shared explanation shown when a user tries to edit/unmap the derived `_key`.
+// `_key` is computed from the primary key (joined by the key separator) at load
+// time and is not an editable mapping (P5g.10).
+function _keyReadOnlyMessage(cols, keySep) {
+  const sep = keySep || '_';
+  const composite = cols.length > 1 ? 'composite ' : '';
+  return (
+    `_key is the ${composite}primary key: ` +
+    `${cols.join(' + ')} \u2192 "${cols.join(sep)}" (joined by "${sep}"). ` +
+    `It is derived automatically at load time and is not editable here \u2014 ` +
+    `change it via the primary key or the key separator.`
+  );
+}
+
 function findFieldExpression(coll, targetProp) {
   if (!coll.fieldExpressions) return null;
   return coll.fieldExpressions.find(fx => fx.target === targetProp) || null;
@@ -2463,10 +2505,8 @@ function drawConnectors() {
   }
 
   for (const edge of editState.edges) {
-    const fromEntry = Object.entries(editState.collections).find(
-      ([k, c]) => (c.targetCollection || k) === edge.fromCollection);
-    const toEntry = Object.entries(editState.collections).find(
-      ([k, c]) => (c.targetCollection || k) === edge.toCollection);
+    const fromEntry = getCollectionEntry(edge.fromCollection);
+    const toEntry = getCollectionEntry(edge.toCollection);
 
     // While the edge is COLLAPSED, show a coarse table->edge spine so the
     // relationship stays visible at the fully-collapsed level (P5g.7). An edge's
@@ -2665,13 +2705,7 @@ function drawFunctionMapping(svgEl, canvasRect, opts) {
     if (isKey) {
       const keySep = editState.keySeparator || '_';
       const cols = srcPts.map(p => p.col);
-      const built = cols.join(keySep);
-      toast(
-        `_key is the ${cols.length > 1 ? 'composite ' : ''}primary key: ` +
-        `${cols.join(' + ')} \u2192 "${built}" (joined by "${keySep}"). ` +
-        `It is derived automatically at load time and is not an editable mapping \u2014 ` +
-        `change it via the primary key or the key separator.`,
-        'info');
+      toast(_keyReadOnlyMessage(cols, keySep), 'info');
       return;
     }
     openExpressionEditor(collKey, targetProp);
@@ -2698,10 +2732,16 @@ function drawFunctionMapping(svgEl, canvasRect, opts) {
 }
 
 // Draw FK edges between source table cards (mini ER graph in the left pane).
-function drawSourceGraphEdges() {
-  const pane = document.getElementById('mapper-source-pane');
-  const svgEl = document.getElementById('source-graph-svg');
-  if (!pane || !svgEl || !tablesInfo || !tablesInfo.length) {
+// Shared inter-card edge renderer for both mapper panes. The source pane draws
+// FK arcs on its left margin (`side: 'left'`); the target pane draws
+// edge-collection arcs on its right margin (`side: 'right'`). Callers supply a
+// readiness check and an `edges()` factory returning per-arc descriptors
+// ({ fromSelector, toSelector, dataset, onClick, title }).
+function drawPaneGraphEdges(opts) {
+  const SVGNS = 'http://www.w3.org/2000/svg';
+  const pane = document.getElementById(opts.paneId);
+  const svgEl = document.getElementById(opts.svgId);
+  if (!pane || !svgEl || !opts.ready()) {
     if (svgEl) svgEl.innerHTML = '';
     return;
   }
@@ -2711,94 +2751,99 @@ function drawSourceGraphEdges() {
   svgEl.setAttribute('width', paneRect.width);
   svgEl.setAttribute('height', pane.scrollHeight);
 
-  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  const left = opts.side === 'left';
+  const defs = document.createElementNS(SVGNS, 'defs');
   defs.innerHTML =
-    '<marker id="src-arrow" viewBox="0 -4 8 8" refX="6" refY="0" markerWidth="6" markerHeight="6" orient="auto">' +
-    '<path d="M0,-4L8,0L0,4" fill="#fbbf24" opacity="0.8"/></marker>';
+    `<marker id="${opts.markerId}" viewBox="0 -4 8 8" refX="6" refY="0" markerWidth="6" markerHeight="6" orient="auto">` +
+    `<path d="M0,-4L8,0L0,4" fill="${opts.markerFill}" opacity="${left ? '0.8' : '0.9'}"/></marker>`;
   svgEl.appendChild(defs);
 
-  for (const tbl of tablesInfo) {
-    for (const fk of (tbl.foreignKeys || tbl.fks || [])) {
-      const targetTable = fk.foreign_table || fk.foreignTable;
-      if (!targetTable) continue;
-      const fromCard = pane.querySelector(`.source-card[data-table="${tbl.name}"] .source-card-header`);
-      const toCard = pane.querySelector(`.source-card[data-table="${targetTable}"] .source-card-header`);
-      if (!fromCard || !toCard) continue;
-      const fr = fromCard.getBoundingClientRect();
-      const tr = toCard.getBoundingClientRect();
-      const x1 = 6;
-      const y1 = fr.top + fr.height / 2 - paneRect.top + pane.scrollTop;
-      const x2 = 6;
-      const y2 = tr.top + tr.height / 2 - paneRect.top + pane.scrollTop;
-      if (Math.abs(y1 - y2) < 4) continue;
+  for (const e of opts.edges()) {
+    const fromCard = pane.querySelector(e.fromSelector);
+    const toCard = pane.querySelector(e.toSelector);
+    if (!fromCard || !toCard) continue;
+    const fr = fromCard.getBoundingClientRect();
+    const tr = toCard.getBoundingClientRect();
+    const y1 = fr.top + fr.height / 2 - paneRect.top + pane.scrollTop;
+    const y2 = tr.top + tr.height / 2 - paneRect.top + pane.scrollTop;
+    if (Math.abs(y1 - y2) < 4) continue;
+    let d;
+    let cls;
+    if (left) {
+      const x = 6;
       const curve = Math.max(14, Math.min(40, Math.abs(y1 - y2) * 0.25));
-      const d = `M${x1},${y1} C${x1 - curve},${y1} ${x2 - curve},${y2} ${x2},${y2}`;
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('d', d);
-      path.setAttribute('class', 'pane-edge fk-edge');
-      path.setAttribute('marker-end', 'url(#src-arrow)');
-      path.dataset.fromTable = tbl.name;
-      path.dataset.toTable = targetTable;
-      path.addEventListener('click', e => {
-        e.stopPropagation();
-        onSourceFkClick(tbl.name, targetTable, fk);
-      });
-      const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-      const cols = (fk.columns || [fk.column]).join(', ');
-      const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
-      titleEl.textContent = `FK: ${tbl.name}(${cols}) \u2192 ${targetTable}(${fcols})`;
-      path.appendChild(titleEl);
-      svgEl.appendChild(path);
+      d = `M${x},${y1} C${x - curve},${y1} ${x - curve},${y2} ${x},${y2}`;
+      cls = 'pane-edge fk-edge';
+    } else {
+      const x = paneRect.width - 6;
+      const curve = Math.max(16, Math.min(44, Math.abs(y1 - y2) * 0.28));
+      d = `M${x},${y1} C${x + curve},${y1} ${x + curve},${y2} ${x},${y2}`;
+      cls = 'pane-edge coll-edge';
     }
+    const path = document.createElementNS(SVGNS, 'path');
+    path.setAttribute('d', d);
+    path.setAttribute('class', cls);
+    path.setAttribute('marker-end', `url(#${opts.markerId})`);
+    if (e.dataset) {
+      for (const [k, v] of Object.entries(e.dataset)) path.dataset[k] = v;
+    }
+    path.addEventListener('click', ev => {
+      ev.stopPropagation();
+      e.onClick();
+    });
+    const titleEl = document.createElementNS(SVGNS, 'title');
+    titleEl.textContent = e.title;
+    path.appendChild(titleEl);
+    svgEl.appendChild(path);
   }
+}
+
+function drawSourceGraphEdges() {
+  drawPaneGraphEdges({
+    paneId: 'mapper-source-pane',
+    svgId: 'source-graph-svg',
+    markerId: 'src-arrow',
+    markerFill: '#fbbf24',
+    side: 'left',
+    ready: () => !!(tablesInfo && tablesInfo.length),
+    edges: () => {
+      const out = [];
+      for (const tbl of tablesInfo) {
+        for (const fk of (tbl.foreignKeys || tbl.fks || [])) {
+          const nfk = _normalizeFk(fk);
+          const targetTable = nfk.foreignTable;
+          if (!targetTable) continue;
+          out.push({
+            fromSelector: `.source-card[data-table="${tbl.name}"] .source-card-header`,
+            toSelector: `.source-card[data-table="${targetTable}"] .source-card-header`,
+            dataset: { fromTable: tbl.name, toTable: targetTable },
+            onClick: () => onSourceFkClick(tbl.name, targetTable, fk),
+            title: `FK: ${tbl.name}(${nfk.columns.join(', ')}) \u2192 ${targetTable}(${nfk.foreignColumns.join(', ')})`,
+          });
+        }
+      }
+      return out;
+    },
+  });
 }
 
 // Draw arrows between target vertex-collection cards for each edge-collection definition.
 function drawTargetGraphEdges() {
-  const pane = document.getElementById('mapper-target-pane');
-  const svgEl = document.getElementById('target-graph-svg');
-  if (!pane || !svgEl || !editState || !editState.edges) {
-    if (svgEl) svgEl.innerHTML = '';
-    return;
-  }
-  const paneRect = pane.getBoundingClientRect();
-  svgEl.innerHTML = '';
-  svgEl.setAttribute('viewBox', `0 0 ${paneRect.width} ${pane.scrollHeight}`);
-  svgEl.setAttribute('width', paneRect.width);
-  svgEl.setAttribute('height', pane.scrollHeight);
-
-  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-  defs.innerHTML =
-    '<marker id="tgt-arrow" viewBox="0 -4 8 8" refX="6" refY="0" markerWidth="6" markerHeight="6" orient="auto">' +
-    '<path d="M0,-4L8,0L0,4" fill="#f472b6" opacity="0.9"/></marker>';
-  svgEl.appendChild(defs);
-
-  for (const edge of editState.edges) {
-    const fromCard = pane.querySelector(`.target-card[data-collection="${edge.fromCollection}"] .target-card-header`);
-    const toCard = pane.querySelector(`.target-card[data-collection="${edge.toCollection}"] .target-card-header`);
-    if (!fromCard || !toCard) continue;
-    const fr = fromCard.getBoundingClientRect();
-    const tr = toCard.getBoundingClientRect();
-    const xRight = paneRect.width - 6;
-    const y1 = fr.top + fr.height / 2 - paneRect.top + pane.scrollTop;
-    const y2 = tr.top + tr.height / 2 - paneRect.top + pane.scrollTop;
-    if (Math.abs(y1 - y2) < 4) continue;
-    const curve = Math.max(16, Math.min(44, Math.abs(y1 - y2) * 0.28));
-    const d = `M${xRight},${y1} C${xRight + curve},${y1} ${xRight + curve},${y2} ${xRight},${y2}`;
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.setAttribute('d', d);
-    path.setAttribute('class', 'pane-edge coll-edge');
-    path.setAttribute('marker-end', 'url(#tgt-arrow)');
-    path.dataset.edgeCollection = edge.edgeCollection;
-    path.addEventListener('click', e => {
-      e.stopPropagation();
-      inspectEdge(edge.edgeCollection);
-    });
-    const titleEl = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-    titleEl.textContent = `${edge.edgeCollection}: ${edge.fromCollection} \u2192 ${edge.toCollection}`;
-    path.appendChild(titleEl);
-    svgEl.appendChild(path);
-  }
+  drawPaneGraphEdges({
+    paneId: 'mapper-target-pane',
+    svgId: 'target-graph-svg',
+    markerId: 'tgt-arrow',
+    markerFill: '#f472b6',
+    side: 'right',
+    ready: () => !!(editState && editState.edges),
+    edges: () => (editState.edges || []).map(edge => ({
+      fromSelector: `.target-card[data-collection="${edge.fromCollection}"] .target-card-header`,
+      toSelector: `.target-card[data-collection="${edge.toCollection}"] .target-card-header`,
+      dataset: { edgeCollection: edge.edgeCollection },
+      onClick: () => inspectEdge(edge.edgeCollection),
+      title: `${edge.edgeCollection}: ${edge.fromCollection} \u2192 ${edge.toCollection}`,
+    })),
+  });
 }
 
 function onSourceFkClick(fromTable, toTable, fk) {
@@ -2806,8 +2851,9 @@ function onSourceFkClick(fromTable, toTable, fk) {
   const body = document.getElementById('props-body');
   openDetailPanel();
   header.textContent = 'FK Relationship';
-  const cols = (fk.columns || [fk.column]).join(', ');
-  const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
+  const nfk = _normalizeFk(fk);
+  const cols = nfk.columns.join(', ');
+  const fcols = nfk.foreignColumns.join(', ');
   body.innerHTML = `
     <div class="prop-group">
       <div class="prop-group-title">Source foreign key</div>
@@ -2845,7 +2891,7 @@ function _collKeysForTable(tableName) {
 }
 function _edgeEndpointTable(edge, dir) {
   const collName = dir === 'from' ? edge.fromCollection : edge.toCollection;
-  const entry = Object.entries(editState.collections).find(([k, c]) => (c.targetCollection || k) === collName);
+  const entry = getCollectionEntry(collName);
   return entry ? (entry[1].sourceTable || entry[0]) : null;
 }
 function _edgesForTable(tableName) {
@@ -3021,7 +3067,7 @@ function showSourceProps(tableName) {
   const tableInfo = tablesInfo.find(t => t.name === tableName);
   if (!tableInfo) { body.innerHTML = '<div class="empty-state">Table not found</div>'; return; }
 
-  const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const collEntry = _collEntryForSourceTable(tableName);
   const collKey = collEntry ? collEntry[0] : null;
   const coll = collEntry ? collEntry[1] : null;
   const excluded = new Set(coll ? (coll.excludeFields || []) : []);
@@ -3294,9 +3340,7 @@ function initSourceDragHandles() {
 }
 
 function handleDropOnTarget(sourceTable, sourceCol, targetCollName, targetProp) {
-  const collEntry = Object.entries(editState.collections).find(
-    ([k, c]) => (c.targetCollection || k) === targetCollName
-  );
+  const collEntry = getCollectionEntry(targetCollName);
   if (!collEntry) { toast('No collection mapping for ' + targetCollName, 'error'); return; }
 
   const [collKey, coll] = collEntry;
@@ -3375,12 +3419,7 @@ function openExpressionEditor(collKey, targetProp) {
     const keySep = editState.keySeparator || '_';
     const pkCols = tableInfo.columns.filter(c => c.isPk).map(c => c.name);
     const cols = pkCols.length ? pkCols : ['(primary key)'];
-    toast(
-      `_key is the ${cols.length > 1 ? 'composite ' : ''}primary key: ` +
-      `${cols.join(' + ')} \u2192 "${cols.join(keySep)}" (joined by "${keySep}"). ` +
-      `It is derived automatically at load time and is not editable here \u2014 ` +
-      `change it via the primary key or the key separator.`,
-      'info');
+    toast(_keyReadOnlyMessage(cols, keySep), 'info');
     return;
   }
 
@@ -4886,7 +4925,7 @@ function _delegate(selector, handler) {
 
 // Source-table card menu
 function _menuSourceTable(tableName) {
-  const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const collEntry = _collEntryForSourceTable(tableName);
   const isMapped = !!collEntry;
   return [
     { label: isMapped ? 'Re-run auto-map for this table' : 'Auto-map this table', icon: '\u2728', onClick: () => autoMapTable(tableName),
@@ -4902,8 +4941,7 @@ function _menuSourceTable(tableName) {
     { label: 'Preview data', icon: '\u26ED', onClick: () => previewTable(currentSourceName, tableName),
       hint: 'Fetch and show a small sample of rows from this table.' },
     '-',
-    { label: 'Copy table name', icon: '\u29C9', onClick: () => copyToClipboard(tableName),
-      hint: 'Copy the source table name to the clipboard.' },
+    menuCopy('Copy table name', tableName, 'Copy the source table name to the clipboard.'),
     { label: 'Expand all tables', onClick: () => expandAllTables(true),
       hint: 'Expand every source table card.' },
     { label: 'Collapse all tables', onClick: () => expandAllTables(false),
@@ -4919,7 +4957,7 @@ function _menuSourceTable(tableName) {
 
 // Source column dot menu
 function _menuSourceColumn(tableName, colName) {
-  const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const collEntry = _collEntryForSourceTable(tableName);
   const collKey = collEntry ? collEntry[0] : null;
   const coll = collEntry ? collEntry[1] : null;
   const tableInfo = tablesInfo.find(t => t.name === tableName);
@@ -4963,8 +5001,7 @@ function _menuSourceColumn(tableName, colName) {
       const flags = [colInfo?.isPk && 'PK', colInfo?.isFk && 'FK'].filter(Boolean).join(', ') || 'regular';
       toast(`${tableName}.${colName}: ${t} (${flags})`, 'info');
     }, hint: 'Show this column\u2019s source data type and whether it is a primary or foreign key.' },
-    { label: 'Copy column name', icon: '\u29C9', onClick: () => copyToClipboard(colName),
-      hint: 'Copy the column name to the clipboard.' },
+    menuCopy('Copy column name', colName, 'Copy the column name to the clipboard.'),
   ];
 }
 
@@ -4988,8 +5025,7 @@ function _menuTargetCollection(collKey) {
     '-',
     { label: 'Inspect', icon: '\u2139', onClick: () => onTargetCardClick(collKey),
       hint: 'Open the detail panel for this collection (properties, mappings, validation).' },
-    { label: 'Copy collection name', icon: '\u29C9', onClick: () => copyToClipboard(targetName),
-      hint: 'Copy the target collection name to the clipboard.' },
+    menuCopy('Copy collection name', targetName, 'Copy the target collection name to the clipboard.'),
     '-',
     { label: 'Delete mapping', danger: true, icon: '\u2716', onClick: () => removeTargetMapping(collKey),
       hint: 'Remove this collection from the mapping. Does not drop the collection in ArangoDB until the next load.' },
@@ -5000,15 +5036,13 @@ function _menuTargetCollection(collKey) {
 function _menuTargetProperty(collKey, prop) {
   const coll = editState.collections[collKey];
   return [
-    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop),
-      hint: 'Define how this property\u2019s value is computed \u2014 identity pass-through or an AQL / KSQL / Python expression over one or more source columns.' },
+    menuEditExpression(collKey, prop, 'Define how this property\u2019s value is computed \u2014 identity pass-through or an AQL / KSQL / Python expression over one or more source columns.'),
     { label: 'Mark as _key source', icon: '\u29B7', disabled: prop === '_key', onClick: () => markPropAsKey(collKey, prop),
       hint: 'Use this property\u2019s source column to derive the document _key (the stable primary identifier).' },
     { label: 'Unmap', danger: true, icon: '\u2716', onClick: () => unmapTargetProp(collKey, prop),
       hint: 'Remove the mapping that populates this property.' },
     '-',
-    { label: 'Copy property name', icon: '\u29C9', onClick: () => copyToClipboard(prop),
-      hint: 'Copy the property name to the clipboard.' },
+    menuCopy('Copy property name', prop, 'Copy the property name to the clipboard.'),
   ];
 }
 
@@ -5017,8 +5051,7 @@ function _menuFunctionCircle(collKey, prop) {
   const coll = editState.collections[collKey];
   const fx = coll ? findFieldExpression(coll, prop) : null;
   return [
-    { label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop),
-      hint: 'Open the editor to change the transform expression that produces this target property.' },
+    menuEditExpression(collKey, prop, 'Open the editor to change the transform expression that produces this target property.'),
     { label: 'Change engine', icon: '\u2699', submenu: [
       { label: 'AQL', onClick: () => setFxEngine(collKey, prop, 'aql') },
       { label: 'KSQL', onClick: () => setFxEngine(collKey, prop, 'ksql') },
@@ -5044,8 +5077,7 @@ function _menuConnector(pathEl) {
     const collKey = pathEl.dataset.collKey;
     const prop = pathEl.dataset.targetProp;
     if (collKey && prop) {
-      items.push({ label: 'Edit expression\u2026', icon: '\u270E', onClick: () => openExpressionEditor(collKey, prop),
-        hint: 'Edit the transform expression for the target property this connector feeds.' });
+      items.push(menuEditExpression(collKey, prop, 'Edit the transform expression for the target property this connector feeds.'));
     }
   }
   items.push('-');
@@ -5122,8 +5154,7 @@ function _menuSourcesItem(name, type) {
     { label: 'Set as project source (manual)', icon: '\u2192', onClick: () => toast('Open the relevant project in the picker to switch source.', 'info'),
       hint: 'Sources are bound to a project at creation; open the project in the picker to change its source.' },
     '-',
-    { label: 'Copy source name', icon: '\u29C9', onClick: () => copyToClipboard(name),
-      hint: 'Copy the source name to the clipboard.' },
+    menuCopy('Copy source name', name, 'Copy the source name to the clipboard.'),
     '-',
     { label: 'Remove source\u2026', icon: '\u2716', danger: true, onClick: () => confirmRemoveSource(name),
       hint: 'Delete this source. You will be warned about dependent projects, snapshots, and loads before a cascade delete.' },
@@ -5135,8 +5166,7 @@ function _menuTargetsItem(name) {
     { label: 'Introspect', icon: '\u21BA', onClick: () => introspectTarget(name),
       hint: 'Connect to this target database and read its existing vertex / edge collections and properties.' },
     '-',
-    { label: 'Copy target name', icon: '\u29C9', onClick: () => copyToClipboard(name),
-      hint: 'Copy the target name to the clipboard.' },
+    menuCopy('Copy target name', name, 'Copy the target name to the clipboard.'),
     '-',
     { label: 'Remove target', icon: '\u2716', danger: true, onClick: () => confirmRemoveTarget(name),
       hint: 'Delete this target connection from the catalog. The ArangoDB database itself is not dropped.' },
@@ -5162,8 +5192,7 @@ function _menuTargetCluster(endpoint) {
     { label: 'Add database here\u2026', icon: '\u002B', onClick: () => openNewTargetForm({ endpoint }),
       hint: 'Register another target database on this same cluster endpoint.' },
     '-',
-    { label: 'Copy endpoint', icon: '\u29C9', onClick: () => copyToClipboard(endpoint),
-      hint: 'Copy the cluster endpoint URL to the clipboard.' },
+    menuCopy('Copy endpoint', endpoint, 'Copy the cluster endpoint URL to the clipboard.'),
   ];
 }
 
@@ -5177,8 +5206,7 @@ function _menuHistoryRow(rec) {
     { label: 'Re-load with same settings', icon: '\u21BB', onClick: () => reloadWithSameSettings(rec),
       hint: 'Start a new load using the same mapping and parallelism settings as this run.' },
     '-',
-    { label: 'Copy load ID', icon: '\u29C9', onClick: () => copyToClipboard(rec.id),
-      hint: 'Copy this run\u2019s load ID to the clipboard.' },
+    menuCopy('Copy load ID', rec.id, 'Copy this run\u2019s load ID to the clipboard.'),
   ];
 }
 
@@ -5204,7 +5232,7 @@ document.addEventListener('contextmenu', e => {
     ['#source-graph-svg path.fk-edge', el => {
       const ft = el.dataset.fromTable, tt = el.dataset.toTable;
       const tbl = tablesInfo.find(t => t.name === ft);
-      const fk = tbl ? (tbl.foreignKeys || tbl.fks || []).find(f => (f.foreign_table || f.foreignTable) === tt) : null;
+      const fk = tbl ? (tbl.foreignKeys || tbl.fks || []).find(f => _normalizeFk(f).foreignTable === tt) : null;
       openContextMenu(_menuSourceFk(ft, tt, fk || {}), e.clientX, e.clientY, { header: 'FK ' + ft + ' \u2192 ' + tt });
     }],
     ['.source-col-row .source-col-dot, .source-col-row', el => {
@@ -5338,7 +5366,7 @@ function expandAll(open) {
 let _pinnedHL = null;
 
 function _hlForSource(table, col) {
-  const entry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === table);
+  const entry = _collEntryForSourceTable(table);
   const targetCollection = entry ? (entry[1].targetCollection || entry[0]) : null;
   return { sourceTable: table, targetCollection, sourceCol: col || null };
 }
@@ -5463,9 +5491,10 @@ function showSourceFkSummary(tableName) {
   if (!fks.length) { toast('No FKs from ' + tableName, 'info'); return; }
   let html = '<table class="data-table"><thead><tr><th>From column(s)</th><th>References</th></tr></thead><tbody>';
   fks.forEach(fk => {
-    const cols = (fk.columns || [fk.column]).join(', ');
-    const ft = fk.foreign_table || fk.foreignTable;
-    const fcols = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column]).join(', ');
+    const nfk = _normalizeFk(fk);
+    const cols = nfk.columns.join(', ');
+    const ft = nfk.foreignTable;
+    const fcols = nfk.foreignColumns.join(', ');
     html += `<tr><td>${escHtml(cols)}</td><td>${escHtml(ft)}(${escHtml(fcols)})</td></tr>`;
   });
   html += '</tbody></table>';
@@ -5476,7 +5505,7 @@ function autoMapTable(tableName) {
   // Lightweight: use existing field structure if a coll already exists, else create one.
   const tbl = tablesInfo.find(t => t.name === tableName);
   if (!tbl) { toast('Table not found', 'error'); return; }
-  const existingEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const existingEntry = _collEntryForSourceTable(tableName);
   if (existingEntry) {
     const [k, c] = existingEntry;
     c.fieldExpressions = [];
@@ -5510,7 +5539,7 @@ function addTableMapping(tableName) {
 }
 
 function removeTableMapping(tableName) {
-  const entry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === tableName);
+  const entry = _collEntryForSourceTable(tableName);
   if (!entry) return;
   delete editState.collections[entry[0]];
   markDirty(); renderMapper();
@@ -5752,15 +5781,16 @@ function beginAddEdgeFrom(fromCollName) {
 
 function promoteFkToEdge(fromTable, toTable, fk) {
   // Convert FK into an explicit edge collection in the mapping.
-  const fromCollEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === fromTable);
-  const toCollEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === toTable);
+  const fromCollEntry = _collEntryForSourceTable(fromTable);
+  const toCollEntry = _collEntryForSourceTable(toTable);
   if (!fromCollEntry || !toCollEntry) {
     toast('Both tables must be mapped to collections first', 'error'); return;
   }
   const fromName = fromCollEntry[1].targetCollection || fromCollEntry[0];
   const toName = toCollEntry[1].targetCollection || toCollEntry[0];
-  const fromField = (fk.columns || [fk.column])[0] || '';
-  const toField = (fk.foreign_columns || [fk.foreignColumn || fk.foreign_column])[0] || '';
+  const nfk = _normalizeFk(fk);
+  const fromField = nfk.columns[0] || '';
+  const toField = nfk.foreignColumns[0] || '';
   const edgeName = 'rel_' + fromTable + '_' + toTable;
   if (editState.edges.some(e => e.edgeCollection === edgeName)) {
     toast('Edge ' + edgeName + ' already exists', 'info'); return;
@@ -6127,7 +6157,7 @@ function applyLens() {
 function _applyCoverageLens() {
   // Compute per-table mapped vs total columns; per-target mapped properties
   for (const t of (tablesInfo || [])) {
-    const collEntry = Object.entries(editState.collections).find(([k, c]) => (c.sourceTable || k) === t.name);
+    const collEntry = _collEntryForSourceTable(t.name);
     const coll = collEntry ? collEntry[1] : null;
     const excluded = new Set(coll ? (coll.excludeFields || []) : []);
     const total = (t.columns || []).length;

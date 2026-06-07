@@ -69,11 +69,11 @@ breaking behaviour.
 
 ### New (JS, `index.html`)
 - [x] Dual HTML escapers `escHtml` vs `_htmlEscape` — **DONE (step 2a):** `escHtml` now delegates to the null-safe, quote-escaping `_htmlEscape`, so all ~80 sites are hardened. (Inline event-handler injection still needs the `dataset` refactor — see the XSS item.)
-- [ ] `Object.entries(editState.collections).find(([k,c]) => (c.sourceTable||k)===t)` ~12 sites → `_collEntryForSourceTable()`. **S/Low.**
-- [ ] FK shape normalization `fk.columns||[fk.column]` / `foreign_table||foreignTable` 5+ sites → `_normalizeFk()`. **S/Low.**
-- [ ] `_key` read-only toast/tooltip copy in 3 blocks → `_keyReadOnlyMessage()`. **S/Low.**
-- [ ] `drawSourceGraphEdges`/`drawTargetGraphEdges` near-identical → `drawPaneGraphEdges({...})`. **M/Med.**
-- [ ] 15 `_menu*` context-menu builders repeat item/copy/inspect patterns (~300 lines) → `menuItem()`, `menuCopy()`, `menuEditExpression()`. **L/Low.**
+- [x] collection-by-source-table lookup → **DONE:** `_collEntryForSourceTable()` (11 sites); the target-collection lookups were folded into the pre-existing `getCollectionEntry()`.
+- [x] FK shape normalization → **DONE:** `_normalizeFk(fk)` returns `{ columns, foreignTable, foreignColumns }`; all snapshot/inferred call sites use it.
+- [x] `_key` read-only copy → **DONE:** `_keyReadOnlyMessage(cols, keySep)` (the two long near-identical toasts unified; the short "Cannot unmap _key" toast left as-is).
+- [x] `drawSourceGraphEdges`/`drawTargetGraphEdges` → **DONE:** shared `drawPaneGraphEdges(opts)` parameterized by pane/svg id, marker color, `side` geometry, readiness check, and an `edges()` descriptor factory; both are now thin wrappers.
+- [x] `_menu*` builders → **DONE:** added `menuCopy(label, value, hint)` (9 sites) and `menuEditExpression(collKey, prop, hint)` (3 sites). Kept the per-builder item literals (a generic `menuItem()` adds churn without real savings).
 
 ---
 
