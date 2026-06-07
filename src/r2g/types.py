@@ -69,6 +69,14 @@ class Table(BaseModel):
     columns: List[Column]
     primary_key: List[str] = []
     foreign_keys: List[ForeignKey] = []
+    # Partition metadata (PostgreSQL declarative partitioning). ``is_partitioned``
+    # marks a partitioned *parent*; ``partition_of`` names the root parent of a
+    # partition *child*. Non-partitioned tables (and non-Postgres sources) leave
+    # both at their defaults. The default mapping collapses partition children
+    # into their parent, so child FK constraints are rolled up onto the parent
+    # during introspection.
+    is_partitioned: bool = False
+    partition_of: Optional[str] = None
 
 
 class Schema(BaseModel):

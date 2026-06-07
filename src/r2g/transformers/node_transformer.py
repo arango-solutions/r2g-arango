@@ -11,6 +11,7 @@ from r2g.expressions import (
     extract_bind_references,
     rewrite_bind_params,
 )
+from r2g.keys import sanitize_key_component
 from r2g.log import get_logger
 from r2g.types import CollectionMapping, Column, FieldExpression, Table
 
@@ -155,7 +156,7 @@ class NodeTransformer:
             val = row.get(pk_col)
             if val is None:
                 raise ValueError(f"Row missing PK value for column '{pk_col}': {row}")
-            pk_values.append(str(val))
+            pk_values.append(sanitize_key_component(val))
         return self.key_separator.join(pk_values)
 
     def transform_row(self, row: Dict[str, Any]) -> Dict[str, Any]:

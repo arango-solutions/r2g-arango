@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Generator, Iterable
 from typing import Any, Dict, Optional
 
+from r2g.keys import sanitize_key_component
 from r2g.log import get_logger
 from r2g.types import CollectionMapping, EdgeDefinition, Schema, Table
 
@@ -69,7 +70,7 @@ class EdgeTransformer:
             val = row.get(pk_col)
             if val is None:
                 raise ValueError(f"Row missing PK value for column '{pk_col}': {row}")
-            parts.append(str(val))
+            parts.append(sanitize_key_component(val))
         return self.key_separator.join(parts)
 
     def transform_row(self, row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -88,7 +89,7 @@ class EdgeTransformer:
                 return None
             if isinstance(val, str) and val.strip() == "":
                 return None
-            fk_parts.append(str(val).strip())
+            fk_parts.append(sanitize_key_component(str(val).strip()))
 
         try:
             src_key = self._vertex_key_from_pk(row)
@@ -116,7 +117,7 @@ class EdgeTransformer:
                 return None
             if isinstance(v, str) and v.strip() == "":
                 return None
-            from_parts.append(str(v).strip())
+            from_parts.append(sanitize_key_component(str(v).strip()))
 
         to_parts: list[str] = []
         for tf in self.edge_def.to_fields:
@@ -128,7 +129,7 @@ class EdgeTransformer:
                 return None
             if isinstance(v, str) and v.strip() == "":
                 return None
-            to_parts.append(str(v).strip())
+            to_parts.append(sanitize_key_component(str(v).strip()))
 
         from_key = self.key_separator.join(from_parts)
         to_key = self.key_separator.join(to_parts)

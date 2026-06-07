@@ -289,12 +289,26 @@ class ConfigManager:
         return defs
 
     @staticmethod
-    def generate_default_config(schema: Schema, source_schema: str = "public") -> MappingConfig:
+    def generate_default_config(
+        schema: Schema,
+        source_schema: str = "public",
+        expand_partitions: bool = False,
+    ) -> MappingConfig:
         collections: Dict[str, CollectionMapping] = {}
         edges: list[EdgeDefinition] = []
         edge_collection_names: Set[str] = set()
 
+        def _is_partition_child(table) -> bool:
+            # Collapse partition children into their parent by default: the
+            # parent (which carries the rolled-up FKs from introspection) is the
+            # single logical collection and a query against it returns every
+            # partition's rows. ``expand_partitions`` opts back into per-shard
+            # collections.
+            return bool(getattr(table, "partition_of", None)) and not expand_partitions
+
         for table_name, table in schema.tables.items():
+            if _is_partition_child(table):
+                continue
             is_join = _is_likely_join_table(table)
             collections[table_name] = CollectionMapping(
                 source_table=table_name,
@@ -304,6 +318,8 @@ class ConfigManager:
             )
 
         for table_name, table in schema.tables.items():
+            if _is_partition_child(table):
+                continue
             for fk in table.foreign_keys:
                 base = f"{table_name}_to_{fk.foreign_table}"
                 edge_name = base

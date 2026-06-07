@@ -31,6 +31,68 @@ from psycopg.rows import dict_row, tuple_row
 from r2g.types import Column, ForeignKey, Schema, Table
 
 
+def _fk_dedupe_key(fk: ForeignKey) -> tuple:
+    return (tuple(fk.columns), fk.foreign_table, tuple(fk.foreign_columns))
+
+
+def annotate_partition_metadata(
+    schema: Schema, partition_rows: list[dict[str, Any]]
+) -> None:
+    """Tag partitioned parents / children and roll child FKs up to the parent.
+
+    *partition_rows* are rows of ``(table_name, is_partitioned, parent_name)``
+    where ``parent_name`` is the *immediate* inheritance parent (or ``None``).
+    PostgreSQL stores a partition's FK constraints on the child, not the
+    partitioned parent, so to model the parent as one collection we union the
+    declared FKs of every descendant onto the root parent (deduplicated). This
+    also repairs partitions that are individually missing a constraint, since a
+    sibling supplies the same FK definition.
+
+    Pure and mutating: operates on the already-built ``schema`` in place so it
+    can be unit-tested without a live database.
+    """
+    immediate_parent: dict[str, Optional[str]] = {}
+    partitioned: set[str] = set()
+    for row in partition_rows:
+        name = row["table_name"]
+        immediate_parent[name] = row.get("parent_name")
+        if row.get("is_partitioned"):
+            partitioned.add(name)
+
+    def root_parent(name: str) -> Optional[str]:
+        """Walk inheritance up to the top-level partitioned table."""
+        seen: set[str] = set()
+        cur = immediate_parent.get(name)
+        root: Optional[str] = None
+        while cur and cur not in seen:
+            seen.add(cur)
+            root = cur
+            cur = immediate_parent.get(cur)
+        return root
+
+    # Classify every table, then aggregate child FKs onto each root parent.
+    rolled_up: dict[str, list[ForeignKey]] = {}
+    for name, table in schema.tables.items():
+        table.is_partitioned = name in partitioned
+        root = root_parent(name)
+        # A table is a partition child only if it ultimately descends from a
+        # partitioned parent (guards against plain table inheritance).
+        if root is not None and root in partitioned:
+            table.partition_of = root
+            rolled_up.setdefault(root, []).extend(table.foreign_keys)
+
+    for parent_name, child_fks in rolled_up.items():
+        parent = schema.tables.get(parent_name)
+        if parent is None:
+            continue
+        seen = {_fk_dedupe_key(fk) for fk in parent.foreign_keys}
+        for fk in child_fks:
+            key = _fk_dedupe_key(fk)
+            if key not in seen:
+                seen.add(key)
+                parent.foreign_keys.append(fk)
+
+
 def preview_table_rows(
     connection_string: str,
     schema_name: str,
@@ -90,9 +152,27 @@ class PostgresConnector:
                         table_name = t["table_name"]
                         schema.tables[table_name] = self._process_table(cur, table_name)
 
+                    cur.execute(
+                        """
+                        SELECT
+                            c.relname               AS table_name,
+                            (c.relkind = 'p')       AS is_partitioned,
+                            parent.relname          AS parent_name
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        LEFT JOIN pg_inherits i ON i.inhrelid = c.oid
+                        LEFT JOIN pg_class parent ON parent.oid = i.inhparent
+                        WHERE n.nspname = %s
+                          AND c.relkind IN ('r', 'p');
+                        """,
+                        (self.schema_name,),
+                    )
+                    partition_rows = cur.fetchall()
+
         except Exception as e:
             raise RuntimeError(f"Failed to fetch schema from PostgreSQL: {e}")
 
+        annotate_partition_metadata(schema, partition_rows)
         return schema
 
     def open_session(self) -> "PostgresSession":

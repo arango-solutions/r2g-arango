@@ -15,6 +15,7 @@ from r2g.cdc.models import (
     ChangeEvent,
     ChangeOperation,
 )
+from r2g.keys import sanitize_key_component
 from r2g.log import get_logger
 from r2g.transformers.edge_transformer import EdgeTransformer
 from r2g.transformers.node_transformer import NodeTransformer
@@ -99,7 +100,7 @@ class DeltaTransformer:
             val = row.get(pk)
             if val is None:
                 return None
-            parts.append(str(val))
+            parts.append(sanitize_key_component(val))
         return self.config.key_separator.join(parts)
 
     def transform(self, event: ChangeEvent) -> list[ArangoDelta]:
