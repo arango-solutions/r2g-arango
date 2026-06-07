@@ -569,6 +569,12 @@ class StreamingPipeline:
             self.writer.ensure_database()
         self.writer.connect()
 
+        # Drop the existing named graph before any collections: ArangoDB will
+        # not drop a collection while it is part of a graph (ERR 1942). The
+        # graph is recreated from the current edge definitions at the end.
+        if not self.dry_run and self.drop_collections and graph_name:
+            self.writer.drop_named_graph(graph_name)
+
         if self.workers > 1:
             doc_results, edge_results = self._run_parallel(graph_name)
         else:

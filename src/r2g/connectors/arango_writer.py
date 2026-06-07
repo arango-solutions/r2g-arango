@@ -314,6 +314,19 @@ class ArangoWriter:
         cursor = self.db.aql.execute(query, bind_vars=bind_vars or {})
         return list(cursor)
 
+    def drop_named_graph(self, graph_name: str) -> bool:
+        """Drop a named graph definition, keeping its collections intact.
+
+        Returns True if a graph was dropped. This must run *before* dropping
+        any vertex/edge collections that belong to it: ArangoDB refuses to
+        delete a collection while it is part of a graph (ERR 1942).
+        """
+        if self.db.has_graph(graph_name):
+            self.db.delete_graph(graph_name, drop_collections=False)
+            logger.info("arango_graph_dropped", name=graph_name)
+            return True
+        return False
+
     def create_named_graph(
         self,
         graph_name: str,
@@ -324,10 +337,7 @@ class ArangoWriter:
         Each edge_definition dict should have keys:
           edge_collection, from_vertex_collections, to_vertex_collections
         """
-        if self.db.has_graph(graph_name):
-            self.db.delete_graph(graph_name, drop_collections=False)
-            logger.info("arango_graph_dropped", name=graph_name)
-
+        self.drop_named_graph(graph_name)
         self.db.create_graph(graph_name, edge_definitions=edge_definitions)
         logger.info("arango_graph_created", name=graph_name)
 
