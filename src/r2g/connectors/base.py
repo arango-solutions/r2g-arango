@@ -32,10 +32,28 @@ inside ``PostgresSession`` and the Snowflake equivalents inside
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+import os
+from typing import Any, Protocol, runtime_checkable
 
 from r2g.connectors.session import SourceSession
 from r2g.types import Schema
+
+
+def expand_env_vars(connection_string: str) -> str:
+    """Expand ``$VAR`` / ``${VAR}`` references in a connection string.
+
+    r2g's convention is to keep credentials in environment variables (or
+    ``r2g secrets``) rather than store them in the catalog — both as a whole
+    string (``$PG_CONN``) and inline within a DSN
+    (``postgresql://$DB_USER:$DB_PASSWORD@host/db``, as produced by
+    ``r2g catalog import-source``). Expansion is applied centrally so every
+    path (CLI, UI, MCP) behaves the same. Unknown variables are left intact,
+    and strings without ``$`` are returned unchanged (so literal DSNs — the
+    common case — are untouched).
+    """
+    if connection_string and "$" in connection_string:
+        return os.path.expandvars(connection_string)
+    return connection_string
 
 
 @runtime_checkable
@@ -60,25 +78,55 @@ class SourceConnector(Protocol):
         ...
 
 
-SUPPORTED_SOURCE_TYPES: tuple[str, ...] = ("postgresql", "snowflake", "csv", "kafka")
+SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
+    "postgresql",
+    "mysql",
+    "sqlserver",
+    "snowflake",
+    "csv",
+    "kafka",
+)
 
 # Aliases that all mean PostgreSQL. Missing/empty source types default to PG.
 _PG_ALIASES: frozenset[str] = frozenset({"postgresql", "postgres", "pg"})
+
+# Aliases that all mean MySQL (MariaDB is wire- and introspection-compatible).
+_MYSQL_ALIASES: frozenset[str] = frozenset({"mysql", "mariadb"})
+
+# Aliases that all mean Microsoft SQL Server.
+_MSSQL_ALIASES: frozenset[str] = frozenset({"sqlserver", "mssql", "sql_server"})
 
 
 def normalize_source_type(source_type: str | None) -> str:
     """Canonicalize a source-type string.
 
-    Empty/``None`` defaults to ``"postgresql"`` (R2G's historical default) and
-    the ``postgres`` / ``pg`` aliases fold to ``"postgresql"``.
+    Empty/``None`` defaults to ``"postgresql"`` (R2G's historical default), the
+    ``postgres`` / ``pg`` aliases fold to ``"postgresql"``, ``mariadb`` folds to
+    ``"mysql"``, and ``mssql`` / ``sql_server`` fold to ``"sqlserver"``.
     """
     key = (source_type or "postgresql").strip().lower()
-    return "postgresql" if key in _PG_ALIASES else key
+    if key in _PG_ALIASES:
+        return "postgresql"
+    if key in _MYSQL_ALIASES:
+        return "mysql"
+    if key in _MSSQL_ALIASES:
+        return "sqlserver"
+    return key
 
 
 def is_postgresql(source_type: str | None) -> bool:
     """True when ``source_type`` denotes PostgreSQL (incl. ``postgres`` / ``pg``)."""
     return normalize_source_type(source_type) == "postgresql"
+
+
+def is_mysql(source_type: str | None) -> bool:
+    """True when ``source_type`` denotes MySQL / MariaDB."""
+    return normalize_source_type(source_type) == "mysql"
+
+
+def is_sqlserver(source_type: str | None) -> bool:
+    """True when ``source_type`` denotes Microsoft SQL Server."""
+    return normalize_source_type(source_type) == "sqlserver"
 
 
 def serialize_rows(rows: list[dict]) -> list[dict]:
@@ -92,7 +140,7 @@ def serialize_rows(rows: list[dict]) -> list[dict]:
 
     result = []
     for row in rows:
-        converted = {}
+        converted: dict[str, Any] = {}
         for k, v in row.items():
             if isinstance(v, (dt.datetime, dt.date)):
                 converted[k] = v.isoformat()
@@ -127,10 +175,21 @@ def create_source_connector(
 
     key = normalize_source_type(source_type)
     params = source_params or {}
+    # Resolve $VAR / ${VAR} credential references (env / r2g secrets) so the
+    # catalog never has to store secrets and imported sources connect cleanly.
+    connection_string = expand_env_vars(connection_string)
     if key == "postgresql":
         from r2g.connectors.postgres import PostgresConnector
 
         return PostgresConnector(connection_string, schema_name=schema_name)
+    if key == "mysql":
+        from r2g.connectors.mysql import MySQLConnector
+
+        return MySQLConnector(connection_string, schema_name=schema_name)
+    if key == "sqlserver":
+        from r2g.connectors.mssql import SQLServerConnector
+
+        return SQLServerConnector(connection_string, schema_name=schema_name)
     if key == "snowflake":
         from r2g.connectors.snowflake import SnowflakeConnector
 

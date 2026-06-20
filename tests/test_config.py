@@ -60,6 +60,56 @@ class TestPgTypeToJsonType:
     def test_whitespace_stripped(self):
         assert pg_type_to_json_type("  integer  ") == "integer"
 
+    @pytest.mark.parametrize(
+        "mysql_type, expected",
+        [
+            ("tinyint", "integer"),
+            ("mediumint", "integer"),
+            ("year", "integer"),
+            ("double", "float"),
+            ("tinytext", "string"),
+            ("mediumtext", "string"),
+            ("longtext", "string"),
+            ("blob", "string"),
+            ("longblob", "string"),
+            ("enum", "string"),
+            ("set", "string"),
+            ("datetime", "string"),
+            ("json", "object"),
+        ],
+    )
+    def test_mysql_types(self, mysql_type, expected):
+        assert pg_type_to_json_type(mysql_type) == expected
+
+    def test_mysql_tinyint_with_display_width_stripped(self):
+        # MySQL DATA_TYPE is "tinyint" but COLUMN_TYPE may be "tinyint(1)";
+        # the precision-stripping path handles either form.
+        assert pg_type_to_json_type("tinyint(1)") == "integer"
+
+    @pytest.mark.parametrize(
+        "mssql_type, expected",
+        [
+            ("nvarchar", "string"),
+            ("nchar", "string"),
+            ("ntext", "string"),
+            ("datetime2", "string"),
+            ("smalldatetime", "string"),
+            ("datetimeoffset", "string"),
+            ("uniqueidentifier", "string"),
+            ("smallmoney", "string"),
+            ("image", "string"),
+            ("real", "float"),
+        ],
+    )
+    def test_sqlserver_types(self, mssql_type, expected):
+        assert pg_type_to_json_type(mssql_type) == expected
+
+    def test_bit_maps_to_string_in_shared_map(self):
+        # `bit` stays a (PostgreSQL) bit-string in the shared map; the SQL
+        # Server connector overrides it to boolean at introspection time, so
+        # the dialect conflict never reaches this function.
+        assert pg_type_to_json_type("bit") == "string"
+
 
 class TestGenerateDefaultConfig:
     def test_produces_document_collections(self, sample_schema):

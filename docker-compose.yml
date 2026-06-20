@@ -25,6 +25,49 @@ services:
       retries: 10
       start_period: 10s
 
+  mysql:
+    # Credentials hardcoded for parity with the postgres service above.
+    image: mysql:8.4
+    container_name: r2g-test-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: r2g_test_2026
+      MYSQL_DATABASE: shop
+      MYSQL_USER: r2g
+      MYSQL_PASSWORD: r2g_test_2026
+    ports:
+      - "3306:3306"
+    volumes:
+      - r2g-mysql-data:/var/lib/mysql
+      # Seeds the e-commerce demo schema into MYSQL_DATABASE on first init.
+      - ./docker/mysql_demo/schema.sql:/docker-entrypoint-initdb.d/01-shop.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pr2g_test_2026"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 20s
+
+  sqlserver:
+    # SQL Server has no init-script hook, so the integration test seeds
+    # docker/mssql_demo/schema.sql itself. SA password meets complexity rules.
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: r2g-test-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "r2g_Test_2026!"
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    volumes:
+      - r2g-mssql-data:/var/opt/mssql
+    healthcheck:
+      # mssql-tools18 sqlcmd encrypts by default; -C trusts the self-signed cert.
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
   arangodb:
     image: ${ARANGO_IMAGE:-arangodb:3.12}
     container_name: ${ARANGO_CONTAINER:-r2g-test-arangodb}
@@ -35,7 +78,11 @@ services:
     volumes:
       - r2g-arango-data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version", "-u", "root:${ARANGO_ROOT_PASSWORD:-r2g_test_2026}"]
+      # The arangodb image ships BusyBox wget (no curl). Probe the version
+      # endpoint with a Basic-auth header built from the container's own
+      # ARANGO_ROOT_PASSWORD. `$$` escapes compose interpolation so the literal
+      # `$` reaches the in-container shell.
+      test: ["CMD-SHELL", "wget -q -O /dev/null --header=\"Authorization: Basic $$(printf 'root:%s' \"$$ARANGO_ROOT_PASSWORD\" | base64)\" http://127.0.0.1:8529/_api/version"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -44,3 +91,5 @@ services:
 volumes:
   r2g-arango-data:
   r2g-pg-data:
+  r2g-mysql-data:
+  r2g-mssql-data:

@@ -17,6 +17,17 @@ jobs:
       - run: pip install ruff
       - run: ruff check src/ tests/
 
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # [all] installs the optional connectors so mypy sees their types.
+      - run: pip install -e ".[all,dev]"
+      - run: mypy src/r2g
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -31,5 +42,32 @@ jobs:
         # [all] pulls in every optional connector/UI/MCP extra so the full test
         # suite can import them; [test] adds pytest/pytest-cov.
         run: pip install -e ".[all,test]"
-      - name: Run tests
-        run: pytest tests/ -v --tb=short -m "not integration"
+      - name: Run tests with coverage
+        run: >
+          pytest tests/ --tb=short -m "not integration"
+          --cov=r2g --cov-report=term-missing:skip-covered
+          --cov-fail-under=80
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Start PostgreSQL + MySQL + SQL Server + ArangoDB
+        run: docker compose up -d --wait
+      - name: Install dependencies
+        run: pip install -e ".[all,test]"
+      - name: Run integration tests
+        env:
+          PG_CONN: postgresql://r2g:r2g_test_2026@localhost:5432/northwind
+          MYSQL_CONN: mysql://r2g:r2g_test_2026@localhost:3306/shop
+          MSSQL_CONN: mssql://sa:r2g_Test_2026!@localhost:1433/shop
+          ARANGO_ENDPOINT: http://localhost:8540
+          ARANGO_PASSWORD: r2g_test_2026
+        run: pytest tests/integration/ -v -m integration
+      - name: Tear down services
+        if: always()
+        run: docker compose down -v

@@ -6,7 +6,10 @@ from r2g.fk_inference import (
     CsvValueSampler,
     InferenceOptions,
     InferredForeignKey,
+    MySQLValueSampler,
     PostgresValueSampler,
+    SQLServerValueSampler,
+    create_value_sampler,
     infer_foreign_keys,
 )
 from r2g.types import Column, EdgeDefinition, ForeignKey, Schema, Table
@@ -584,3 +587,75 @@ class TestCsvValueSampler:
             sampler=sampler,
         )
         assert out_yes[0].confidence > out_no[0].confidence
+
+
+# ── MySQLValueSampler + create_value_sampler dispatch ────────────────
+
+
+class TestMySQLValueSampler:
+    def test_database_taken_from_url(self):
+        s = MySQLValueSampler("mysql://u:p@h/shop")
+        assert s.schema_name == "shop"
+
+    def test_explicit_schema_overrides_url_database(self):
+        s = MySQLValueSampler("mysql://u:p@h/shop", schema_name="analytics")
+        assert s.schema_name == "analytics"
+        assert s._connect_params["database"] == "analytics"
+
+    def test_public_sentinel_falls_back_to_url_database(self):
+        # `infer-fks` forwards snap.pg_schema, which defaults to "public".
+        s = MySQLValueSampler("mysql://u:p@h/shop", schema_name="public")
+        assert s.schema_name == "shop"
+
+    def test_connect_failure_returns_none(self):
+        # Bogus host: the sampler swallows the driver error and yields None
+        # so name-based scoring still wins. pymysql may be absent; either the
+        # ImportError or a connection error is caught.
+        s = MySQLValueSampler("mysql://nobody@127.0.0.1:1/none")
+        assert s("orders", "user_id", "users", "id") is None
+        s.close()
+
+
+class TestSQLServerValueSampler:
+    def test_schema_defaults_to_dbo(self):
+        assert SQLServerValueSampler("mssql://u:p@h/shop").schema_name == "dbo"
+
+    def test_public_sentinel_folds_to_dbo(self):
+        assert SQLServerValueSampler("mssql://u:p@h/shop", schema_name="public").schema_name == "dbo"
+
+    def test_explicit_schema_kept(self):
+        assert SQLServerValueSampler("mssql://u:p@h/shop", schema_name="sales").schema_name == "sales"
+
+    def test_connect_failure_returns_none(self):
+        s = SQLServerValueSampler("mssql://nobody@127.0.0.1:1/none")
+        assert s("orders", "user_id", "users", "id") is None
+        s.close()
+
+
+class TestCreateValueSamplerDispatch:
+    def test_postgres(self):
+        s = create_value_sampler("postgresql", "postgresql://u:p@h/db")
+        assert isinstance(s, PostgresValueSampler)
+
+    def test_mysql(self):
+        s = create_value_sampler("mysql", "mysql://u:p@h/shop")
+        assert isinstance(s, MySQLValueSampler)
+
+    def test_mariadb_alias(self):
+        s = create_value_sampler("mariadb", "mariadb://u:p@h/shop")
+        assert isinstance(s, MySQLValueSampler)
+
+    def test_sqlserver(self):
+        s = create_value_sampler("sqlserver", "mssql://u:p@h/shop")
+        assert isinstance(s, SQLServerValueSampler)
+
+    def test_mssql_alias(self):
+        s = create_value_sampler("mssql", "mssql://u:p@h/shop")
+        assert isinstance(s, SQLServerValueSampler)
+
+    def test_csv(self, tmp_path):
+        s = create_value_sampler("csv", str(tmp_path))
+        assert isinstance(s, CsvValueSampler)
+
+    def test_unsupported_returns_none(self):
+        assert create_value_sampler("snowflake", "snowflake://u:p@a/DB") is None

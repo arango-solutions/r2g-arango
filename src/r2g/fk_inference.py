@@ -61,7 +61,7 @@ starts at a pattern-specific base and is modulated by:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal, Optional, cast
 
 from pydantic import BaseModel, Field
 
@@ -186,10 +186,8 @@ def infer_foreign_keys(
     # Sampler pass: adjust confidence on every candidate we still have.
     all_candidates = single + composite
     if sampler is not None and opts.sample_overlap:
-        all_candidates = [
-            _apply_sampler(c, sampler, opts) for c in all_candidates
-        ]
-        all_candidates = [c for c in all_candidates if c is not None]  # type: ignore[list-item]
+        sampled = [_apply_sampler(c, sampler, opts) for c in all_candidates]
+        all_candidates = [c for c in sampled if c is not None]
 
     # Dedup + rank + filter.
     deduped = _dedupe(all_candidates)
@@ -455,9 +453,10 @@ def _find_composite_candidates(
     for foreign_table, foreign in schema.tables.items():
         if len(foreign.primary_key) < 2:
             continue
-        pk_cols = [_find_col(foreign, k) for k in foreign.primary_key]
-        if any(pc is None for pc in pk_cols):
+        maybe_pk_cols = [_find_col(foreign, k) for k in foreign.primary_key]
+        if any(pc is None for pc in maybe_pk_cols):
             continue
+        pk_cols = cast("list[Column]", maybe_pk_cols)
 
         for local_table, local in schema.tables.items():
             if local_table == foreign_table:
@@ -470,11 +469,11 @@ def _find_composite_candidates(
             matched: list[Column] = []
             ok = True
             for pc in pk_cols:
-                lcol = _find_col(local, pc.name)  # type: ignore[union-attr]
+                lcol = _find_col(local, pc.name)
                 if lcol is None:
                     ok = False
                     break
-                if not _types_compatible(lcol, pc):  # type: ignore[arg-type]
+                if not _types_compatible(lcol, pc):
                     ok = False
                     break
                 matched.append(lcol)
@@ -483,12 +482,12 @@ def _find_composite_candidates(
 
             # Skip if the local table's single-column PK is exactly one
             # of the pieces (rare but would be a self-inconsistent match).
-            if len(local.primary_key) == 1 and local.primary_key[0] in {pc.name for pc in pk_cols}:  # type: ignore[union-attr]
+            if len(local.primary_key) == 1 and local.primary_key[0] in {pc.name for pc in pk_cols}:
                 # Only treat as composite if *all* pieces are present,
                 # which the loop above already verified.
                 pass
 
-            columns = [pc.name for pc in pk_cols]  # type: ignore[union-attr]
+            columns = [pc.name for pc in pk_cols]
             foreign_columns = list(foreign.primary_key)
             if tuple(sorted(columns)) in declared_index.get(local_table, set()):
                 continue
@@ -496,15 +495,15 @@ def _find_composite_candidates(
             # Base confidence: 0.7, plus +0.05 per component column that
             # is non-nullable on both sides (strong signal).
             base = 0.7
-            nn_bonus = sum(
-                0.05
+            nn_bonus = 0.05 * sum(
+                1
                 for lc, pc in zip(matched, pk_cols)
-                if (not lc.is_nullable) and (not pc.is_nullable)  # type: ignore[union-attr]
+                if (not lc.is_nullable) and (not pc.is_nullable)
             )
-            same_type_bonus = sum(
-                0.05
+            same_type_bonus = 0.05 * sum(
+                1
                 for lc, pc in zip(matched, pk_cols)
-                if lc.data_type.strip().lower() == pc.data_type.strip().lower()  # type: ignore[union-attr]
+                if lc.data_type.strip().lower() == pc.data_type.strip().lower()
             )
             # Penalize matches where the local table also has a plain
             # "id" column that looks like it already points elsewhere —
@@ -715,6 +714,218 @@ class PostgresValueSampler:
             return None
 
 
+# ── Concrete MySQL value sampler ────────────────────────────────────
+
+
+class MySQLValueSampler:
+    """Sampler that computes FK value-overlap ratios via MySQL / MariaDB.
+
+    The MySQL analog of :class:`PostgresValueSampler`. MySQL has no
+    ``FILTER (WHERE …)`` aggregate, so the overlap fraction is computed with
+    ``SUM(CASE WHEN … )`` over a ``LEFT JOIN`` of two bounded, distinct-valued
+    derived tables (default 10k rows per side).
+
+    The database to query is taken from the connection string's path
+    component; a non-default ``schema_name`` overrides it. The sampler is
+    resilient: any driver error is logged and surfaced as ``None`` so the
+    name-based score still wins. Call :meth:`close` to release the connection.
+    """
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        schema_name: str = "",
+        limit: int = 10_000,
+    ) -> None:
+        from r2g.connectors.mysql import _DEFAULT_SCHEMA_SENTINELS, _parse_mysql_url
+
+        self.connection_string = connection_string
+        self.limit = max(100, int(limit))
+        self._connect_params = _parse_mysql_url(connection_string)
+        if schema_name in _DEFAULT_SCHEMA_SENTINELS:
+            self.schema_name = self._connect_params["database"]
+        else:
+            self.schema_name = schema_name
+            self._connect_params["database"] = schema_name
+        self._conn = None
+
+    def _conn_lazy(self):
+        if self._conn is None:
+            from r2g.connectors.mysql import _load_pymysql
+
+            pymysql = _load_pymysql()
+            self._conn = pymysql.connect(**self._connect_params)
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = None
+
+    def __enter__(self) -> "MySQLValueSampler":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _qi(self, name: str) -> str:
+        return "`" + name.replace("`", "``") + "`"
+
+    def __call__(
+        self,
+        local_table: str,
+        local_column: str,
+        foreign_table: str,
+        foreign_column: str,
+    ) -> SamplerResult:
+        """Return the fraction of distinct local values present in the
+        foreign column, or ``None`` if the query failed."""
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("fk_sampler_connect_failed", error=str(err))
+            return None
+
+        db = self._qi(self.schema_name)
+        q = f"""
+            SELECT SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END)
+                       / GREATEST(COUNT(*), 1) AS overlap
+            FROM (
+                SELECT DISTINCT {self._qi(local_column)} AS v
+                FROM {db}.{self._qi(local_table)}
+                WHERE {self._qi(local_column)} IS NOT NULL
+                LIMIT %s
+            ) l
+            LEFT JOIN (
+                SELECT DISTINCT {self._qi(foreign_column)} AS v
+                FROM {db}.{self._qi(foreign_table)}
+                LIMIT %s
+            ) f ON l.v = f.v
+        """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+        try:
+            with conn.cursor() as cur:
+                cur.execute(q, (self.limit, self.limit))
+                row = cur.fetchone()
+                if not row or row[0] is None:
+                    return None
+                return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                "fk_sampler_query_failed",
+                local=f"{local_table}.{local_column}",
+                foreign=f"{foreign_table}.{foreign_column}",
+                error=str(err),
+            )
+            return None
+
+
+# ── Concrete SQL Server value sampler ───────────────────────────────
+
+
+class SQLServerValueSampler:
+    """Sampler that computes FK value-overlap ratios via Microsoft SQL Server.
+
+    The SQL Server analog of :class:`MySQLValueSampler`, using T-SQL ``TOP (n)``
+    (no ``LIMIT``), bracket-quoted identifiers, and ``CAST(... AS FLOAT)`` for
+    the overlap fraction. The schema namespace is taken from ``schema_name``
+    (the historical ``public`` default folds to ``dbo``); the database comes
+    from the connection string. Driver errors are logged and surfaced as
+    ``None`` so the name-based score still wins.
+    """
+
+    def __init__(
+        self,
+        connection_string: str,
+        *,
+        schema_name: str = "dbo",
+        limit: int = 10_000,
+    ) -> None:
+        from r2g.connectors.mssql import _DEFAULT_SCHEMA_SENTINELS, _parse_mssql_url
+
+        self.connection_string = connection_string
+        self.limit = max(100, int(limit))
+        self._connect_params = _parse_mssql_url(connection_string)
+        self.schema_name = "dbo" if schema_name in _DEFAULT_SCHEMA_SENTINELS else schema_name
+        self._conn = None
+
+    def _conn_lazy(self):
+        if self._conn is None:
+            from r2g.connectors.mssql import _load_pymssql
+
+            pymssql = _load_pymssql()
+            self._conn = pymssql.connect(**self._connect_params)
+        return self._conn
+
+    def close(self) -> None:
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._conn = None
+
+    def __enter__(self) -> "SQLServerValueSampler":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def _qi(self, name: str) -> str:
+        return "[" + name.replace("]", "]]") + "]"
+
+    def __call__(
+        self,
+        local_table: str,
+        local_column: str,
+        foreign_table: str,
+        foreign_column: str,
+    ) -> SamplerResult:
+        """Return the fraction of distinct local values present in the
+        foreign column, or ``None`` if the query failed."""
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("fk_sampler_connect_failed", error=str(err))
+            return None
+
+        s = self._qi(self.schema_name)
+        q = f"""
+            SELECT CAST(SUM(CASE WHEN f.v IS NOT NULL THEN 1 ELSE 0 END) AS FLOAT)
+                       / NULLIF(COUNT(*), 0) AS overlap
+            FROM (
+                SELECT DISTINCT TOP (%s) {self._qi(local_column)} AS v
+                FROM {s}.{self._qi(local_table)}
+                WHERE {self._qi(local_column)} IS NOT NULL
+            ) l
+            LEFT JOIN (
+                SELECT DISTINCT TOP (%s) {self._qi(foreign_column)} AS v
+                FROM {s}.{self._qi(foreign_table)}
+            ) f ON l.v = f.v
+        """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(q, (self.limit, self.limit))
+                row = cur.fetchone()
+            finally:
+                cur.close()
+            if not row or row[0] is None:
+                return None
+            return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                "fk_sampler_query_failed",
+                local=f"{local_table}.{local_column}",
+                foreign=f"{foreign_table}.{foreign_column}",
+                error=str(err),
+            )
+            return None
+
+
 # ── Concrete CSV value sampler ──────────────────────────────────────
 
 
@@ -832,15 +1043,29 @@ def create_value_sampler(
     """Build a value-overlap sampler for a source, or ``None`` if unsupported.
 
     PostgreSQL (incl. ``postgres`` / ``pg`` aliases) → :class:`PostgresValueSampler`,
-    CSV → :class:`CsvValueSampler`; any other type returns ``None`` (the caller
-    should fall back to name-only inference). Connector / import errors are
-    allowed to propagate so callers can decide whether to log-and-continue.
+    MySQL / MariaDB → :class:`MySQLValueSampler`, SQL Server →
+    :class:`SQLServerValueSampler`, CSV → :class:`CsvValueSampler`; any other
+    type returns ``None`` (the caller should fall back to name-only inference).
+    Connector / import errors are allowed to propagate so callers can decide
+    whether to log-and-continue.
     """
-    from r2g.connectors.base import is_postgresql, normalize_source_type
+    from r2g.connectors.base import (
+        expand_env_vars,
+        is_mysql,
+        is_postgresql,
+        is_sqlserver,
+        normalize_source_type,
+    )
 
     params = source_params or {}
+    # Resolve $VAR credential references the same way create_source_connector does.
+    connection_string = expand_env_vars(connection_string)
     if is_postgresql(source_type):
         return PostgresValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if is_mysql(source_type):
+        return MySQLValueSampler(connection_string, schema_name=pg_schema, limit=limit)
+    if is_sqlserver(source_type):
+        return SQLServerValueSampler(connection_string, schema_name=pg_schema, limit=limit)
     if normalize_source_type(source_type) == "csv":
         return CsvValueSampler(
             connection_string,

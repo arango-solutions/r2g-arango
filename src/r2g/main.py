@@ -1819,7 +1819,9 @@ def _get_catalog():
 @source_app.command("add")
 def source_add(
     name: str = typer.Option(..., "--name", help="Source name"),
-    source_type: str = typer.Option("postgresql", "--type", help="Source type"),
+    source_type: str = typer.Option(
+        "postgresql", "--type", help="Source type: postgresql, mysql, sqlserver, snowflake, csv, or kafka"
+    ),
     conn: str = typer.Option(..., "--conn", help="Connection string"),
     description: str = typer.Option("", "--description", help="Description"),
     owner: str = typer.Option("", "--owner", help="Owner"),
@@ -1882,8 +1884,8 @@ def source_snapshot(
 ) -> None:
     """Introspect the schema from the source and save a snapshot.
 
-    Uses the source's ``source_type`` (``postgresql`` or ``snowflake``)
-    to pick the right connector.
+    Uses the source's ``source_type`` (``postgresql``, ``mysql``,
+    ``sqlserver``, ``snowflake``, or ``csv``) to pick the right connector.
     """
     from r2g.connectors.base import create_source_connector
 
@@ -2089,7 +2091,7 @@ def source_infer_fks(
         )
         if sampler is None:
             console.print(
-                f"[yellow]--sample is only supported for PostgreSQL and CSV sources (got "
+                f"[yellow]--sample is only supported for PostgreSQL, MySQL, SQL Server, and CSV sources (got "
                 f"'{normalize_source_type(source.source_type)}'); falling back to name-only inference.[/yellow]"
             )
 
