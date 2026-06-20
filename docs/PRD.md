@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration), and Phase 7 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading), and Phase 7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -522,7 +522,7 @@ preserves graph layout on lens-only changes per the UI architecture rules.
 
 ---
 
-### Phase 8: External data catalog integration -- Planned
+### Phase 8: External data catalog integration -- 8a–8b implemented; 8c–8d planned
 
 > **Distinct from Phase 5d.** Phase 5d is r2g's *own internal* catalog (its
 > sources / projects / mappings, optionally ArangoDB-backed). Phase 8 connects
@@ -605,6 +605,110 @@ than expecting catalogs to hand over secrets.
 
 ---
 
+### Phase 9: Classification propagation & entitlement-aware loading -- Planned
+
+> **Built on the Phase 8 catalog backbone.** The moment r2g copies data out of a
+> relational source into ArangoDB it creates a new system of record with *none*
+> of the source's access controls. The source enforced who-sees-what via
+> GRANTs, row-level security, column masking, and catalog policy; the graph copy
+> has none of that by default. Worse, graph denormalization creates *new*
+> sensitivity — joining `customers` + `orders` + `payments` into one
+> neighborhood can expose a combined picture no single source table revealed
+> (the **mosaic effect**). Phase 9 is therefore a governance problem the
+> migration itself creates, not a feature bolted on.
+
+**Lane discipline (non-negotiable).** r2g is a *migration tool, not a runtime
+authorization engine*. It must not pretend to enforce access at query time.
+The defensible posture is three tiers, only the first two of which r2g owns:
+
+1. **Capture & propagate** (squarely r2g's job, cheap given Phase 8). The
+   portable unit of entitlement is **not** engine-specific GRANTs (which do not
+   map across systems or to graph consumers) — it is the
+   **classifications / tags / owners / tiers** that live in the catalog
+   (OpenMetadata already holds PII/PHI tags, confidentiality tiers, ownership,
+   glossary terms). Pull those during discovery and stamp them onto the target
+   graph as collection- and field-level annotations (`_classification`,
+   `_sensitivity`, `_source_owner`) plus column-level lineage
+   (`source table.column → graph property`). This makes the graph *governable*
+   even though r2g does not enforce.
+2. **Advise & gate** (also r2g's job). A pre-load **entitlement report** —
+   "these 7 mapped fields are classified Restricted/PII; confirm before
+   exfiltrating into ArangoDB" — with *exclude-above-a-threshold by default*,
+   plus **transform-at-load** for sensitive fields (the existing field
+   expression engine makes `HASH(@ssn)` / tokenize / redact a natural fit). The
+   right answer to "how do we protect it?" is often *don't copy it in the clear*.
+3. **Enable enforcement** (**not** r2g — the graph platform / app). ArangoDB has
+   no native row/column security (collection-level RBAC in Enterprise,
+   app-level otherwise), so r2g emits the *inputs* for whatever enforces:
+   per-collection classification + suggested ArangoDB RBAC, an OPA/Rego policy
+   artifact, and/or a **tier-based physical layout** (separate
+   collections/databases/graphs per sensitivity tier) so coarse collection-RBAC
+   can actually bite. r2g produces metadata + recommendations; the serving layer
+   enforces.
+
+**Motivation.** Customers operating in governed data estates need the
+relational→graph boundary to preserve — and visibly account for — data
+sensitivity. The high-leverage, uniquely-r2g value is carrying governance
+metadata across that boundary and *refusing to silently launder sensitive
+data*, without overreaching into being an authz engine it cannot be.
+
+#### Data-model reality (sizes the work honestly)
+
+Today `CatalogAsset` carries `tags: list[str]` **only at asset (table/database)
+level**, and `ResolvedSource` drops tags entirely — so nothing flows past
+discovery. Phase 9's real first task is not "stamp tags"; it is a **data-flow
+thread**: column-level classification capture → a carrier through
+`resolve_source` → `SourceConfig` → snapshot (`Column`) → mapping
+(`CollectionMapping` / `FieldExpression`) → target collection/field annotations
++ lineage. Tiers 2 and 3 hang off that backbone.
+
+#### Requirements
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P9.1** | **Column-level classification capture** | Extend the catalog provider + `CatalogAsset` to read column-level classifications (tags, glossary terms), owners, and confidentiality tier — not just asset-level tags. OpenMetadata exposes these via `tables?fields=columns,tags,owners` and the classification/glossary APIs. A normalized `Classification` model (tag FQN, source, confidence) keyed by column. | P8.3 |
+| **P9.2** | **Classification carrier through the pipeline** | Thread classifications from `resolve_source` → `ResolvedSource` → `SourceConfig` (persisted) → snapshot, annotating `Column` with an optional classification, with a **sensitivity lattice** (e.g. `public < internal < confidential < restricted`) that orders tiers for comparison and rollup. | P9.1 |
+| **P9.3** | **Target annotation & column-level lineage** | Stamp classification onto the target: collection- and field-level annotations (`_classification`, `_sensitivity`, `_source_owner`) emitted by the transformers, plus a **lineage manifest** mapping each `source table.column` to its graph property/edge. Stored as governance metadata (sidecar manifest + optional per-collection metadata document), never as silent data loss. | P9.2 |
+| **P9.4** | **Mosaic recomputation** | A vertex/edge assembled from multiple source columns/tables takes the **maximum** sensitivity of its contributors (never blindly inherits one column's tier). Recomputed at mapping-build time over fan-in (`FieldExpression.sources`), edge endpoints, and denormalized neighborhoods; surfaced in the report and annotations. | P9.2 |
+| **P9.5** | **Pre-load entitlement report + threshold gate** | `r2g entitlements report <project>` (and a UI panel) lists every mapped field at/above a configurable sensitivity threshold with its source lineage; `r2g load` **excludes above-threshold fields by default** and requires explicit confirmation / override to copy them. | P9.3, P9.4 |
+| **P9.6** | **Transform-at-load masking** | First-class masking for classified fields via the existing expression engine: `HASH` / `TOKENIZE` / `REDACT` / `NULLIFY` helper expressions and a one-click "mask this field" in the mapper. Masking choice is recorded in the lineage manifest. | P9.3 |
+| **P9.7** | **Enforcement artifact (for the serving layer)** | Emit, on load, a **classification manifest** (machine-readable) plus optional artifacts the serving layer can enforce: suggested ArangoDB collection-RBAC grants per tier, an OPA/Rego policy stub, and/or a **tier-based physical layout** recommendation (per-tier collections/databases/graphs). r2g never enforces these itself. | P9.3, P9.4 |
+| **P9.8** | **Classification re-sync (staleness)** | A one-time copy snapshots policy at migration time; source policy drift will not propagate. Provide `r2g catalog resync-classifications <project>` to refresh annotations from the catalog, and carry classification *changes* through CDC/temporal mode (policy itself is not carried). Staleness (last-synced timestamp) is surfaced. | P9.3 |
+| **P9.9** | **Sensitivity lens + entitlement panel (UI)** | A workspace **classification lens** (paint-only, per the UI architecture contract) coloring collections/fields by sensitivity tier with a legend, and a floating entitlement-report panel feeding the pre-load gate — no new routes, context-menu-primary. | P9.5 |
+
+#### Phasing
+
+- **9a (capture & propagate):** P9.1–P9.4. The data-model backbone, lineage, and
+  mosaic rule. Fully unit-testable with the mocked OpenMetadata HTTP seam + an
+  OpenMetadata e2e that seeds column tags; no enforcement surface yet.
+- **9b (advise & gate):** P9.5, P9.6, P9.9. The entitlement report, threshold
+  gate, transform-at-load masking, and the sensitivity lens.
+- **9c (enable enforcement):** P9.7, P9.8. The classification manifest + RBAC/OPA
+  /tier-layout artifacts and classification re-sync.
+
+#### Non-functional notes
+
+- **Lane discipline.** r2g emits governance *metadata and recommendations*; it is
+  never in the query-time authorization path. Documentation and artifact names
+  must make this boundary explicit.
+- **Mosaic = max.** Combined-entity sensitivity is recomputed (max of
+  contributors), not inherited from a single column — a first-class rule, not a
+  footnote.
+- **Identity is catalog-anchored, not GRANT-anchored.** Source DB roles ≠
+  ArangoDB users ≠ end-user SSO identities; entitlements are expressed against
+  the catalog's identity-agnostic tag/tier/owner layer (ultimately org IdP
+  groups), which is exactly why GRANTs are the wrong carrier.
+- **Safe by default.** Above-threshold fields are excluded unless explicitly
+  confirmed; the migration refuses to silently launder sensitive data.
+- **Reuse, don't reinvent.** Token/owner metadata rides the existing Fernet +
+  redaction layer; masking rides the existing `FieldExpression` engine; the lens
+  rides the existing paint-only lens infrastructure (Phase 5e).
+- **Out of scope (V1).** Runtime enforcement; pulling engine GRANTs/RLS; mapping
+  catalog policies to ArangoDB users automatically; writing classifications
+  *back* to the catalog (a Phase 8 write-path concern).
+
+---
+
 ## 6. Future considerations (Phase 7+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
@@ -656,5 +760,7 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **Snowflake dump + streaming (Phase 6 close-out)** | **April 2026** | P6.3 + P6.4 closed, completing Phase 6. New `r2g.connectors.session.SourceSession` Protocol (`count_rows`, `stream_rows`, `dump_table_to_csv`, `close`) plus concrete `PostgresSession` (`REPEATABLE READ` + server-side cursor + `COPY TO STDOUT` fast path) and `SnowflakeSession` (`BEGIN`/`COMMIT` snapshot + `cursor.fetchmany` streaming + `csv`-module dump). `SourceConnector` gains an `open_session()` method; `StreamingPipeline` is now fully source-agnostic and opens one session per worker (same consistent-snapshot semantics on both backends). `r2g stream --source <name>` resolves a catalog source by `source_type`; the legacy `--pg-conn` still works. New `r2g source dump <name>` subcommand replaces `r2g dump-tables` for catalog-aware dumps. UI `POST /api/projects/{name}/load` dispatches through `create_source_connector` with a 501 + install hint when the Snowflake extra is missing. Backward-compat constructor shim (`StreamingPipeline(pg_conn_string=…)`) keeps existing call sites working. 845 tests passing, 26 new. |
 
 | **External data catalog integration (Phase 8) — Planned** | **June 2026** | Added Phase 8: connect r2g to external enterprise data catalogs (OpenMetadata, AWS Glue, Atlan, …) as an upstream discovery layer (browse → select → import as a source), distinct from the internal Phase 5d catalog. Backed by a cited research pass on catalog API suitability for "discover-then-connect" (`docs/internal/PLAN-external-data-catalogs.md`); OpenMetadata recommended as the first integration (OSS, official SDK, connection metadata, dockerizable for e2e testing). Market-share ranking flagged as unverified. Implementation + test plan drafted for review; no code yet. Also recorded MySQL/MariaDB + SQL Server source connectors shipped since the April baseline. |
+| **External data catalog integration (Phase 8a–8b) — Implemented** | **June 2026** | Shipped 8a (foundation + OpenMetadata) and 8b (Studio UI): `src/r2g/catalogs/` provider abstraction + OpenMetadata REST provider (`httpx`, `openmetadata` extra), an encrypted `CatalogProviderConfig` registry, the `r2g catalog add/list/browse/import-source/remove` CLI, Studio `/api/catalogs*` browse/import endpoints with a left-rail Catalogs panel, and unit + skip-when-unavailable e2e tests. MySQL + SQL Server source connectors landed alongside. 1189 unit tests passing, 82% coverage. |
+| **Classification propagation & entitlement-aware loading (Phase 9) — Planned** | **June 2026** | Added Phase 9 on the Phase 8 catalog backbone: a three-tier governance posture — capture & propagate catalog classifications/owners/tiers onto target collections/fields + column-level lineage (P9.1–P9.4, incl. the mosaic = max-sensitivity rule), advise & gate via a pre-load entitlement report + exclude-above-threshold default + transform-at-load masking reusing the field-expression engine (P9.5–P9.6, P9.9), and enable enforcement by emitting a classification manifest + suggested ArangoDB RBAC / OPA / tier-layout artifacts (r2g never enforces) plus classification re-sync (P9.7–P9.8). Lane discipline: r2g carries governance metadata and refuses to silently launder sensitive data, but is not a runtime authz engine. Implementation + test plan drafted (`docs/internal/PLAN-classification-entitlement.md`); no code yet. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
