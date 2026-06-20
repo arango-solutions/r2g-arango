@@ -1064,10 +1064,20 @@
         <div class="empty-state">Loading projects&hellip;</div>
       </div>
     </div>
+    <div class="explorer-section collapsed" id="exp-catalogs">
+      <div class="explorer-section-header" onclick="toggleExplorerSection('exp-catalogs')">
+        <span class="tree-caret">&#9662;</span><span class="sec-title">Catalogs</span>
+        <button class="panel-add-btn" id="btn-add-catalog" aria-label="Connect a data catalog" data-hint="Connect an external data catalog (OpenMetadata) for governed source discovery." onclick="event.stopPropagation();openAddCatalogForm()">+</button>
+      </div>
+      <div class="explorer-section-body" id="catalogs-panel">
+        <div class="empty-state">Loading catalogs&hellip;</div>
+      </div>
+    </div>
     <div class="explorer-section collapsed" id="exp-sources">
       <div class="explorer-section-header" onclick="toggleExplorerSection('exp-sources')">
         <span class="tree-caret">&#9662;</span><span class="sec-title">Sources</span>
-        <button class="panel-add-btn" id="btn-new-source" aria-label="Create a new data source" data-hint="Register a new data source (PostgreSQL, Snowflake, CSV, Kafka). Its schema is introspected automatically on save." onclick="event.stopPropagation();openNewSourceForm()">+</button>
+        <button class="panel-add-btn" id="btn-import-catalog" aria-label="Import a source from a data catalog" data-hint="Browse a connected data catalog (OpenMetadata) and import a database/schema as a source. Credentials stay with you." onclick="event.stopPropagation();openCatalogImport()">&#128194;</button>
+        <button class="panel-add-btn" id="btn-new-source" aria-label="Create a new data source" data-hint="Register a new data source (PostgreSQL, MySQL, SQL Server, Snowflake, CSV, Kafka). Its schema is introspected automatically on save." onclick="event.stopPropagation();openNewSourceForm()">+</button>
       </div>
       <div class="explorer-section-body" id="sources-panel">
         <div class="empty-state">Loading sources&hellip;</div>
@@ -1510,6 +1520,16 @@ const NS_CONN_META = {
     placeholder: 'postgresql://user:pass@host:5432/db',
     hint: 'PostgreSQL: <code>postgresql://user:pass@host:5432/db</code>. Use <code>$ENV_VAR</code> to reference an environment variable.',
   },
+  mysql: {
+    label: 'Connection string',
+    placeholder: 'mysql://user:pass@host:3306/db',
+    hint: 'MySQL / MariaDB: <code>mysql://user:pass@host:3306/db</code> (the database in the path is the namespace). Use <code>$ENV_VAR</code> to reference an environment variable.',
+  },
+  sqlserver: {
+    label: 'Connection string',
+    placeholder: 'mssql://user:pass@host:1433/db',
+    hint: 'SQL Server: <code>mssql://user:pass@host:1433/db</code>. The schema (default <code>dbo</code>) is set per-snapshot. Use <code>$ENV_VAR</code> to reference an environment variable.',
+  },
   snowflake: {
     label: 'Connection string',
     placeholder: 'snowflake://user:pass@account/DATABASE[/SCHEMA]?warehouse=WH&role=R',
@@ -1547,6 +1567,8 @@ function openNewSourceForm() {
       <label>Type
         <select id="ns-type" onchange="nsTypeChanged()">
           <option value="postgresql">PostgreSQL</option>
+          <option value="mysql">MySQL / MariaDB</option>
+          <option value="sqlserver">SQL Server</option>
           <option value="snowflake">Snowflake (introspect-only)</option>
           <option value="csv">CSV directory</option>
           <option value="kafka">Kafka topic (introspect-only)</option>
@@ -1647,6 +1669,193 @@ function openNewSourceForm() {
     ],
   });
   setTimeout(() => document.getElementById('ns-name')?.focus(), 50);
+}
+
+// ── Import from external data catalog (Phase 8b) ──
+// Browse a registered catalog's service -> database -> schema -> table tree and
+// import a selected database/schema/topic as an r2g source. Credentials are not
+// pulled from the catalog; the imported connection string uses $ENV_VAR refs.
+const _catImport = { catalog: null, stack: [] };
+
+async function openCatalogImport() {
+  openModal('Import from data catalog',
+    '<div id="cat-import-body" class="fc-form"><div class="hint">Loading catalogs…</div></div>',
+    '<button class="btn" onclick="closeModal()">Close</button>');
+  let catalogs = [];
+  try {
+    catalogs = await apiFetch('/api/catalogs');
+  } catch (e) {
+    document.getElementById('cat-import-body').innerHTML =
+      `<div class="err">Failed to load catalogs: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  if (!catalogs.length) {
+    _renderCatalogAddForm();
+    return;
+  }
+  const opts = catalogs.map(c =>
+    `<option value="${escHtml(c.name)}">${escHtml(c.name)} (${escHtml(c.provider_type)})</option>`).join('');
+  document.getElementById('cat-import-body').innerHTML = `
+    <label>Catalog
+      <select id="cat-select">${opts}</select>
+    </label>
+    <button class="btn" type="button" onclick="_catImportBrowse(document.getElementById('cat-select').value, null)">Browse</button>
+    <button class="btn" type="button" style="float:right" onclick="_renderCatalogAddForm()">+ Add catalog</button>
+    <div id="cat-browse" style="margin-top:12px"></div>`;
+}
+
+// Catalogs are first-class in the explorer (governance-integrated discovery).
+async function loadCatalogs() {
+  const panel = document.getElementById('catalogs-panel');
+  if (!panel) return;
+  try {
+    const cats = await apiFetch('/api/catalogs');
+    window._catalogsCache = cats;
+    if (!cats.length) {
+      panel.innerHTML = '<div class="empty-state-cta">No catalogs connected.<br><button type="button" onclick="openAddCatalogForm()">+ Connect a catalog</button></div>';
+      return;
+    }
+    panel.innerHTML = cats.map(c => `
+      <div class="source-item" data-catalog="${escHtml(c.name)}">
+        <div>
+          <div class="source-name">${escHtml(c.name)}</div>
+          <div class="source-type">${escHtml(c.provider_type)}</div>
+        </div>
+        <button class="btn-sm" data-cat-browse="1" title="Browse &amp; import">Browse</button>
+        <button class="btn-sm" data-cat-remove="1" title="Remove catalog">&times;</button>
+      </div>`).join('');
+    panel.querySelectorAll('.source-item').forEach(item => {
+      const name = item.dataset.catalog;
+      item.querySelector('[data-cat-browse]').addEventListener('click', () => browseCatalog(name));
+      item.querySelector('[data-cat-remove]').addEventListener('click', () => removeCatalogUi(name));
+    });
+  } catch (e) {
+    panel.innerHTML = '<div class="empty-state">Could not load catalogs</div>';
+  }
+}
+
+function browseCatalog(name) {
+  _catImport.catalog = name;
+  openModal('Catalog: ' + name,
+    '<div id="cat-import-body" class="fc-form"><div id="cat-browse"></div></div>',
+    '<button class="btn" onclick="closeModal()">Close</button>');
+  _catImportBrowse(name, null);
+}
+
+function openAddCatalogForm() {
+  openModal('Connect a data catalog',
+    '<div id="cat-import-body" class="fc-form"></div>',
+    '<button class="btn" onclick="closeModal()">Close</button>');
+  _renderCatalogAddForm();
+}
+
+async function removeCatalogUi(name) {
+  if (!confirm(`Remove catalog '${name}'? Sources already imported from it are unaffected.`)) return;
+  try {
+    await apiFetch('/api/catalogs/' + encodeURIComponent(name), { method: 'DELETE' });
+  } catch (e) {
+    toast('Remove failed: ' + e.message, 'error');
+    return;
+  }
+  toast(`Catalog '${name}' removed`, 'info');
+  loadCatalogs();
+}
+
+function _renderCatalogAddForm() {
+  document.getElementById('cat-import-body').innerHTML = `
+    <div class="hint">Register an OpenMetadata catalog. The token is stored encrypted; use <code>$ENV_VAR</code> to keep it in the environment.</div>
+    <label>Name <input id="cat-add-name" placeholder="corp_om" autocomplete="off" /></label>
+    <label>Endpoint <input id="cat-add-endpoint" placeholder="http://localhost:8585" autocomplete="off" /></label>
+    <label>API token (optional) <input id="cat-add-token" placeholder="$OM_TOKEN or a JWT" autocomplete="off" /></label>
+    <div class="err" id="cat-add-err" style="display:none"></div>
+    <button class="btn primary" type="button" onclick="_catImportAddCatalog()">Add &amp; browse</button>`;
+}
+
+async function _catImportAddCatalog() {
+  const name = document.getElementById('cat-add-name').value.trim();
+  const endpoint = document.getElementById('cat-add-endpoint').value.trim();
+  const token = document.getElementById('cat-add-token').value.trim();
+  const err = document.getElementById('cat-add-err');
+  if (!name || !endpoint) { err.textContent = 'Name and endpoint are required.'; err.style.display = ''; return; }
+  try {
+    await apiFetch('/api/catalogs', { method: 'POST',
+      body: JSON.stringify({ name, provider_type: 'openmetadata', endpoint, token }) });
+  } catch (e) { err.textContent = 'Add failed: ' + e.message; err.style.display = ''; return; }
+  toast(`Catalog '${name}' added`, 'success');
+  loadCatalogs();
+  _catImportBrowse(name, null);
+}
+
+async function _catImportBrowse(catalog, path) {
+  // Untrusted catalog values (names/FQNs) flow through data-* attributes and
+  // are read from this.dataset in delegated handlers — never interpolated into
+  // an inline-handler JS string (DOM-XSS-safe, matching the app convention).
+  _catImport.catalog = catalog;
+  const target = document.getElementById('cat-browse') || document.getElementById('cat-import-body');
+  target.innerHTML = '<div class="hint">Browsing…</div>';
+  let assets;
+  try {
+    const q = path ? `?path=${encodeURIComponent(path)}` : '';
+    assets = await apiFetch(`/api/catalogs/${encodeURIComponent(catalog)}/browse${q}`);
+  } catch (e) {
+    target.innerHTML = `<div class="err">Browse failed: ${escHtml(e.message)}</div>`;
+    return;
+  }
+  const crumb = path
+    ? `<div class="hint"><a href="#" data-cat-top="1">← top</a> &nbsp;·&nbsp; ${escHtml(path)}</div>`
+    : '<div class="hint">Top-level data sources:</div>';
+  const rows = assets.map(a => {
+    // Databases/schemas/topics are importable; services/databases/schemas are navigated into.
+    const importable = ['database', 'schema', 'topic'].includes(a.kind);
+    const navigable = ['service', 'database', 'schema'].includes(a.kind);
+    let action = '';
+    if (importable) {
+      action = `<button class="btn primary" type="button" data-cat-pick="1" data-fqn="${escHtml(a.fqn)}" data-name="${escHtml(a.name)}">Import</button>`;
+    } else if (navigable) {
+      action = `<button class="btn" type="button" data-cat-open="1" data-fqn="${escHtml(a.fqn)}">Open</button>`;
+    }
+    return `<tr><td>${escHtml(a.kind)}</td><td><b>${escHtml(a.name)}</b></td><td>${escHtml(a.source_type || '—')}</td><td style="text-align:right">${action}</td></tr>`;
+  }).join('');
+  target.innerHTML = `${crumb}
+    <table class="cat-table" style="width:100%;margin-top:8px;border-collapse:collapse">
+      <thead><tr><th style="text-align:left">Kind</th><th style="text-align:left">Name</th><th style="text-align:left">Type</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="hint">No assets here.</td></tr>'}</tbody>
+    </table>`;
+  // Delegated, dataset-driven handlers (no inline JS-string interpolation).
+  target.querySelectorAll('[data-cat-open]').forEach(b =>
+    b.addEventListener('click', () => _catImportBrowse(catalog, b.dataset.fqn)));
+  target.querySelectorAll('[data-cat-pick]').forEach(b =>
+    b.addEventListener('click', () => _catImportPick(b.dataset.fqn, b.dataset.name)));
+  const top = target.querySelector('[data-cat-top]');
+  if (top) top.addEventListener('click', (e) => { e.preventDefault(); _catImportBrowse(catalog, null); });
+}
+
+function _catImportPick(fqn, name) {
+  const suggested = (name || fqn).replace(/[^A-Za-z0-9_]+/g, '_');
+  const body = document.getElementById('cat-browse') || document.getElementById('cat-import-body');
+  body.innerHTML = `
+    <div class="hint">Import <code>${escHtml(fqn)}</code> as an r2g source.</div>
+    <label>Source name <input id="cat-imp-name" value="${escHtml(suggested)}" autocomplete="off" /></label>
+    <div class="err" id="cat-imp-err" style="display:none"></div>
+    <button class="btn" type="button" id="cat-imp-back">← Back</button>
+    <button class="btn primary" type="button" style="float:right" id="cat-imp-go">Import source</button>`;
+  body.querySelector('#cat-imp-back').addEventListener('click', () => _catImportBrowse(_catImport.catalog, null));
+  body.querySelector('#cat-imp-go').addEventListener('click', () => _catImportDo(fqn));
+}
+
+async function _catImportDo(fqn) {
+  const sourceName = document.getElementById('cat-imp-name').value.trim();
+  const err = document.getElementById('cat-imp-err');
+  if (!sourceName) { err.textContent = 'Source name is required.'; err.style.display = ''; return; }
+  let res;
+  try {
+    res = await apiFetch(`/api/catalogs/${encodeURIComponent(_catImport.catalog)}/import-source`, {
+      method: 'POST', body: JSON.stringify({ asset_fqn: fqn, source_name: sourceName }) });
+  } catch (e) { err.textContent = 'Import failed: ' + e.message; err.style.display = ''; return; }
+  closeModal();
+  await loadSources();
+  toast(`Imported '${sourceName}'. Set DB credentials, then snapshot.`, 'success');
+  if (res && res.notes) toast(res.notes, 'info');
 }
 
 function openNewTargetForm(prefill) {
@@ -6408,6 +6617,7 @@ document.addEventListener('DOMContentLoaded', () => {
   applyTheme(currentTheme());
   initExplorer();
   initMappingHighlight();
+  loadCatalogs();
   loadSources();
   loadTargets();
   loadProjects();

@@ -26,7 +26,7 @@ to the maintainers (see [SECURITY.md](SECURITY.md) for the contact channel).
 Requirements:
 
 - Python 3.10+
-- Optional: Docker (for integration tests against PostgreSQL + ArangoDB)
+- Optional: Docker (for integration tests against PostgreSQL / MySQL / SQL Server + ArangoDB)
 
 ```bash
 git clone https://github.com/ArthurKeen/r2g-arango.git
@@ -51,11 +51,41 @@ pytest tests/ -m "not integration"
 ruff check src/ tests/
 
 # Full suite, including integration tests
-# Requires PostgreSQL + ArangoDB reachable per tests/integration/conftest.py
+# Requires PostgreSQL / MySQL / SQL Server + ArangoDB reachable per tests/integration/conftest.py
 pytest tests/ -v
+
+# Type checking
+mypy src/r2g
 ```
 
-A `docker-compose.yml` is provided for the ArangoDB integration test fixture.
+`docker-compose.yml` provisions the integration-test backends (PostgreSQL,
+MySQL, SQL Server, ArangoDB). PostgreSQL and MySQL are seeded from
+`docker/`; the SQL Server schema is seeded by the test fixture (the image has
+no init-script hook):
+
+```bash
+docker compose up -d --wait        # start postgres + mysql + sqlserver + arangodb
+PG_CONN=postgresql://r2g:r2g_test_2026@localhost:5432/northwind \
+MYSQL_CONN=mysql://r2g:r2g_test_2026@localhost:3306/shop \
+MSSQL_CONN='mssql://sa:r2g_Test_2026!@localhost:1433/shop' \
+ARANGO_ENDPOINT=http://localhost:8540 ARANGO_PASSWORD=r2g_test_2026 \
+  pytest tests/integration/ -m integration
+docker compose down -v             # tear down + drop volumes
+```
+
+Integration tests skip automatically when a backend is unreachable, so the
+default `pytest tests/ -m "not integration"` run needs no Docker.
+
+The OpenMetadata catalog e2e (`tests/integration/test_openmetadata_e2e.py`) is
+**not** part of `docker-compose.yml` — OpenMetadata's stack (server + DB +
+search engine) is heavy and best started from its own
+[official quickstart](https://docs.open-metadata.org/latest/quickstart). Point
+the tests at it and they un-skip:
+
+```bash
+OPENMETADATA_ENDPOINT=http://localhost:8585 OPENMETADATA_TOKEN=<jwt> \
+  pytest tests/integration/test_openmetadata_e2e.py -m integration
+```
 
 ## Coding conventions
 

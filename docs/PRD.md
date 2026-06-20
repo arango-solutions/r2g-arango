@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; Phase 5d (ArangoDB-backed catalog) and Phase 7 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration), and Phase 7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -522,11 +522,95 @@ preserves graph layout on lens-only changes per the UI architecture rules.
 
 ---
 
+### Phase 8: External data catalog integration -- Planned
+
+> **Distinct from Phase 5d.** Phase 5d is r2g's *own internal* catalog (its
+> sources / projects / mappings, optionally ArangoDB-backed). Phase 8 connects
+> r2g to *external enterprise data catalogs* (e.g. OpenMetadata, AWS Glue Data
+> Catalog, Atlan) and uses them as an upstream **discovery** layer: browse the
+> catalog, pick a database/schema/table (or file collection / Kafka topic) the
+> user has access to, and register it as an r2g migration source. r2g still
+> connects to the underlying data store itself to perform the migration.
+
+**Motivation.** Enterprises increasingly treat a data catalog as the system of
+record for "what data exists and where." Customers asked whether r2g can read
+those catalogs so a user can select a database from the catalog instead of
+hand-typing connection details. This lowers onboarding friction and slots
+r2g into governed data estates.
+
+#### Research summary (2026-06; see `docs/internal/PLAN-external-data-catalogs.md` for the cited landscape)
+
+A cited research pass evaluated the catalog landscape against r2g's
+"discover-then-connect" need. Key findings (with confidence):
+
+- **OpenMetadata (OSS)** — *high confidence, recommended first integration.*
+  Official type-safe Python SDK over a REST API; a canonical
+  `DatabaseService → Database → Schema → Table → Column` hierarchy covering
+  exactly r2g's sources (PostgreSQL, MySQL, SQL Server, Snowflake) plus Kafka
+  via messaging services; service entities carry real connection metadata
+  (host/port, db name, SSL). Self-hostable via Docker → end-to-end testable.
+- **AWS Glue Data Catalog** — *high confidence.* `Connection` objects store
+  genuine connection metadata (credentials, URI, VPC), reusable across
+  sources/targets. AWS-centric; needs an AWS account (no local e2e).
+- **Atlan** — *high confidence on API.* Mature official `pyatlan` SDK,
+  API-token auth, 400+ asset types (SQL + object-store categories). Commercial;
+  needs a tenant/sandbox.
+- **DataHub (OSS)** — *partial.* Pull-based ingestion + entity-aspect model
+  confirmed, but several read/discovery API claims were **refuted in
+  verification** and must be re-validated before relying on its read API.
+- **Collibra** — *medium / likely governance-only.* GraphQL "Knowledge Graph"
+  API (BETA); no confirmed exposure of underlying-source *connection* metadata,
+  which would limit discover-then-connect.
+- **Common metadata model** — every catalog converges on
+  `Source/Service → Database/Asset → Schema → Table → Column` plus
+  tags/classification and lineage, so a single catalog-agnostic abstraction is
+  feasible.
+
+**Important caveats (do not treat as settled):** (1) Market-share / adoption
+evidence (Gartner/Forrester position, revenue, customers, GitHub stars) was
+**not** established by the research and remains an open question — the ordering
+below rests on *API suitability and testability*, not verified penetration.
+(2) A recurring constraint is that catalogs **encrypt/mask credentials on API
+read**: r2g can read host / db-type / db-name for discovery, but the user must
+still supply credentials at connect time. The design therefore reuses r2g's
+existing `$ENV_VAR` connection-string convention and `r2g secrets` store rather
+than expecting catalogs to hand over secrets.
+
+#### Requirements
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P8.1** | **Catalog provider abstraction** | A `CatalogProvider` Protocol (mirroring `SourceConnector`): `list_data_sources()`, `list_databases()/list_schemas()/list_tables()`, `search(query)`, and `resolve_source(asset_ref) → ResolvedSource`. A normalized `CatalogAsset` model (provider, fqn/id, kind, name, `source_type`, connection hint without secrets, tags, parent refs). A `create_catalog_provider(provider_type, …)` factory with lazy imports, matching `create_source_connector`. | P6.5 |
+| **P8.2** | **Catalog registry in the catalog** | New `CatalogProviderConfig` (provider type, endpoint, auth token) persisted alongside `SourceConfig`/`TargetConfig`, with the auth token encrypted at rest via the existing Fernet layer and redacted in API/log output. CLI: `r2g catalog add/list/remove`. | P8.1, P5d-D4 |
+| **P8.3** | **OpenMetadata provider** | First concrete provider (`r2g-arango[openmetadata]`, official SDK): browse the `DatabaseService → Database → Schema → Table` hierarchy + messaging services (Kafka), map a selected asset to a `source_type` + connection hint. | P8.1 |
+| **P8.4** | **Discover-then-connect bridge** | `r2g catalog browse <name> [--search …]` lists/searches assets; `r2g catalog import-source <catalog> <asset-fqn> --as <source-name>` resolves the asset to a `SourceConfig` and registers it as a normal r2g source (credentials supplied via `$ENV_VAR` / `r2g secrets`, never assumed from the catalog). Everything downstream (`source snapshot`, mapping, `stream`) is unchanged. | P8.3 |
+| **P8.5** | **UI catalog browser** | "Import from catalog" path in the **+ New source** flow: pick a registered catalog → searchable tree (service → database → schema → table) → selection pre-fills the new-source form (host/type/db), leaving credentials to the user. | P8.4 |
+| **P8.6** | **MCP catalog tools** | `list_catalogs`, `catalog_browse`, `catalog_import_source` MCP tools so agents can discover and register sources from a catalog. | P8.4 |
+| **P8.7** | **AWS Glue provider** | Second provider via `boto3`: list Glue databases/tables and resolve `Connection` objects (which carry real connection metadata). | P8.1 |
+| **P8.8** | **Atlan / DataHub provider** | Third provider — Atlan via `pyatlan` (commercial breadth) and/or DataHub (OSS), the latter pending re-validation of its read API. | P8.1 |
+
+#### Phasing
+
+- **8a (foundation + OpenMetadata):** P8.1–P8.4. OSS + dockerizable → unit + end-to-end integration tests in CI.
+- **8b (UI + MCP):** P8.5, P8.6.
+- **8c (Glue):** P8.7. Unit-tested with mocked `boto3`; live verification is a field exercise (needs AWS).
+- **8d (Atlan / DataHub):** P8.8.
+- **Later / out of scope for V1:** *publishing back* to the catalog — registering the resulting ArangoDB graph + column-level lineage as a downstream governed asset. Valuable for governance but a separate write-path effort.
+
+#### Non-functional notes
+
+- **Credentials.** Providers expose host/type/db for discovery; credentials are supplied by the user (env var or `r2g secrets`), consistent with the masked-on-read reality of catalog APIs and r2g's existing security model.
+- **Testability gradient.** OpenMetadata (Docker) is end-to-end testable in CI; Glue/Atlan need cloud accounts and are unit-tested with mocked SDKs plus manual field validation — mirroring how Snowflake is handled today.
+- **No catalog writes in V1.** Phase 8 is read-only against external catalogs.
+
+---
+
 ## 6. Future considerations (Phase 7+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
 
-- **Additional source databases:** MySQL, SQL Server, Oracle, and other relational databases could be added following the same `SourceConnector` pattern established in Phase 6. Each requires a source-specific schema reader, type map, and streaming adapter.
+- **Additional source databases:** MySQL/MariaDB and SQL Server have been added following the `SourceConnector` pattern established in Phase 6; Oracle, SQLite, and others could follow the same way (source-specific schema reader, type map, streaming adapter).
+- **Publishing back to external catalogs:** the inverse of Phase 8 — register the migrated ArangoDB graph (and column-level lineage from source to graph) as a governed downstream asset in the connected catalog. A write-path effort, deferred until the Phase 8 read path proves out.
 - **Ontology derivation (LLM integration):** Use a large language model to analyze the source schema and propose an optimized target ArangoDB graph schema for a given domain. This could suggest which tables should be vertices vs. edges, identify implicit relationships, and recommend denormalization strategies. Feasibility has improved significantly with current model capabilities.
 - **ArangoRDF integration:** Emit data compatible with ArangoRDF so RDF, property graph, and labeled property graph representations can be selected as needed. Requires understanding the target use case (SPARQL queries, knowledge graphs, etc.) to choose the right representation.
 - **Bi-directional synchronization:** Propagate changes from ArangoDB back to the source database. This is an extremely complex problem involving conflict resolution, schema evolution, and transactional consistency across two fundamentally different data models. Should be considered only if a concrete use case demands it.
@@ -570,5 +654,7 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **Naming conventions & rename change-management (Phase 5f)** | **June 2026** | Phase 5f added and implemented. New `src/r2g/naming.py` (`split_identifier` / `convert_identifier` / `apply_naming_convention`) and `NamingConvention` model on `MappingConfig`; `POST /api/projects/{name}/apply-naming` + canvas "Apply naming convention…" form (PascalCase collections, camelCase properties/edges by default). Rename change-management: `Project.loaded_mapping` tracking via `CatalogManager.set_loaded_mapping`; identity-based rename detection in `diff_mappings` (source-table identity for collections, relationship identity for edges) emitting parameterized `ReloadAction`s; hardened `SelectiveReloader` (in-place collection/edge rename, edge reload-from-source, parameter-bound property-rename AQL, named-graph rebuild, idempotency + `_system` guards); `GET /api/projects/{name}/migration-plan` + `POST /api/projects/{name}/migrate`; save-time migration prompt overlay. Reserved-attribute protection (`RESERVED_ATTRIBUTES`) across naming, diff, executor, and `validate_config`. Fixed latent edge `_from`/`_to` + named-graph resolution to use target collection names (`ConfigManager.graph_edge_definitions`, `EdgeTransformer` `from_name`/`to_name`). New `tests/test_naming.py`; expanded diff / executor / config / UI-API tests. 983 passing, 6 skipped. |
 | **Post-demo UX feedback (Phase 5g)** | **June 2026** | Added Phase 5g (Planned) capturing first-demo feedback: light-mode default + dark toggle (P5g.1), simplified top bar via an action overflow menu (P5g.2), on-demand Sources/Targets (P5g.3) and Properties/detail (P5g.4) surfaces instead of permanent sidebars, bidirectional source↔target mapping highlight (P5g.5), an IDE-style project explorer (P5g.6), and progressive-disclosure mapping detail with per-table / per-collection / per-edge expand/collapse and relationship-neighbourhood cascade (P5g.7), an open-target-database action (P5g.8), function-node discoverability (P5g.9), and composite / multi-input function nodes with a read-only `_key` (P5g.10). **Implemented** in `src/r2g/ui/static/index.html`; remaining gaps: the P5g.3 drawer defaults open and the P5g.7 "show only unmapped / only edges" filters are not yet built. |
 | **Snowflake dump + streaming (Phase 6 close-out)** | **April 2026** | P6.3 + P6.4 closed, completing Phase 6. New `r2g.connectors.session.SourceSession` Protocol (`count_rows`, `stream_rows`, `dump_table_to_csv`, `close`) plus concrete `PostgresSession` (`REPEATABLE READ` + server-side cursor + `COPY TO STDOUT` fast path) and `SnowflakeSession` (`BEGIN`/`COMMIT` snapshot + `cursor.fetchmany` streaming + `csv`-module dump). `SourceConnector` gains an `open_session()` method; `StreamingPipeline` is now fully source-agnostic and opens one session per worker (same consistent-snapshot semantics on both backends). `r2g stream --source <name>` resolves a catalog source by `source_type`; the legacy `--pg-conn` still works. New `r2g source dump <name>` subcommand replaces `r2g dump-tables` for catalog-aware dumps. UI `POST /api/projects/{name}/load` dispatches through `create_source_connector` with a 501 + install hint when the Snowflake extra is missing. Backward-compat constructor shim (`StreamingPipeline(pg_conn_string=…)`) keeps existing call sites working. 845 tests passing, 26 new. |
+
+| **External data catalog integration (Phase 8) — Planned** | **June 2026** | Added Phase 8: connect r2g to external enterprise data catalogs (OpenMetadata, AWS Glue, Atlan, …) as an upstream discovery layer (browse → select → import as a source), distinct from the internal Phase 5d catalog. Backed by a cited research pass on catalog API suitability for "discover-then-connect" (`docs/internal/PLAN-external-data-catalogs.md`); OpenMetadata recommended as the first integration (OSS, official SDK, connection metadata, dockerizable for e2e testing). Market-share ranking flagged as unverified. Implementation + test plan drafted for review; no code yet. Also recorded MySQL/MariaDB + SQL Server source connectors shipped since the April baseline. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.

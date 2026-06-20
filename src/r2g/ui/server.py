@@ -23,7 +23,7 @@ from r2g.log import get_logger
 from r2g.security import redact_source_dump as _redact_source
 from r2g.security import redact_target_dump as _redact_target
 from r2g.streaming.pipeline import StreamingPipeline
-from r2g.types import MappingConfig
+from r2g.types import MappingConfig, NameCase
 
 
 def _safe_detail(exc: Exception) -> str:
@@ -964,6 +964,98 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=_safe_detail(e))
 
+    # ── External data catalogs (Phase 8b) ──────────────────────────────
+
+    def _redact_catalog(dump: dict) -> dict:
+        from r2g.security import redact_for_display
+
+        out = dict(dump)
+        out["token"] = redact_for_display(out.get("token") or "")
+        return out
+
+    def _build_catalog_provider(name: str):
+        from r2g.catalogs.base import create_catalog_provider
+
+        cfg = catalog.get_catalog(name)
+        if cfg is None:
+            raise HTTPException(status_code=404, detail=f"Catalog '{name}' not found")
+        token = cfg.token
+        if token and token.startswith("$"):
+            token = os.environ.get(token[1:], token)
+        return create_catalog_provider(
+            cfg.provider_type, cfg.endpoint, name=cfg.name, token=token or None, params=cfg.params
+        )
+
+    @app.get("/api/catalogs")
+    async def list_catalogs():
+        return [_redact_catalog(c.model_dump()) for c in catalog.list_catalogs()]
+
+    @app.post("/api/catalogs", status_code=201)
+    async def add_catalog(body: CatalogCreateRequest):
+        try:
+            cfg = catalog.add_catalog(
+                name=body.name,
+                provider_type=body.provider_type,
+                endpoint=body.endpoint,
+                token=body.token,
+                description=body.description,
+            )
+            return _redact_catalog(cfg.model_dump())
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+
+    @app.delete("/api/catalogs/{name}")
+    async def remove_catalog(name: str):
+        if not catalog.remove_catalog(name):
+            raise HTTPException(status_code=404, detail=f"Catalog '{name}' not found")
+        return {"removed": name}
+
+    @app.get("/api/catalogs/{name}/browse")
+    async def browse_catalog(name: str, path: str | None = None, search: str | None = None):
+        provider = _build_catalog_provider(name)
+        try:
+            if search:
+                assets = provider.search(search)
+            elif path:
+                asset = provider.get_asset(path)
+                if asset is None:
+                    raise HTTPException(status_code=404, detail=f"Asset '{path}' not found")
+                assets = provider.list_children(asset)
+            else:
+                assets = provider.list_data_sources()
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=_safe_detail(e))
+        return [a.model_dump() for a in assets]
+
+    @app.post("/api/catalogs/{name}/import-source", status_code=201)
+    async def import_catalog_source(name: str, body: CatalogImportRequest):
+        provider = _build_catalog_provider(name)
+        try:
+            asset = provider.get_asset(body.asset_fqn)
+            if asset is None:
+                raise HTTPException(status_code=404, detail=f"Asset '{body.asset_fqn}' not found")
+            resolved = provider.resolve_source(asset)
+            source = catalog.add_source(
+                name=body.source_name,
+                source_type=resolved.source_type,
+                connection_string=resolved.connection_string,
+                description=body.description or f"Imported from catalog '{name}' ({body.asset_fqn})",
+                source_params=resolved.source_params,
+            )
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=_safe_detail(e))
+        return {
+            "source": _redact_source(source.model_dump()),
+            "schema_name": resolved.schema_name,
+            "notes": resolved.notes,
+        }
+
     return app
 
 
@@ -1031,9 +1123,27 @@ class NamingConventionRequest(BaseModel):
     Each value is one of ``preserve`` | ``snake`` | ``camel`` | ``pascal``.
     """
 
-    collections: str = "preserve"
-    properties: str = "preserve"
-    edges: str = "preserve"
+    collections: NameCase = "preserve"
+    properties: NameCase = "preserve"
+    edges: NameCase = "preserve"
+
+
+class CatalogCreateRequest(BaseModel):
+    """Parameters for POST /api/catalogs (register an external data catalog)."""
+
+    name: str
+    provider_type: str = "openmetadata"
+    endpoint: str
+    token: str = ""
+    description: str = ""
+
+
+class CatalogImportRequest(BaseModel):
+    """Parameters for POST /api/catalogs/{name}/import-source."""
+
+    asset_fqn: str
+    source_name: str
+    description: str = ""
 
 
 class InferFksRequest(BaseModel):

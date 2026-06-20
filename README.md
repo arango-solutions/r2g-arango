@@ -20,9 +20,10 @@
 `r2g` turns relational schemas into ArangoDB graph schemas mechanically:
 tables become document collections, foreign keys become edges, join tables
 become edges, and types are coerced from PostgreSQL representations into
-proper JSON types. PostgreSQL and Snowflake are supported as sources today;
-the connector layer is designed for additional structured and
-semi-structured sources over time.
+proper JSON types. PostgreSQL, MySQL / MariaDB, SQL Server, and Snowflake are
+supported as relational sources today (plus CSV directories and Kafka topics);
+the connector layer is designed for additional structured and semi-structured
+sources over time.
 
 > **Status — experimental reference implementation.** Useful for evaluating
 > relational-to-graph migration with ArangoDB and as a starting point for
@@ -164,16 +165,21 @@ Pick the extras that match your use case. Combine with commas.
 | Extra        | What it pulls in                                        | When you need it                              |
 | ------------ | ------------------------------------------------------- | --------------------------------------------- |
 | `postgres`   | `psycopg[binary]`                                       | Any PostgreSQL source — schema introspection, dumps, streaming, CDC via logical replication |
+| `mysql`      | `pymysql`                                               | MySQL / MariaDB source — introspection, dumps, streaming |
+| `sqlserver`  | `pymssql`                                               | SQL Server source — introspection, dumps, streaming |
 | `snowflake`  | `snowflake-connector-python`                            | Snowflake source                              |
 | `kafka`      | `confluent-kafka`                                       | Kafka-fed CDC consumer (Debezium or flat JSON) |
 | `ui`         | `fastapi`, `uvicorn[standard]`, `httpx`                 | Local mapping studio (`r2g ui`)               |
 | `mcp`        | `mcp[cli]`                                              | Run r2g as an MCP server for AI assistants    |
+| `openmetadata` | `httpx`                                               | Discover & import sources from an OpenMetadata data catalog (`r2g catalog`) |
 | `all`        | everything above                                        | Don't think about it; want every feature      |
 
 Common recipes:
 
 ```bash
 pipx install 'r2g-arango[postgres,ui]'              # mapping studio against PG
+pipx install 'r2g-arango[mysql,ui]'                 # mapping studio against MySQL/MariaDB
+pipx install 'r2g-arango[sqlserver,ui]'             # mapping studio against SQL Server
 pipx install 'r2g-arango[postgres,kafka]'           # batch load + Kafka CDC worker
 pipx install 'r2g-arango[snowflake,ui]'             # Snowflake source via the studio
 pip   install 'r2g-arango[all]'                     # kitchen sink
@@ -391,8 +397,56 @@ r2g stream --dry-run \
 | `cdc-start` | Start the CDC listener: polls for changes, transforms via mapping config, applies deltas to ArangoDB in near real-time (`--poll-interval`, `--batch-size`, `--create-slot/--no-create-slot`, `--conflict-policy`) |
 | `kafka-start` | Start Kafka CDC consumer: consumes Debezium or flat JSON messages from Kafka topics, transforms via mapping config, applies deltas to ArangoDB (`--brokers`, `--topics`, `--group-id`, `--format`, `--offset-reset`, `--conflict-policy`) |
 | `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, `--on-duplicate`, `--since`, and `--since-column` |
+| `mapping-diff` | Compare two mapping configs and show what ArangoDB changes are needed |
+| `selective-reload` | Compute and execute a selective reload based on mapping changes |
+| `history` | Show load history (`--project`, `--limit`) |
+| `ui` | Start the Relational-to-Graph Studio web UI (requires the `ui` extra) |
+| `mcp` | Start the R2G MCP server for AI agent integration (requires the `mcp` extra) |
+
+### `r2g source` — catalog source management
+
+| Command | Description |
+|---|---|
+| `source add` | Register a new data source (PostgreSQL, MySQL / MariaDB, SQL Server, Snowflake, CSV directory, or Kafka topic) |
+| `source list` | List all registered data sources |
+| `source remove` | Remove a registered data source |
+| `source snapshot` | Introspect the schema from a source and save a snapshot |
+| `source dump` | Dump every table in a cataloged source to CSV files (source-agnostic replacement for `dump-tables`) |
+| `source infer-fks` | Propose foreign keys for a source's latest schema snapshot (`--sample` for value-overlap scoring, `--accept` to write back) |
+
+### `r2g project` — project management
+
+| Command | Description |
+|---|---|
+| `project create` | Create a new project |
+| `project list` | List all projects |
+| `project status` | Show the status of a project (last load, snapshot age, mapping path) |
+
+### `r2g secrets` — catalog credential encryption
+
+| Command | Description |
+|---|---|
+| `secrets init` | Initialize (or replace) the on-disk catalog secret key; respects `R2G_SECRET_KEY` |
+| `secrets migrate` | Force-encrypt every secret in the catalog with the active key |
+| `secrets status` | Show where the active secret key is coming from |
+
+### `r2g catalog` — external data catalog discovery (Phase 8a)
+
+Connect to an external enterprise data catalog (OpenMetadata today) and use it
+to discover and import migration sources ("discover-then-connect"). Credentials
+are **not** read from the catalog — imported sources use `$ENV_VAR` placeholders
+you resolve at connect time.
+
+| Command | Description |
+|---|---|
+| `catalog add` | Register an external catalog (`--type openmetadata --endpoint <url> [--token $OM_TOKEN]`); the token is stored encrypted |
+| `catalog list` | List registered catalogs |
+| `catalog browse` | Browse a catalog: top-level sources, the children of `--path <fqn>`, or `--search <q>` results |
+| `catalog import-source` | Resolve a catalog asset (database / schema / Kafka topic) into a new r2g source (`--as <source-name>`) |
+| `catalog remove` | Remove a registered catalog |
 
 All commands support `--verbose` / `-v` for debug logging and `--json-log` for structured JSON output.
+Run `r2g --version` to print the installed version, and `r2g --install-completion` to set up shell tab-completion (bash/zsh/fish).
 
 ## Mapping configuration
 
@@ -497,7 +551,8 @@ Use `--offset-reset earliest` or `latest` to control where a new consumer group 
 
 This is an experimental reference implementation. The following constraints apply:
 
-- **Supported sources: PostgreSQL, Snowflake, and CSV directories** (Kafka is supported for streaming sync via `kafka-start` and introspection in the catalog). Schema introspection, FK inference, dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) work across these backends through a common `SourceConnector` / `SourceSession` abstraction. Snowflake is gated on the optional `r2g-arango[snowflake]` extra. End-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No MySQL, SQLite, or Oracle support yet.
+- **Supported sources: PostgreSQL, MySQL / MariaDB, SQL Server, Snowflake, and CSV directories** (Kafka is supported for streaming sync via `kafka-start` and introspection in the catalog). Schema introspection, FK inference (with value-overlap sampling on PostgreSQL, MySQL, SQL Server, and CSV), dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) work across these backends through a common `SourceConnector` / `SourceSession` abstraction. MySQL is gated on the optional `r2g-arango[mysql]` extra (pure-Python `pymysql`, also covers MariaDB); SQL Server on `r2g-arango[sqlserver]` (pure-Python `pymssql`); Snowflake on `r2g-arango[snowflake]`. PostgreSQL, MySQL, and SQL Server are verified end-to-end against live servers in the integration suite; end-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No SQLite or Oracle support yet.
+- **External data catalog discovery (Phase 8a):** connect to an [OpenMetadata](https://open-metadata.org) catalog (`r2g-arango[openmetadata]`) to browse its database/schema/Kafka assets and import a selection as an r2g source — see `r2g catalog`. Distinct from r2g's internal catalog; read-only; credentials stay with the user (the catalog supplies host/db, not secrets). AWS Glue and Atlan are planned next (see [docs/PRD.md](docs/PRD.md) Phase 8).
 - **Data validation is opt-in** -- orphaned foreign key references (FK values pointing to non-existent PKs) will produce edges to vertices that don't exist in ArangoDB. Use `validate-data` before import to catch these, but it is not enforced automatically.
 - **Incremental + change capture** -- `stream --since` filters rows by a timestamp column for basic incremental loads; full change capture is available via the CDC (`cdc-start`) and Kafka (`kafka-start`) pipelines with configurable conflict resolution, and `mapping-diff` / `selective-reload` reconcile mapping changes against an already-loaded target.
 - **Self-referential FKs** -- these work but produce edges within the same collection (e.g., `orders.referrer_id -> customers.id` creates `orders_to_customers_referrer_id`). This is correct but may be unexpected.
@@ -510,7 +565,7 @@ This is an experimental reference implementation. The following constraints appl
 pytest tests/ -v
 ```
 
-1009 tests (6 skipped) covering CLI commands (via typer.testing.CliRunner, including CDC and Kafka commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, PK-less table warnings, and reserved-attribute checks), dump reader, node/edge transformers, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (retry logic, error surfacing, single-document CDC ops), the full CDC stack (models, output-plugin parsers, delta transformer, handler, conflict resolution, replication listener), Kafka parsers and consumer, the streaming pipeline (sequential, parallel, filtering, skip-existing, topological/since handling), the expression evaluator (`expressions.py`), the Snowflake and CSV connectors, FK inference (name heuristics + PostgreSQL/CSV value-overlap samplers), naming conventions, mapping diff + selective reload, temporal graph mode (applier, models, queries), credential encryption (`security.py`), the Mapping Studio API (`ui/server.py`) and MCP server, plus end-to-end integration tests against live PG + ArangoDB.
+Over 1,000 tests (6 integration tests skipped without Docker) covering CLI commands (via typer.testing.CliRunner, including CDC and Kafka commands), types (including composite FK serialization), schema diff, config migration, data validation (referential integrity with orphan detection), topological sort (dependency ordering, circular FK detection), config validation (including self-referential FKs, duplicate edge naming, PK-less table warnings, and reserved-attribute checks), dump reader, node/edge transformers, import generators (JSONL and CSV-direct), visualizer, ArangoDB writer (retry logic, error surfacing, single-document CDC ops), the full CDC stack (models, output-plugin parsers, delta transformer, handler, conflict resolution, replication listener), Kafka parsers and consumer, the streaming pipeline (sequential, parallel, filtering, skip-existing, topological/since handling), the expression evaluator (`expressions.py`), the MySQL, SQL Server, Snowflake, and CSV connectors, FK inference (name heuristics + PostgreSQL/MySQL/SQL Server/CSV value-overlap samplers), naming conventions, mapping diff + selective reload, temporal graph mode (applier, models, queries), credential encryption (`security.py`), the Mapping Studio API (`ui/server.py`) and MCP server, plus end-to-end integration tests against live PostgreSQL / MySQL / SQL Server + ArangoDB.
 
 To run unit tests only (no Docker required):
 
@@ -551,6 +606,22 @@ provided templates so reports include the context needed to reproduce.
 
 Please do **not** report security vulnerabilities through public issues.
 See [SECURITY.md](SECURITY.md) for the responsible disclosure process.
+
+### Hardening the Studio UI and MCP server
+
+The Studio UI and MCP servers are built for frictionless local use: bound to
+loopback they need no token. When exposing either on a shared host, set these
+environment variables (see [.env.example](.env.example)):
+
+| Variable | Effect |
+|---|---|
+| `R2G_API_TOKEN` | Require `Authorization: Bearer <token>` on the UI API and the MCP SSE transport. A token is auto-generated and printed when binding to a non-loopback address. |
+| `R2G_CORS_ORIGINS` | Comma-separated allow-list of CORS origins for the UI (default: same-origin only). |
+| `R2G_CSV_BASE_DIR` | Confine CSV sources to a trusted directory tree; paths outside it (including via symlinks/`..`) are rejected. |
+| `R2G_SECRET_KEY` | Fernet key for encrypting catalog credentials at rest (else `~/.r2g/secret.key`). |
+
+The MCP `stdio` transport (Cursor / Claude Desktop) is local-only and needs no
+token; only the network-exposed SSE transport is gated.
 
 ## License
 

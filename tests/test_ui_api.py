@@ -117,12 +117,12 @@ class TestSourceEndpoints:
 
     def test_add_source_rejects_unsupported_type(self, client):
         resp = client.post("/api/sources", json={
-            "name": "my_mysql",
-            "source_type": "mysql",
-            "connection_string": "mysql://u:p@h/db",
+            "name": "my_oracle",
+            "source_type": "oracle",
+            "connection_string": "oracle://u:p@h/db",
         })
         assert resp.status_code in (400, 409)
-        assert "mysql" in resp.text.lower() or "unsupported" in resp.text.lower()
+        assert "oracle" in resp.text.lower() or "unsupported" in resp.text.lower()
 
     def test_snapshot_snowflake_without_driver_returns_501(self, client, monkeypatch):
         import sys
@@ -801,3 +801,100 @@ class TestStaticAssetSafety:
             if pat.search(ln) and not ln.lstrip().startswith("//")
         ]
         assert offenders == [], offenders
+
+
+class TestCatalogEndpoints:
+    """External data catalog discovery endpoints (Phase 8b)."""
+
+    def _fake_provider(self):
+        from r2g.catalogs.base import CatalogAsset, ResolvedSource
+
+        class _Fake:
+            provider_type = "openmetadata"
+            name = "corp"
+
+            def list_data_sources(self):
+                return [CatalogAsset(
+                    provider="corp", provider_type="openmetadata", fqn="pg",
+                    kind="service", name="pg", source_type="postgresql",
+                )]
+
+            def list_children(self, asset):
+                return [CatalogAsset(
+                    provider="corp", provider_type="openmetadata", fqn="pg.shop",
+                    kind="database", name="shop", source_type="postgresql",
+                )]
+
+            def search(self, q, *, limit=50):
+                return self.list_children(None)
+
+            def get_asset(self, fqn):
+                return CatalogAsset(
+                    provider="corp", provider_type="openmetadata", fqn=fqn,
+                    kind="database", name="shop", source_type="postgresql",
+                )
+
+            def resolve_source(self, asset):
+                return ResolvedSource(
+                    source_type="postgresql",
+                    connection_string="postgresql://$R2G_DB_USER:$R2G_DB_PASSWORD@h:5432/shop",
+                    notes="set creds via env",
+                )
+
+        return _Fake()
+
+    def test_add_and_list_catalog_redacts_token(self, client):
+        resp = client.post("/api/catalogs", json={
+            "name": "corp", "provider_type": "openmetadata",
+            "endpoint": "http://localhost:8585", "token": "supersecret",
+        })
+        assert resp.status_code == 201
+        listing = client.get("/api/catalogs").json()
+        assert listing[0]["name"] == "corp"
+        assert "supersecret" not in listing[0]["token"]  # redacted
+
+    def test_add_unsupported_type_409(self, client):
+        resp = client.post("/api/catalogs", json={
+            "name": "x", "provider_type": "collibra", "endpoint": "http://h",
+        })
+        assert resp.status_code == 409
+
+    def test_remove_catalog(self, client):
+        client.post("/api/catalogs", json={
+            "name": "corp", "provider_type": "openmetadata", "endpoint": "http://h:8585",
+        })
+        assert client.delete("/api/catalogs/corp").status_code == 200
+        assert client.delete("/api/catalogs/corp").status_code == 404
+
+    def test_browse(self, client, monkeypatch):
+        client.post("/api/catalogs", json={
+            "name": "corp", "provider_type": "openmetadata", "endpoint": "http://h:8585",
+        })
+        monkeypatch.setattr(
+            "r2g.catalogs.base.create_catalog_provider",
+            lambda *a, **k: self._fake_provider(),
+        )
+        resp = client.get("/api/catalogs/corp/browse")
+        assert resp.status_code == 200
+        assert resp.json()[0]["name"] == "pg"
+
+    def test_browse_unknown_catalog_404(self, client):
+        assert client.get("/api/catalogs/nope/browse").status_code == 404
+
+    def test_import_source_creates_source(self, client, monkeypatch):
+        client.post("/api/catalogs", json={
+            "name": "corp", "provider_type": "openmetadata", "endpoint": "http://h:8585",
+        })
+        monkeypatch.setattr(
+            "r2g.catalogs.base.create_catalog_provider",
+            lambda *a, **k: self._fake_provider(),
+        )
+        resp = client.post("/api/catalogs/corp/import-source", json={
+            "asset_fqn": "pg.shop", "source_name": "shop_src",
+        })
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["source"]["name"] == "shop_src"
+        # the imported source is now a normal source
+        names = [s["name"] for s in client.get("/api/sources").json()]
+        assert "shop_src" in names

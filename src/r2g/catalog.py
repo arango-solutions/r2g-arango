@@ -57,6 +57,24 @@ class TargetConfig(BaseModel):
     updated_at: datetime
 
 
+class CatalogProviderConfig(BaseModel):
+    """A registered *external* data catalog (PRD Phase 8).
+
+    Distinct from r2g's own internal catalog: this is a connection to an
+    upstream enterprise catalog (e.g. OpenMetadata) used for source discovery.
+    The ``token`` is encrypted at rest, like source/target secrets.
+    """
+
+    name: str
+    provider_type: str = "openmetadata"
+    endpoint: str
+    token: str = ""
+    params: dict[str, Any] = Field(default_factory=dict)
+    description: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
 class SchemaSnapshot(BaseModel):
     id: str
     source_name: str
@@ -105,6 +123,7 @@ class Catalog(BaseModel):
     projects: dict[str, Project] = Field(default_factory=dict)
     load_history: list[LoadRecord] = Field(default_factory=list)
     targets: dict[str, TargetConfig] = Field(default_factory=dict)
+    catalog_providers: dict[str, CatalogProviderConfig] = Field(default_factory=dict)
 
 
 def _now() -> datetime:
@@ -121,6 +140,11 @@ class CatalogManager:
         self._path = self._dir / "catalog.json"
         self._cipher = CredentialCipher(load_secret_key(self._dir))
 
+    @property
+    def dir(self) -> Path:
+        """The directory backing this catalog (the root for project files)."""
+        return self._dir
+
     def _load(self) -> Catalog:
         if not self._path.exists():
             return Catalog()
@@ -131,6 +155,9 @@ class CatalogManager:
         for tgt in catalog.targets.values():
             if self._cipher.is_encrypted(tgt.password):
                 tgt.password = self._cipher.decrypt(tgt.password)
+        for cat in catalog.catalog_providers.values():
+            if cat.token and self._cipher.is_encrypted(cat.token):
+                cat.token = self._cipher.decrypt(cat.token)
         return catalog
 
     def _save(self, catalog: Catalog) -> None:
@@ -143,6 +170,10 @@ class CatalogManager:
             pw = tgt.get("password", "")
             if pw and not self._cipher.is_encrypted(pw):
                 tgt["password"] = self._cipher.encrypt(pw)
+        for cat in payload.get("catalog_providers", {}).values():
+            tok = cat.get("token", "")
+            if tok and not self._cipher.is_encrypted(tok):
+                cat["token"] = self._cipher.encrypt(tok)
         self._path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
         # Catalog holds encrypted secrets; keep it owner-only readable.
         try:
@@ -164,12 +195,11 @@ class CatalogManager:
         # Catalog accepts any *known* source type so future types
         # (csv, kafka) can be pre-registered; the connector factory
         # remains the strict gate on what we can actually introspect.
-        # Single source of truth for the type list lives in connectors.base.
-        from r2g.connectors.base import SUPPORTED_SOURCE_TYPES
+        # Single source of truth for the type list + aliasing lives in
+        # connectors.base (folds postgres/pg → postgresql, mariadb → mysql).
+        from r2g.connectors.base import SUPPORTED_SOURCE_TYPES, normalize_source_type
 
-        normalized = (source_type or "").strip().lower()
-        if normalized in ("postgres", "pg"):
-            normalized = "postgresql"
+        normalized = normalize_source_type(source_type) if (source_type or "").strip() else ""
         if normalized not in SUPPORTED_SOURCE_TYPES:
             raise ValueError(
                 f"Unsupported source_type '{source_type}'. "
@@ -252,6 +282,60 @@ class CatalogManager:
         del catalog.sources[name]
         self._save(catalog)
         logger.info("source_removed", name=name, cascade=cascade)
+        return True
+
+    # ── External catalog providers (Phase 8) ─────────────────────────
+
+    def add_catalog(
+        self,
+        name: str,
+        provider_type: str,
+        endpoint: str,
+        *,
+        token: str = "",
+        params: dict[str, Any] | None = None,
+        description: str = "",
+    ) -> CatalogProviderConfig:
+        from r2g.catalogs.base import SUPPORTED_CATALOG_TYPES, normalize_catalog_type
+
+        normalized = normalize_catalog_type(provider_type)
+        if normalized not in SUPPORTED_CATALOG_TYPES:
+            raise ValueError(
+                f"Unsupported catalog provider type '{provider_type}'. "
+                f"Expected one of: {', '.join(SUPPORTED_CATALOG_TYPES)}."
+            )
+        catalog = self._load()
+        if name in catalog.catalog_providers:
+            raise ValueError(f"Catalog provider '{name}' already exists")
+        now = _now()
+        provider = CatalogProviderConfig(
+            name=name,
+            provider_type=normalized,
+            endpoint=endpoint,
+            token=token,
+            params=params or {},
+            description=description,
+            created_at=now,
+            updated_at=now,
+        )
+        catalog.catalog_providers[name] = provider
+        self._save(catalog)
+        logger.info("catalog_added", name=name, provider_type=normalized)
+        return provider
+
+    def list_catalogs(self) -> list[CatalogProviderConfig]:
+        return list(self._load().catalog_providers.values())
+
+    def get_catalog(self, name: str) -> CatalogProviderConfig | None:
+        return self._load().catalog_providers.get(name)
+
+    def remove_catalog(self, name: str) -> bool:
+        catalog = self._load()
+        if name not in catalog.catalog_providers:
+            return False
+        del catalog.catalog_providers[name]
+        self._save(catalog)
+        logger.info("catalog_removed", name=name)
         return True
 
     # ── Snapshots ────────────────────────────────────────────────────

@@ -2153,6 +2153,187 @@ def source_infer_fks(
             console.print("[dim]No new FKs to accept.[/dim]")
 
 
+# ── External data catalog commands (Phase 8) ─────────────────────────
+
+
+def _resolve_env_ref(value: str) -> str:
+    """Resolve a ``$ENV_VAR`` reference to its environment value.
+
+    A leading ``$`` means "read this from the environment" (same convention as
+    source connection strings), so secrets can stay out of the catalog. A plain
+    value is returned unchanged.
+    """
+    if value and value.startswith("$"):
+        return os.environ.get(value[1:], value)
+    return value
+
+
+def _get_catalog_provider(mgr, name: str):
+    """Build a live catalog provider from a registered catalog config, or exit."""
+    from r2g.catalogs.base import create_catalog_provider
+
+    cfg = mgr.get_catalog(name)
+    if cfg is None:
+        console.print(f"[red]Catalog '{name}' not found.[/red] Register it with `r2g catalog add`.")
+        raise typer.Exit(code=1)
+    token = _resolve_env_ref(cfg.token) if cfg.token else None
+    return create_catalog_provider(
+        cfg.provider_type,
+        cfg.endpoint,
+        name=cfg.name,
+        token=token,
+        params=cfg.params,
+    )
+
+
+@catalog_app.command("add")
+def catalog_add(
+    name: str = typer.Option(..., "--name", help="Local name for this catalog connection"),
+    provider_type: str = typer.Option("openmetadata", "--type", help="Catalog type: openmetadata"),
+    endpoint: str = typer.Option(..., "--endpoint", help="Catalog base URL, e.g. http://localhost:8585"),
+    token: str = typer.Option(
+        "", "--token", help="API token (or $ENV_VAR reference); stored encrypted"
+    ),
+    description: str = typer.Option("", "--description", help="Description"),
+) -> None:
+    """Register an external data catalog for source discovery."""
+    try:
+        mgr = _get_catalog()
+        # Token stored as-is (may be a $ENV_VAR reference, resolved at use time).
+        provider = mgr.add_catalog(
+            name, provider_type, endpoint, token=token, description=description
+        )
+        console.print(f"[green]Catalog '{provider.name}' added[/green] ({provider.provider_type}).")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        log.exception("catalog_add_failed")
+        console.print(f"[red]Failed to add catalog:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
+@catalog_app.command("list")
+def catalog_list() -> None:
+    """List registered external data catalogs."""
+    mgr = _get_catalog()
+    catalogs = mgr.list_catalogs()
+    if not catalogs:
+        console.print("[dim]No catalogs registered.[/dim] Add one with `r2g catalog add`.")
+        return
+    table = RichTable(title="External Data Catalogs")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="magenta")
+    table.add_column("Endpoint")
+    table.add_column("Description")
+    for c in catalogs:
+        table.add_row(c.name, c.provider_type, c.endpoint, c.description)
+    console.print(table)
+
+
+@catalog_app.command("browse")
+def catalog_browse(
+    name: str = typer.Argument(..., help="Registered catalog name"),
+    path: Optional[str] = typer.Option(
+        None, "--path", help="Asset FQN to descend into (e.g. service.database)"
+    ),
+    search: Optional[str] = typer.Option(None, "--search", help="Search tables by text"),
+) -> None:
+    """Browse a catalog: top-level sources, the children of --path, or --search results."""
+    mgr = _get_catalog()
+    provider = _get_catalog_provider(mgr, name)
+    try:
+        if search:
+            assets = provider.search(search)
+        elif path:
+            asset = provider.get_asset(path)
+            if asset is None:
+                console.print(f"[red]Asset '{path}' not found in catalog '{name}'.[/red]")
+                raise typer.Exit(code=1)
+            assets = provider.list_children(asset)
+        else:
+            assets = provider.list_data_sources()
+    except Exception as e:
+        log.exception("catalog_browse_failed")
+        console.print(f"[red]Catalog browse failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    if not assets:
+        console.print("[dim]No assets found.[/dim]")
+        return
+    table = RichTable(title=f"Catalog: {name}")
+    table.add_column("Kind", style="magenta")
+    table.add_column("Name", style="cyan")
+    table.add_column("Source type")
+    table.add_column("FQN")
+    for a in assets:
+        table.add_row(a.kind, a.name, a.source_type or "—", a.fqn)
+    console.print(table)
+
+
+@catalog_app.command("import-source")
+def catalog_import_source(
+    name: str = typer.Argument(..., help="Registered catalog name"),
+    asset_fqn: str = typer.Argument(..., help="Asset FQN to import (database / schema / topic)"),
+    source_name: str = typer.Option(..., "--as", help="Name for the new r2g source"),
+    description: str = typer.Option("", "--description", help="Description for the new source"),
+) -> None:
+    """Resolve a catalog asset into an r2g source (discover-then-connect).
+
+    Credentials are NOT taken from the catalog: the generated connection string
+    uses ``$R2G_DB_USER`` / ``$R2G_DB_PASSWORD`` placeholders that r2g resolves
+    from the environment at connect time.
+    """
+    mgr = _get_catalog()
+    provider = _get_catalog_provider(mgr, name)
+    try:
+        asset = provider.get_asset(asset_fqn)
+        if asset is None:
+            console.print(f"[red]Asset '{asset_fqn}' not found in catalog '{name}'.[/red]")
+            raise typer.Exit(code=1)
+        resolved = provider.resolve_source(asset)
+        mgr.add_source(
+            source_name,
+            resolved.source_type,
+            resolved.connection_string,
+            description=description or f"Imported from catalog '{name}' ({asset_fqn})",
+            source_params=resolved.source_params,
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        log.exception("catalog_import_failed")
+        console.print(f"[red]Import failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[green]Source '{source_name}' imported[/green] "
+        f"({resolved.source_type}) from catalog '{name}'."
+    )
+    console.print(f"  Connection: [dim]{resolved.connection_string}[/dim]")
+    if resolved.notes:
+        console.print(f"  [yellow]{resolved.notes}[/yellow]")
+    if resolved.schema_name:
+        console.print(
+            f"  Schema: [cyan]{resolved.schema_name}[/cyan] "
+            f"(pass [bold]--pg-schema {resolved.schema_name}[/bold] to `source snapshot`)."
+        )
+
+
+@catalog_app.command("remove")
+def catalog_remove(
+    name: str = typer.Argument(..., help="Catalog name to remove"),
+) -> None:
+    """Remove a registered external data catalog."""
+    mgr = _get_catalog()
+    if mgr.remove_catalog(name):
+        console.print(f"[green]Catalog '{name}' removed.[/green]")
+    else:
+        console.print(f"[yellow]Catalog '{name}' not found.[/yellow]")
+        raise typer.Exit(code=1)
+
+
 # ── Project commands ─────────────────────────────────────────────────
 
 

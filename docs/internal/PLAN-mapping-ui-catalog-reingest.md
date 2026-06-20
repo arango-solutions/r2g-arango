@@ -1,5 +1,11 @@
 # Multi-Agent Implementation Plan: Mapping UI + Data Catalog + Selective Re-ingestion
 
+> **ARCHIVED (June 2026).** This plan is historical and significantly out of
+> date: test counts, command names (`reload --changes-only` is now
+> `selective-reload`), package naming, and UI wording have all moved on.
+> It is kept for design rationale only — see `docs/PRD.md` for current
+> status and `PLAN-code-quality-remediation.md` for the active working doc.
+
 ## Context
 
 R2G is a Python CLI tool (`src/r2g/`) that migrates relational databases (PostgreSQL) to ArangoDB graphs. It supports file-based ETL, direct streaming, CDC (logical replication), and Kafka (Debezium). The codebase uses Typer (CLI), Pydantic (models), python-arango, psycopg, structlog, Rich, and D3.js (visualizer). There are 502 unit tests.
