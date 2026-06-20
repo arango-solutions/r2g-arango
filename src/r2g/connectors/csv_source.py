@@ -26,6 +26,7 @@ can be streamed into ArangoDB exactly like a relational source.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -38,6 +39,37 @@ from r2g.naming import singularize
 from r2g.types import Column, Schema, Table
 
 logger = get_logger(__name__)
+
+# Operators running the Studio UI / MCP server on a shared host can set this
+# to confine CSV sources to a trusted directory tree. When unset (the default,
+# matching the frictionless local-CLI posture) any path is accepted.
+CSV_BASE_DIR_ENV = "R2G_CSV_BASE_DIR"
+
+
+class CsvSourceError(RuntimeError):
+    """Raised when a CSV source directory is invalid or outside the jail."""
+
+
+def resolve_source_directory(connection_string: str) -> Path:
+    """Resolve a CSV source path, enforcing ``R2G_CSV_BASE_DIR`` when set.
+
+    The directory is ``expanduser``-ed for the returned value, but the jail
+    check resolves symlinks and ``..`` on both the target and the base dir
+    first so the confinement cannot be escaped. With no base dir configured,
+    the path is returned unchanged.
+    """
+    directory = Path(connection_string).expanduser()
+    base = os.environ.get(CSV_BASE_DIR_ENV)
+    if not base:
+        return directory
+    base_resolved = Path(base).expanduser().resolve()
+    target_resolved = directory.resolve()
+    if target_resolved != base_resolved and base_resolved not in target_resolved.parents:
+        raise CsvSourceError(
+            f"CSV source directory '{target_resolved}' is outside the allowed "
+            f"base directory '{base_resolved}' (set by {CSV_BASE_DIR_ENV})."
+        )
+    return directory
 
 # Polars dtype "base name" -> source-agnostic type string understood by
 # r2g.config.DEFAULT_TYPE_MAP / pg_type_to_json_type.
@@ -102,7 +134,7 @@ class CsvConnector:
         self.delimiter = delimiter
         self.has_header = has_header
         self.sample_rows = sample_rows
-        self.directory = Path(connection_string).expanduser()
+        self.directory = resolve_source_directory(connection_string)
 
     def _table_files(self) -> dict[str, Path]:
         if not self.directory.is_dir():
@@ -227,7 +259,7 @@ class CsvSession:
         self.schema_name = schema_name
         self.delimiter = delimiter
         self.has_header = has_header
-        self.directory = Path(connection_string).expanduser()
+        self.directory = resolve_source_directory(connection_string)
 
     def _resolve(self, table: str) -> Path:
         path = resolve_csv_table_path(self.directory, table)

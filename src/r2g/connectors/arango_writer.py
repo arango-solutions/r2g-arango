@@ -7,9 +7,10 @@ without writing intermediate files to disk.
 from __future__ import annotations
 
 import time
-from typing import Any, Sequence
+from typing import Any, Sequence, cast
 
 from arango import ArangoClient
+from arango.cursor import Cursor
 from arango.database import StandardDatabase
 from arango.exceptions import (
     ArangoServerError,
@@ -154,11 +155,16 @@ class ArangoWriter:
         for attempt in range(self.max_retries + 1):
             try:
                 coll = self.db.collection(collection_name)
-                result = coll.import_bulk(
-                    documents,
-                    on_duplicate=on_duplicate,
-                    halt_on_error=False,
-                    details=True,
+                # cast: the sync database returns the result dict directly
+                # (python-arango's Result union covers async/batch execution).
+                result = cast(
+                    "dict[str, Any]",
+                    coll.import_bulk(
+                        documents,
+                        on_duplicate=on_duplicate,
+                        halt_on_error=False,
+                        details=True,
+                    ),
                 )
                 error_count = result.get("errors", 0)
                 logger.debug(
@@ -312,7 +318,7 @@ class ArangoWriter:
         that fall outside the local evaluator's subset (P5c.1.5).
         """
         cursor = self.db.aql.execute(query, bind_vars=bind_vars or {})
-        return list(cursor)
+        return list(cast("Cursor", cursor))
 
     def drop_named_graph(self, graph_name: str) -> bool:
         """Drop a named graph definition, keeping its collections intact.

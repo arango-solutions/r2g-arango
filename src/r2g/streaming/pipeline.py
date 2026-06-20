@@ -15,7 +15,7 @@ import datetime
 import decimal
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional, cast
 
 from r2g.connectors.arango_writer import ArangoWriter, ImportBatchError
 
@@ -153,7 +153,9 @@ class StreamingPipeline:
         try:
             db = writer.db
             if db.has_collection(collection_name):
-                count = db.collection(collection_name).count()
+                # cast: the sync database returns the count directly
+                # (python-arango's Result union covers async/batch execution).
+                count = cast(int, db.collection(collection_name).count())
                 if count > 0:
                     logger.info(
                         "skip_existing_collection",
@@ -554,7 +556,7 @@ class StreamingPipeline:
         graph_name: str | None = None,
         on_progress: ProgressFn | None = None,
         on_event: EventFn | None = None,
-    ) -> dict[str, list[tuple[str, int]]]:
+    ) -> dict[str, Any]:
         """Execute the full streaming pipeline.
 
         Single-worker mode opens one :class:`SourceSession` and reads

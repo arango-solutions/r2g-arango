@@ -294,23 +294,39 @@ class TestNamingConventionRenames:
             "orders": _base_config().collections["orders"],
         }
         new_collections = {
-            "users": CollectionMapping(source_table="users", target_collection="users", field_mappings={"id": "_key"}),
+            "users": CollectionMapping(
+                source_table="users", target_collection="users", field_mappings={"id": "_key"}
+            ),
             "orders": _base_config().collections["orders"],
         }
-        plan = diff_mappings(_base_config(collections=old_collections), _base_config(collections=new_collections), minimal_schema)
+        plan = diff_mappings(
+            _base_config(collections=old_collections),
+            _base_config(collections=new_collections),
+            minimal_schema,
+        )
         renames = [a for a in plan.actions if a.action_type == "aql_update"]
         assert renames == []
 
     def test_field_mapping_changed_detected(self, minimal_schema):
         old_collections = {
-            "users": CollectionMapping(source_table="users", target_collection="users", field_mappings={"email": "mail"}),
+            "users": CollectionMapping(
+                source_table="users", target_collection="users", field_mappings={"email": "mail"}
+            ),
             "orders": _base_config().collections["orders"],
         }
         new_collections = {
-            "users": CollectionMapping(source_table="users", target_collection="users", field_mappings={"email": "emailAddress"}),
+            "users": CollectionMapping(
+                source_table="users",
+                target_collection="users",
+                field_mappings={"email": "emailAddress"},
+            ),
             "orders": _base_config().collections["orders"],
         }
-        plan = diff_mappings(_base_config(collections=old_collections), _base_config(collections=new_collections), minimal_schema)
+        plan = diff_mappings(
+            _base_config(collections=old_collections),
+            _base_config(collections=new_collections),
+            minimal_schema,
+        )
         changed = [c for c in plan.changes if c.change_type == "field_mapping_changed"]
         assert len(changed) == 1
         action = [a for a in plan.actions if a.action_type == "aql_update"][0]

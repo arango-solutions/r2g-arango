@@ -17,9 +17,14 @@ keywords = [
     "graph",
     "graph-database",
     "postgresql",
+    "mysql",
+    "mariadb",
+    "sqlserver",
     "snowflake",
     "cdc",
     "kafka",
+    "data-catalog",
+    "openmetadata",
     "relational-to-graph",
     "data-pipeline",
 ]
@@ -40,16 +45,18 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
+# Upper bounds track the next major version (next minor for 0.x packages
+# that follow semver loosely) to avoid silent breaking upgrades.
 dependencies = [
-    "typer[all]>=0.15.0",
-    "python-arango>=7.5.0",
-    "pydantic>=2.5.0",
-    "rich>=13.0.0",
-    "polars>=1.0.0",
-    "pyyaml>=6.0",
-    "structlog>=24.1.0",
-    "python-dotenv>=1.0.0",
-    "cryptography>=42.0.0",
+    "typer[all]>=0.15.0,<1.0",
+    "python-arango>=7.5.0,<9.0",
+    "pydantic>=2.5.0,<3.0",
+    "rich>=13.0.0,<16.0",
+    "polars>=1.0.0,<2.0",
+    "pyyaml>=6.0,<7.0",
+    "structlog>=24.1.0,<26.0",
+    "python-dotenv>=1.0.0,<2.0",
+    "cryptography>=42.0.0,<49.0",
 ]
 
 # Optional extras let users install only what they need:
@@ -57,14 +64,17 @@ dependencies = [
 #   pip  install r2g-arango[kafka]         # headless Kafka CDC worker
 #   pip  install r2g-arango[all]           # everything (postgres + snowflake + kafka + ui + mcp)
 [project.optional-dependencies]
-postgres = ["psycopg[binary]>=3.1.0"]
-snowflake = ["snowflake-connector-python>=3.0.0"]
-kafka = ["confluent-kafka>=2.3.0"]
-ui = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0", "httpx>=0.27.0"]
-mcp = ["mcp[cli]>=1.20.0"]
-all = ["r2g-arango[postgres,snowflake,kafka,ui,mcp]"]
+postgres = ["psycopg[binary]>=3.1.0,<4.0"]
+mysql = ["pymysql>=1.1.0,<2.0"]
+sqlserver = ["pymssql>=2.2.0,<3.0"]
+snowflake = ["snowflake-connector-python>=3.0.0,<4.0"]
+kafka = ["confluent-kafka>=2.3.0,<3.0"]
+ui = ["fastapi>=0.110.0,<1.0", "uvicorn[standard]>=0.27.0,<1.0", "httpx>=0.27.0,<1.0"]
+mcp = ["mcp[cli]>=1.20.0,<2.0"]
+openmetadata = ["httpx>=0.27.0,<1.0"]
+all = ["r2g-arango[postgres,mysql,sqlserver,snowflake,kafka,ui,mcp,openmetadata]"]
 test = ["pytest>=8.0", "pytest-cov>=5.0"]
-dev = ["ruff>=0.4"]
+dev = ["ruff>=0.4", "mypy>=1.10"]
 
 [project.urls]
 Homepage = "https://github.com/ArthurKeen/r2g-arango"
@@ -91,6 +101,21 @@ testpaths = ["tests"]
 markers = [
     "integration: requires live PostgreSQL and ArangoDB (deselect with -m 'not integration')",
 ]
+
+[tool.coverage.run]
+source = ["r2g"]
+
+[tool.coverage.report]
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [tool.ruff]
 target-version = "py310"

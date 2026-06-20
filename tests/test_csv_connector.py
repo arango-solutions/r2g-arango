@@ -135,3 +135,61 @@ class TestCsvPrimaryKeyHeuristic:
     def test_no_key_like_column_yields_no_pk(self, tmp_path):
         (tmp_path / "logs.csv").write_text("msg,level\nhi,info\n", encoding="utf-8")
         assert CsvConnector(str(tmp_path)).get_schema().tables["logs"].primary_key == []
+
+
+class TestCsvBaseDirJail:
+    """R2G_CSV_BASE_DIR confines CSV sources to a trusted tree (opt-in)."""
+
+    def test_unset_allows_any_directory(self, csv_dir, monkeypatch):
+        monkeypatch.delenv("R2G_CSV_BASE_DIR", raising=False)
+        # No jail configured -> behaves exactly as before.
+        schema = CsvConnector(str(csv_dir)).get_schema()
+        assert "customers" in schema.tables
+
+    def test_inside_base_dir_allowed(self, tmp_path, monkeypatch):
+        base = tmp_path / "trusted"
+        sub = base / "src"
+        sub.mkdir(parents=True)
+        (sub / "t.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+        monkeypatch.setenv("R2G_CSV_BASE_DIR", str(base))
+        schema = CsvConnector(str(sub)).get_schema()
+        assert "t" in schema.tables
+
+    def test_base_dir_itself_allowed(self, tmp_path, monkeypatch):
+        base = tmp_path / "trusted"
+        base.mkdir()
+        (base / "t.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+        monkeypatch.setenv("R2G_CSV_BASE_DIR", str(base))
+        assert "t" in CsvConnector(str(base)).get_schema().tables
+
+    def test_outside_base_dir_rejected(self, tmp_path, monkeypatch):
+        from r2g.connectors.csv_source import CsvSourceError
+
+        base = tmp_path / "trusted"
+        base.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        monkeypatch.setenv("R2G_CSV_BASE_DIR", str(base))
+        with pytest.raises(CsvSourceError, match="outside the allowed base"):
+            CsvConnector(str(outside))
+
+    def test_traversal_escape_rejected(self, tmp_path, monkeypatch):
+        from r2g.connectors.csv_source import CsvSourceError
+
+        base = tmp_path / "trusted"
+        base.mkdir()
+        monkeypatch.setenv("R2G_CSV_BASE_DIR", str(base))
+        with pytest.raises(CsvSourceError):
+            # ../.. climbs out of the jail even though it is written relative to it
+            CsvConnector(str(base / ".." / ".." / "etc"))
+
+    def test_session_also_jailed(self, tmp_path, monkeypatch):
+        from r2g.connectors.csv_source import CsvSession, CsvSourceError
+
+        base = tmp_path / "trusted"
+        base.mkdir()
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        monkeypatch.setenv("R2G_CSV_BASE_DIR", str(base))
+        with pytest.raises(CsvSourceError):
+            CsvSession(str(outside))

@@ -179,7 +179,7 @@ class PostgresConnector:
         """Open a REPEATABLE READ read-only session for streaming / dumps."""
         return PostgresSession(self.connection_string, schema_name=self.schema_name)
 
-    def _process_table(self, cur: psycopg.Cursor, table_name: str) -> Table:
+    def _process_table(self, cur: "psycopg.Cursor[dict[str, Any]]", table_name: str) -> Table:
         cur.execute(
             """
             SELECT column_name, data_type, is_nullable
@@ -277,10 +277,10 @@ class PostgresSession:
     def __init__(self, connection_string: str, *, schema_name: str = "public") -> None:
         self.connection_string = connection_string
         self.schema_name = schema_name
-        self._conn: Optional[psycopg.Connection] = None
+        self._conn: Optional["psycopg.Connection[dict[str, Any]]"] = None
 
     @property
-    def connection(self) -> psycopg.Connection:
+    def connection(self) -> "psycopg.Connection[dict[str, Any]]":
         if self._conn is None:
             self._conn = psycopg.connect(
                 self.connection_string,

@@ -23,10 +23,42 @@ from r2g.types import EdgeDefinition, Schema
 app = typer.Typer(help="R2G-ETL: Relational to Graph Pipeline")
 source_app = typer.Typer(help="Manage data sources")
 project_app = typer.Typer(help="Manage projects")
+catalog_app = typer.Typer(help="Connect to external data catalogs (discovery)")
 app.add_typer(source_app, name="source")
 app.add_typer(project_app, name="project")
+app.add_typer(catalog_app, name="catalog")
 console = Console()
 log = get_logger(__name__)
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        from r2g import __version__
+
+        console.print(f"r2g {__version__}")
+        raise typer.Exit()
+
+
+def _bearer_guard(asgi_app: Any, token: str) -> Any:
+    """Wrap an ASGI app so every HTTP request must carry ``Bearer <token>``.
+
+    A pure-ASGI guard (not Starlette's BaseHTTPMiddleware) so it does not
+    buffer the SSE response stream. Used to protect the network-exposed MCP
+    SSE transport.
+    """
+    expected = f"Bearer {token}".encode()
+
+    async def guarded(scope: dict, receive: Any, send: Any) -> None:
+        if scope.get("type") == "http":
+            headers = dict(scope.get("headers") or [])
+            if headers.get(b"authorization", b"") != expected:
+                from starlette.responses import JSONResponse
+
+                await JSONResponse({"detail": "Unauthorized"}, status_code=401)(scope, receive, send)
+                return
+        await asgi_app(scope, receive, send)
+
+    return guarded
 
 
 @app.callback()
@@ -35,6 +67,9 @@ def main(
     json_log: bool = typer.Option(False, "--json-log", help="Output logs as JSON"),
     env_file: Optional[str] = typer.Option(
         None, "--env-file", help="Path to .env file (default: auto-detect .env in cwd)"
+    ),
+    version: bool = typer.Option(
+        False, "--version", help="Show the r2g version and exit", callback=_version_callback, is_eager=True
     ),
 ) -> None:
     from dotenv import load_dotenv
@@ -373,9 +408,9 @@ def transform_all(
                 n = 0
                 with out_file.open("w", encoding="utf-8") as f_out:
                     for row in reader.read_rows():
-                        doc = et.transform_row(row)
-                        if doc is not None:
-                            f_out.write(json.dumps(doc) + "\n")
+                        edge_doc = et.transform_row(row)
+                        if edge_doc is not None:
+                            f_out.write(json.dumps(edge_doc) + "\n")
                             n += 1
                 summary.append((edge.edge_collection, "edge", n))
                 progress.advance(task_id)
@@ -725,10 +760,11 @@ def stream(
         else:
             from r2g.connectors.base import create_source_connector
 
+            assert pg_conn is not None  # guarded above: --source or --pg-conn required
             source_connector = create_source_connector(
                 "postgresql", pg_conn, schema_name=pg_schema
             )
-            source_label = pg_conn.split("@")[-1] if pg_conn and "@" in pg_conn else pg_conn
+            source_label = pg_conn.split("@")[-1] if "@" in pg_conn else pg_conn
 
         pipeline = StreamingPipeline(
             source_connector=source_connector,
@@ -1289,7 +1325,7 @@ def cdc_start(
     )
 
     try:
-        schema = Schema.load_from_file(schema_file)
+        schema = Schema.load_from_file(str(schema_file))
         mapping = ConfigManager.load_config(config_path)
 
         writer = ArangoWriter(
@@ -1456,7 +1492,7 @@ def kafka_start(
         raise typer.Exit(code=1)
 
     try:
-        schema = Schema.load_from_file(schema_file)
+        schema = Schema.load_from_file(str(schema_file))
         mapping = ConfigManager.load_config(config_path)
 
         writer = ArangoWriter(
@@ -1726,6 +1762,10 @@ def mcp_cmd(
 
     Use stdio transport for Cursor / Claude Desktop integration.
     Use SSE transport for remote or multi-client access.
+
+    SSE is network-exposed, so it requires a Bearer token: set R2G_API_TOKEN,
+    or one is generated and printed at startup when binding to a non-loopback
+    address. stdio is local-only and needs no token.
     """
     try:
         from r2g.mcp_server import mcp as mcp_app
@@ -1735,11 +1775,37 @@ def mcp_cmd(
         )
         raise typer.Exit(code=1)
 
-    if transport == "sse":
-        console.print(f"[green]R2G MCP Server[/green] (SSE) starting at http://{host}:{port}/sse")
-        mcp_app.run(transport="sse", host=host, port=port)
-    else:
+    if transport != "sse":
         mcp_app.run(transport="stdio")
+        return
+
+    import secrets
+
+    import uvicorn
+
+    _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
+    token = (os.environ.get("R2G_API_TOKEN") or "").strip()
+    require_auth = bool(token) or host not in _LOOPBACK_HOSTS
+    if require_auth and not token:
+        token = secrets.token_urlsafe(32)
+
+    mcp_app.settings.host = host
+    mcp_app.settings.port = port
+    sse_app = mcp_app.sse_app()
+    if require_auth:
+        sse_app = _bearer_guard(sse_app, token)
+
+    console.print(f"[green]R2G MCP Server[/green] (SSE) starting at http://{host}:{port}/sse")
+    if require_auth:
+        if os.environ.get("R2G_API_TOKEN"):
+            console.print("  [yellow]Bearer auth enabled[/yellow] (using R2G_API_TOKEN).")
+        else:
+            console.print(
+                "  [yellow]Bearer auth enabled[/yellow] (non-loopback bind). "
+                "Send this token as 'Authorization: Bearer <token>':"
+            )
+            console.print(f"    [bold]{token}[/bold]")
+    uvicorn.run(sse_app, host=host, port=port, log_level="info")
 
 
 # ── Source commands ───────────────────────────────────────────────────

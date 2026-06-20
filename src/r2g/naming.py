@@ -24,8 +24,8 @@ import re
 from r2g.types import (
     RESERVED_ATTRIBUTES,
     MappingConfig,
-    NamingConvention,
     NameCase,
+    NamingConvention,
     Schema,
 )
 

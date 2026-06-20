@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -195,15 +196,34 @@ class TestGenerateMapping:
             result = generate_mapping("bare")
         assert "error" in result
 
-    def test_save_to_file(self, seeded_catalog, tmp_path):
+    def test_save_to_file(self, seeded_catalog):
         from r2g.mcp_server import generate_mapping
 
-        save_path = str(tmp_path / "out.yaml")
+        # A relative save_path is resolved inside the catalog projects jail.
         with _patch_catalog(seeded_catalog):
-            result = generate_mapping("test_pg", save_path=save_path)
-        assert result["saved_to"] == save_path
-        config = ConfigManager.load_config(save_path)
+            result = generate_mapping("test_pg", save_path="demo/out.yaml")
+        saved_to = result["saved_to"]
+        assert saved_to is not None
+        assert (seeded_catalog.dir / "projects") in Path(saved_to).parents
+        config = ConfigManager.load_config(saved_to)
         assert len(config.collections) == 2
+
+    def test_save_path_outside_jail_rejected(self, seeded_catalog, tmp_path):
+        from r2g.mcp_server import generate_mapping
+
+        outside = str(tmp_path / "escape.yaml")
+        with _patch_catalog(seeded_catalog):
+            result = generate_mapping("test_pg", save_path=outside)
+        assert "error" in result
+        assert "projects directory" in result["error"]
+        assert not Path(outside).exists()
+
+    def test_save_path_traversal_rejected(self, seeded_catalog):
+        from r2g.mcp_server import generate_mapping
+
+        with _patch_catalog(seeded_catalog):
+            result = generate_mapping("test_pg", save_path="../../etc/evil.yaml")
+        assert "error" in result
 
 
 class TestValidateMapping:
@@ -306,6 +326,23 @@ class TestResources:
             raw = resource_schema("nope")
         data = json.loads(raw)
         assert "error" in data
+
+
+class TestSafeError:
+    def test_scrubs_dsn_credentials(self):
+        from r2g.mcp_server import _safe_error
+
+        exc = RuntimeError(
+            "connection failed: postgresql://admin:s3cret@db.internal:5432/prod"
+        )
+        msg = _safe_error(exc)
+        assert "s3cret" not in msg
+        assert "admin" not in msg
+
+    def test_passes_through_plain_message(self):
+        from r2g.mcp_server import _safe_error
+
+        assert _safe_error(ValueError("no snapshot found")) == "no snapshot found"
 
     def test_mapping_resource(self, project_catalog):
         from r2g.mcp_server import resource_mapping

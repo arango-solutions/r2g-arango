@@ -163,10 +163,10 @@ class NodeTransformer:
         key = self._generate_key(row)
 
         if self._mapping is None:
-            doc = row.copy()
+            passthrough = row.copy()
             if key:
-                doc["_key"] = key
-            return doc
+                passthrough["_key"] = key
+            return passthrough
 
         col_by_name: Dict[str, Column] = {c.name: c for c in self.table_def.columns}
         known = set(col_by_name.keys())

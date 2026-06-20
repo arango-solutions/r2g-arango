@@ -125,7 +125,10 @@ class TestSelectiveReloader:
                 action_type="aql_update",
                 collection="users",
                 reason="rename property",
-                aql_query="FOR doc IN @@coll REPLACE doc WITH MERGE(UNSET(doc,@old_name),{@new_name: doc.@old_name}) IN @@coll",
+                aql_query=(
+                    "FOR doc IN @@coll REPLACE doc WITH "
+                    "MERGE(UNSET(doc,@old_name),{@new_name: doc.@old_name}) IN @@coll"
+                ),
                 params={"old_name": "first_name", "new_name": "firstName"},
             ),
         ])

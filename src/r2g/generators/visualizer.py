@@ -89,8 +89,8 @@ class MappingVisualizer:
         for table_name, table in self.schema.tables.items():
             fk_targets: dict[str, str] = {}
             for fk in table.foreign_keys:
-                for col in fk.columns:
-                    fk_targets[col] = fk.foreign_table
+                for col_name in fk.columns:
+                    fk_targets[col_name] = fk.foreign_table
 
             cols = []
             for col in table.columns:

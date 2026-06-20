@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from arango import ArangoClient
 from arango.database import StandardDatabase
@@ -47,7 +47,9 @@ class ArangoIntrospector:
         doc_collections: list[dict[str, Any]] = []
         edge_collections: list[dict[str, Any]] = []
 
-        for coll_info in db.collections():
+        # casts below: the sync database returns results directly
+        # (python-arango's Result union covers async/batch execution).
+        for coll_info in cast("list[dict[str, Any]]", db.collections()):
             if coll_info["system"]:
                 continue
             name = coll_info["name"]
@@ -69,11 +71,11 @@ class ArangoIntrospector:
                 doc_collections.append(entry)
 
         graphs: list[dict[str, Any]] = []
-        for graph in db.graphs():
+        for graph in cast("list[dict[str, Any]]", db.graphs()):
             graph_name = graph["name"]
             g = db.graph(graph_name)
             edge_defs = []
-            for ed in g.edge_definitions():
+            for ed in cast("list[dict[str, Any]]", g.edge_definitions()):
                 edge_defs.append({
                     "edge_collection": ed["edge_collection"],
                     "from_vertex_collections": ed["from_vertex_collections"],

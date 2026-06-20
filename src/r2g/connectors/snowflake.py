@@ -69,7 +69,7 @@ def _load_snowflake_connector() -> Any:
     optional extra is not installed.
     """
     try:
-        import snowflake.connector as _sf  # type: ignore[import-untyped]
+        import snowflake.connector as _sf
     except ImportError as err:
         raise ImportError(
             "Snowflake support requires snowflake-connector-python. "

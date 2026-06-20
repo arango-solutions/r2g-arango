@@ -163,8 +163,8 @@ def _tokenize(src: str) -> list[_Tok]:
             name = src[i:j]
             low = name.lower()
             if low in _KEYWORDS:
-                kind, val = _KEYWORDS[low]
-                toks.append(_Tok(kind, val, i))
+                kw_kind, kw_val = _KEYWORDS[low]
+                toks.append(_Tok(kw_kind, kw_val, i))
             else:
                 toks.append(_Tok("IDENT", name, i))
             i = j

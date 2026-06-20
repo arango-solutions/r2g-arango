@@ -46,15 +46,15 @@ def _load_key_from_env() -> bytes | None:
     raw = os.environ.get(SECRET_ENV)
     if not raw:
         return None
-    raw = raw.strip().encode("ascii")
+    key = raw.strip().encode("ascii")
     try:
-        Fernet(raw)
+        Fernet(key)
     except (ValueError, TypeError) as err:  # noqa: F841
         raise SecretKeyError(
             f"{SECRET_ENV} is set but is not a valid Fernet key "
             "(must be a 32-byte urlsafe base64 string)"
         ) from err
-    return raw
+    return key
 
 
 def _read_or_create_key_file(path: Path) -> bytes:

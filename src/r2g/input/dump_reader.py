@@ -59,5 +59,5 @@ class DumpReader:
             for row in df.iter_rows(named=True):
                 yield dict(row)
         else:
-            for row in df.iter_rows(named=False):
-                yield {str(i): val for i, val in enumerate(row)}
+            for values in df.iter_rows(named=False):
+                yield {str(i): val for i, val in enumerate(values)}

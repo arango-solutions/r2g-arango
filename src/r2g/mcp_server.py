@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -36,14 +37,46 @@ def _get_catalog():
 
 
 def _resolve_conn_string(raw: str) -> str:
-    if raw.startswith("$"):
-        return os.environ.get(raw[1:], raw)
-    return raw
+    # Supports both whole-string ($PG_CONN) and inline ($USER:$PASS@host) refs,
+    # unified with create_source_connector via expand_env_vars.
+    from r2g.connectors.base import expand_env_vars
+
+    return expand_env_vars(raw)
+
+
+def _safe_error(exc: Exception) -> str:
+    """Stringify an exception for a tool ``error`` field with DSN creds scrubbed.
+
+    MCP tools touch source/target connection strings, so a raw ``str(exc)``
+    can leak ``user:password@host`` into an agent transcript.
+    """
+    from r2g.security import scrub_dsn_credentials
+
+    return scrub_dsn_credentials(str(exc))
+
+
+def _jailed_save_path(catalog_root: Path, save_path: str) -> Path:
+    """Resolve a client-supplied mapping save path inside the catalog jail.
+
+    Writes are confined to ``<catalog>/projects`` so an agent cannot use
+    ``generate_mapping(save_path=...)`` to clobber arbitrary files. Symlinks
+    and ``..`` are resolved before the containment check.
+    """
+    root = (catalog_root / "projects").resolve()
+    target = Path(save_path).expanduser()
+    if not target.is_absolute():
+        target = root / target
+    target = target.resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(
+            f"save_path must be inside the catalog projects directory ({root})."
+        )
+    root.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 from r2g.security import redact_source_dump as _redact_source  # noqa: E402
 from r2g.security import redact_target_dump as _redact_target  # noqa: E402
-
 
 # ── Catalog: Sources ─────────────────────────────────────────────────
 
@@ -77,7 +110,7 @@ def add_source(
     Args:
         name: Unique name for the source (e.g. "prod_ecommerce")
         connection_string: Database connection URI or env var reference like "$PG_CONN"
-        source_type: One of "postgresql", "snowflake" (introspection only today)
+        source_type: One of "postgresql", "mysql", "sqlserver", "snowflake", "csv", "kafka"
         description: Human-readable description
     """
     mgr = _get_catalog()
@@ -85,7 +118,7 @@ def add_source(
         source = mgr.add_source(name, source_type, connection_string, description=description)
         return {"status": "created", "source": _redact_source(source.model_dump(mode="json"))}
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 @mcp.tool()
@@ -102,7 +135,7 @@ def remove_source(name: str, cascade: bool = False) -> dict[str, Any]:
             return {"status": "removed", "name": name}
         return {"error": f"Source '{name}' not found"}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Catalog: Projects ────────────────────────────────────────────────
@@ -150,7 +183,7 @@ def create_project(
         )
         return {"status": "created", "project": project.model_dump(mode="json")}
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Catalog: Targets ─────────────────────────────────────────────────
@@ -187,7 +220,7 @@ def add_target(
         target = mgr.add_target(name, endpoint, database, username, password, description)
         return {"status": "created", "target": _redact_target(target.model_dump(mode="json"))}
     except ValueError as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Schema Introspection ─────────────────────────────────────────────
@@ -238,7 +271,7 @@ def introspect_source_schema(
 
         return result
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 @mcp.tool()
@@ -268,7 +301,7 @@ def introspect_target_graph(
         )
         return intro.introspect()
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Mapping Generation & Validation ──────────────────────────────────
@@ -297,15 +330,21 @@ def generate_mapping(
 
     config = ConfigManager.generate_default_config(snap.schema_data, source_schema=snap.pg_schema)
 
+    saved_to: str | None = None
     if save_path:
-        ConfigManager.save_config(config, save_path)
+        try:
+            jailed = _jailed_save_path(mgr.dir, save_path)
+        except ValueError as e:
+            return {"error": _safe_error(e)}
+        ConfigManager.save_config(config, str(jailed))
+        saved_to = str(jailed)
 
     return {
         "collections": len(config.collections),
         "edges": len(config.edges),
         "join_tables": [k for k, v in config.collections.items() if v.is_join_table],
         "mapping": config.model_dump(mode="json"),
-        "saved_to": save_path,
+        "saved_to": saved_to,
     }
 
 
@@ -340,7 +379,7 @@ def validate_mapping(
             "edges": len(config.edges),
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Schema Diff ──────────────────────────────────────────────────────
@@ -426,7 +465,7 @@ def preview_table(
             "rows": rows,
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Ingestion ────────────────────────────────────────────────────────
@@ -520,10 +559,10 @@ def start_load(
             }
         except Exception as e:
             mgr.complete_load(load_record.id, 0, 0, [], "failed")
-            return {"status": "failed", "load_id": load_record.id, "error": str(e)}
+            return {"status": "failed", "load_id": load_record.id, "error": _safe_error(e)}
 
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Load History ─────────────────────────────────────────────────────
@@ -578,7 +617,7 @@ def diff_mappings(
         plan = _diff_mappings(old_config, new_config, snap.schema_data)
         return plan.model_dump(mode="json")
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": _safe_error(e)}
 
 
 # ── Resources ────────────────────────────────────────────────────────
@@ -635,7 +674,7 @@ def resource_mapping(project_name: str) -> str:
         config = ConfigManager.load_config(project.mapping_config_path)
         return json.dumps(config.model_dump(mode="json"), indent=2)
     except Exception as e:
-        return json.dumps({"error": str(e)})
+        return json.dumps({"error": _safe_error(e)})
 
 
 @mcp.resource("r2g://history/{project_name}")

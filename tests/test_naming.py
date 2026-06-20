@@ -139,7 +139,11 @@ class TestApplyNamingConvention:
 
     def test_field_expression_target_recased(self, config, schema):
         config.collections["customer"].field_expressions = [
-            FieldExpression(target="full_name", sources=["first_name", "last_name"], expression="CONCAT(@first_name,@last_name)")
+            FieldExpression(
+                target="full_name",
+                sources=["first_name", "last_name"],
+                expression="CONCAT(@first_name,@last_name)",
+            )
         ]
         out = apply_naming_convention(config, NamingConvention(properties="camel"), schema)
         assert out.collections["customer"].field_expressions[0].target == "fullName"
