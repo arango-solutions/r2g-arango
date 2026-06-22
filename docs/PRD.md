@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading), and Phase 7 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading), Phase 10 (LLM-assisted ontology derivation), Phase 11 (denormalization & normal-form analysis), and Phase 7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -709,13 +709,170 @@ thread**: column-level classification capture → a carrier through
 
 ---
 
+### Phase 10: LLM-assisted ontology derivation -- Planned
+
+> **The LLM proposes; the deterministic pipeline disposes.** Today a target
+> graph is derived mechanically by `ConfigManager.generate_default_config`
+> (tables → document collections, join tables → edges, FKs → edges) and refined
+> by hand in the mapper. Phase 10 adds an *optional* path where a large language
+> model analyzes the introspected schema and **proposes** a richer target
+> ontology — which tables are really vertices vs. edges, implicit/undeclared
+> relationships, denormalization/embedding opportunities, and clearer
+> collection/property names. Crucially, the LLM never writes to the graph: its
+> output is a candidate `MappingConfig` that flows through the **same**
+> `validate_config` → mapper review → loader path as every other mapping. The
+> deterministic Auto-Map remains the default and the safety net.
+
+**Motivation.** `generate_default_config` is correct but naive: it mirrors the
+relational structure 1:1 and cannot recognise that, say, an `order_items` table
+is better modelled as an edge with properties, that two tables form an
+inheritance hierarchy, or that a lookup table should be embedded rather than
+linked. A domain-aware model can propose a graph that a human would otherwise
+hand-craft, collapsing the modeling effort from hours to a review. Customers
+have asked for exactly this "describe my domain, suggest the graph" capability.
+
+**Design principles (non-negotiable).**
+- **Human-in-the-loop, never auto-applied.** A proposal is rendered as a *diff*
+  against the current (or Auto-Map) mapping; the user accepts / edits / rejects
+  per item. Nothing is saved or loaded without explicit confirmation.
+- **Schema-grounded, not data-dumping.** The model is fed the *introspected
+  metadata* (tables, columns, types, PKs, FK-inference results) — never bulk row
+  data. Optional value sampling is opt-in and **classification-aware**: columns
+  tagged Restricted/PII by Phase 9 are never sent to an external model.
+- **Validated, hallucination-resistant.** Every proposed collection/edge/field
+  is checked against the real schema (`validate_config`); references to
+  non-existent tables/columns are dropped or flagged, never silently loaded.
+- **Reproducible & auditable.** The model, prompt, parameters (temperature 0 by
+  default), and raw response are stored as provenance on the project.
+- **Provider-agnostic & optional.** An `LLMProvider` abstraction (mirroring
+  `CatalogProvider` / `SourceConnector`) with lazy imports; the whole feature is
+  an optional extra and absent-by-default — r2g never requires an LLM.
+
+#### Requirements
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P10.1** | **LLM provider abstraction** | An `LLMProvider` Protocol + `create_llm_provider(provider_type, …)` factory with lazy imports (OpenAI first; Anthropic / local/OpenAI-compatible endpoints to follow), mirroring `create_source_connector` / `create_catalog_provider`. API keys supplied via env / `r2g secrets` (`$ENV_VAR` convention), never persisted in plaintext. | P6.5 |
+| **P10.2** | **Schema-grounded prompt builder** | Serialize the introspected `Schema` (tables, columns, types, nullability, PKs) + accepted/inferred FKs into a compact, model-friendly description, with an optional user **domain hint**. Redaction-aware: excludes (or masks) columns classified Restricted/PII per Phase 9; optional, opt-in value samples are bounded and classification-filtered. | P10.1, P9.2 (soft) |
+| **P10.3** | **Ontology proposal → `MappingConfig`** | The model returns a **structured** ontology proposal (JSON-schema-constrained): vertex vs. edge designation, new/implicit relationships, embed-vs-link recommendations, and name suggestions. r2g maps this to a candidate `MappingConfig`, then runs `validate_config`; invalid items are repaired or dropped with reasons. | P10.2 |
+| **P10.4** | **Human-in-the-loop review (diff)** | The proposal is presented as a `diff_mappings`-style diff against the current/Auto-Map mapping; users accept / modify / reject per collection / edge / property. No write occurs without confirmation. | P10.3 |
+| **P10.5** | **CLI + API entry points** | `r2g ontology suggest <project> [--domain "…"] [--sample] [--apply]` and `POST /api/projects/{name}/suggest-ontology`; returns the proposal (+ validation notes), applying only on explicit `--apply` / UI accept. | P10.3 |
+| **P10.6** | **Provenance & reproducibility** | Persist the provider, model, prompt, parameters, and raw response on the project (and surface cost/latency). Default `temperature=0` for repeatable proposals. | P10.3 |
+| **P10.7** | **UI: "Suggest model (AI)" action + review panel** | A canvas/Actions entry that runs a suggestion and opens a floating review panel showing the proposed diff with per-item accept/reject — context-menu-primary, no new route, consistent with the workspace contract. | P10.4, P10.5 |
+| **P10.8** | **Guardrails** | Privacy (no egress of classified columns; explicit opt-in for any value sampling), determinism, the `validate_config` gate, prompt-injection hardening of schema-derived text, and cost/rate limits with a hard token budget. | P10.2, P10.3 |
+
+#### Phasing
+
+- **10a (grounded proposal, structure-only):** P10.1–P10.3, P10.5 (CLI) + P10.6,
+  P10.8. Metadata-only prompts (no row data), structured output → validated
+  `MappingConfig`. Fully unit-testable with a **fake `LLMProvider`** seam (canned
+  responses), exactly like the mocked-HTTP catalog/connector tests.
+- **10b (review & apply in the Studio):** P10.4, P10.7. The diff review panel and
+  apply path on top of the existing `diff_mappings` + mapper.
+- **10c (enrichment):** opt-in, classification-aware value sampling; richer
+  denormalization/embedding suggestions; additional providers
+  (Anthropic / local) and domain-hint refinement.
+
+#### Non-functional notes
+
+- **Determinism & honesty.** Proposals are suggestions, scored and explained;
+  the deterministic Auto-Map is always available and is the default. r2g states
+  clearly when output is model-generated.
+- **Privacy / governance tie-in.** Phase 10 explicitly respects Phase 9
+  classifications: sensitive columns are withheld from (external) models — the
+  migration must not leak via the *modeling* step either.
+- **Optional & provider-agnostic.** Shipped as an extra (e.g.
+  `r2g-arango[llm]`); no LLM dependency or network call unless the user invokes a
+  suggestion.
+- **Out of scope (V1).** Autonomous mapping without review; fine-tuning;
+  LLM-driven data *transformation* at load time (expressions remain
+  user-authored); natural-language querying of the resulting graph.
+
+---
+
+### Phase 11: Denormalization & normal-form analysis -- Planned
+
+> **Deterministic, no LLM.** Phase 10 asks a model to *propose* a better
+> ontology; Phase 11 is the complementary **rules + sampling** engine that
+> *detects* denormalization in the source and advises on it — reusing exactly
+> the machinery already proven in `fk_inference.py` (name heuristics + bounded
+> value-overlap sampling via a pluggable sampler). It recognises patterns the
+> 1:1 `generate_default_config` is blind to: embedded lookups, repeating column
+> groups, multi-valued columns, and over-split 1:1 tables — and surfaces them as
+> scored, evidence-backed *findings* the user can act on. It advises; it never
+> silently rewrites the schema or the data.
+
+**Motivation.** Real relational schemas are rarely clean 3NF. A table often
+carries an *embedded lookup* (`zip → city, state`; `product_id → product_name,
+category`), **repeating groups** (`phone1/phone2/phone3`), **multi-valued
+columns** (`tags = "a,b,c"`), or redundant reference data duplicated across many
+rows. Mapped 1:1, these become awkward graph models (redundant properties, no
+shared vertices, list-in-a-string). Detecting them lets r2g recommend a better
+target — extract a vertex, embed an array, split a multi-valued column — and also
+produces high-quality, deterministic *grounding* for the Phase 10 LLM proposal.
+
+**Design principles.**
+- **Statistical signal, not proof.** Findings carry a confidence + concrete
+  evidence (sampled counts/examples), exactly like FK inference; the user
+  decides. Bounded, resilient sampling (sampler errors degrade to name/structure
+  signals, never crash).
+- **Advise, don't auto-rewrite.** V1 emits findings + a recommended action;
+  applying a remediation (scaffolding a collection/edge or an embed expression)
+  is explicit and optional.
+- **Classification-aware (Phase 9 tie-in).** Value sampling reads data, so
+  Restricted/PII columns are excluded from sampling — consistent with the
+  governance lane.
+- **Reuse, don't reinvent.** Same `create_value_sampler` seam, bounded-`LIMIT`
+  queries, and Suggest-FKs-style review card as P6.6.
+
+#### Requirements
+
+| ID | Requirement | Description | Pre-requisite |
+| :--- | :--- | :--- | :--- |
+| **P11.1** | **Denormalization analyzer engine** | A deterministic `analyze_denormalization(schema, options, sampler=None) -> list[DenormFinding]` (new `src/r2g/denorm.py`), mirroring `infer_foreign_keys`: a pure-Python structural/name core plus an optional, bounded value sampler. `DenormFinding` carries kind, table, columns, recommended action, confidence, and evidence. | P6.6 |
+| **P11.2** | **Repeating-group detection** | Recognise numbered/suffixed column families (`phone1/phone2`, `addr_line_1..3`) and repeated typed sets → recommend a child collection or an embedded array. Name + type structural heuristic; no sampling required. | P11.1 |
+| **P11.3** | **Functional-/transitive-dependency detection (2NF/3NF)** | The flagship: detect a non-key column that *determines* other non-key columns (embedded lookup) by sampling — group by the candidate determinant and test whether dependents are single-valued per group. Recommend extracting the determinant+dependents into a shared vertex linked by an edge. | P11.1 |
+| **P11.4** | **Redundant reference-data detection** | Flag sets of co-varying columns whose distinct combinations are small relative to row count (duplicated reference data) → candidate lookup/vertex extraction. Sampling-based, with distinct-ratio evidence. | P11.1 |
+| **P11.5** | **Multi-valued attribute detection** | Detect delimited lists in a text column (`"a,b,c"`) via sampling for consistent delimiters → recommend splitting into an array or child collection. | P11.1 |
+| **P11.6** | **1:1 over-normalization detection** | Detect two tables in strict 1:1 on a shared/identical key → recommend merging/embedding rather than two collections + an edge (the inverse modeling smell). | P11.1 |
+| **P11.7** | **CLI + API entry points** | `r2g source analyze-denorm <name> [--sample] [--sample-limit N] [--min-confidence 0.4]` and `POST /api/sources/{name}/analyze-denorm` → scored findings with evidence and recommended actions (Rich table / JSON). Read-only by default. | P11.1 |
+| **P11.8** | **UI findings panel** | A Suggest-FKs-style floating card listing findings with confidence pill + evidence + recommended action and per-finding Accept / Dismiss, opened from the Actions / canvas context menu — no new route, context-menu-primary. | P11.7 |
+| **P11.9** | **Remediation scaffolding (opt-in)** | Accepting a finding can scaffold the mapping: e.g. create the extracted collection + `EdgeDefinition`, add an embed/split `FieldExpression`, or merge a 1:1 pair — written through the normal mapping save + `validate_config`, never applied silently. | P11.8 |
+| **P11.10** | **Grounding for Phase 10** | Findings are emitted in a form the Phase 10 prompt builder can consume, so the LLM proposal is grounded in deterministic evidence (and the two can cross-check). Phase 11 itself requires no LLM. | P11.1 |
+
+#### Phasing
+
+- **11a (engine + CLI, the deterministic core):** P11.1–P11.3, P11.7. Structural
+  detectors + the functional-dependency sampler + CLI, fully unit-testable with a
+  fake sampler (canned counts), exactly like `test_fk_inference.py`.
+- **11b (more detectors + Studio review):** P11.4–P11.6, P11.8.
+- **11c (remediation + grounding):** P11.9, P11.10.
+
+#### Non-functional notes
+
+- **Bounded & resilient.** All sampling uses bounded `LIMIT` queries and degrades
+  to name/structure signals on error — the analyzer never blocks or crashes a
+  workflow (same contract as `PostgresValueSampler`).
+- **Advisory by default.** Findings change nothing until a remediation is
+  explicitly accepted and validated.
+- **Privacy.** Sampling honours Phase 9 classifications; Restricted/PII columns
+  are not sampled.
+- **Complements, not replaces.** The deterministic 1:1 Auto-Map remains the
+  default starting point; Phase 11 layers advice on top and grounds Phase 10.
+- **Out of scope (V1).** Automatic schema rewriting; full functional-dependency
+  *mining* (we test *candidate* determinants from keys/heuristics, not all
+  column subsets); BCNF/4NF formalism; cross-table deduplication of entities
+  (entity resolution).
+
+---
+
 ## 6. Future considerations (Phase 7+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
 
 - **Additional source databases:** MySQL/MariaDB and SQL Server have been added following the `SourceConnector` pattern established in Phase 6; Oracle, SQLite, and others could follow the same way (source-specific schema reader, type map, streaming adapter).
 - **Publishing back to external catalogs:** the inverse of Phase 8 — register the migrated ArangoDB graph (and column-level lineage from source to graph) as a governed downstream asset in the connected catalog. A write-path effort, deferred until the Phase 8 read path proves out.
-- **Ontology derivation (LLM integration):** Use a large language model to analyze the source schema and propose an optimized target ArangoDB graph schema for a given domain. This could suggest which tables should be vertices vs. edges, identify implicit relationships, and recommend denormalization strategies. Feasibility has improved significantly with current model capabilities.
+- **Ontology derivation (LLM integration):** *Promoted to a committed phase — see Phase 10: LLM-assisted ontology derivation.* Use a large language model to analyze the source schema and propose an optimized target ArangoDB graph schema for a given domain (vertices vs. edges, implicit relationships, denormalization strategies), reviewed by a human and validated through the existing mapping pipeline.
 - **ArangoRDF integration:** Emit data compatible with ArangoRDF so RDF, property graph, and labeled property graph representations can be selected as needed. Requires understanding the target use case (SPARQL queries, knowledge graphs, etc.) to choose the right representation.
 - **Bi-directional synchronization:** Propagate changes from ArangoDB back to the source database. This is an extremely complex problem involving conflict resolution, schema evolution, and transactional consistency across two fundamentally different data models. Should be considered only if a concrete use case demands it.
 
@@ -762,5 +919,7 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **External data catalog integration (Phase 8) — Planned** | **June 2026** | Added Phase 8: connect r2g to external enterprise data catalogs (OpenMetadata, AWS Glue, Atlan, …) as an upstream discovery layer (browse → select → import as a source), distinct from the internal Phase 5d catalog. Backed by a cited research pass on catalog API suitability for "discover-then-connect" (`docs/internal/PLAN-external-data-catalogs.md`); OpenMetadata recommended as the first integration (OSS, official SDK, connection metadata, dockerizable for e2e testing). Market-share ranking flagged as unverified. Implementation + test plan drafted for review; no code yet. Also recorded MySQL/MariaDB + SQL Server source connectors shipped since the April baseline. |
 | **External data catalog integration (Phase 8a–8b) — Implemented** | **June 2026** | Shipped 8a (foundation + OpenMetadata) and 8b (Studio UI): `src/r2g/catalogs/` provider abstraction + OpenMetadata REST provider (`httpx`, `openmetadata` extra), an encrypted `CatalogProviderConfig` registry, the `r2g catalog add/list/browse/import-source/remove` CLI, Studio `/api/catalogs*` browse/import endpoints with a left-rail Catalogs panel, and unit + skip-when-unavailable e2e tests. MySQL + SQL Server source connectors landed alongside. 1189 unit tests passing, 82% coverage. |
 | **Classification propagation & entitlement-aware loading (Phase 9) — Planned** | **June 2026** | Added Phase 9 on the Phase 8 catalog backbone: a three-tier governance posture — capture & propagate catalog classifications/owners/tiers onto target collections/fields + column-level lineage (P9.1–P9.4, incl. the mosaic = max-sensitivity rule), advise & gate via a pre-load entitlement report + exclude-above-threshold default + transform-at-load masking reusing the field-expression engine (P9.5–P9.6, P9.9), and enable enforcement by emitting a classification manifest + suggested ArangoDB RBAC / OPA / tier-layout artifacts (r2g never enforces) plus classification re-sync (P9.7–P9.8). Lane discipline: r2g carries governance metadata and refuses to silently launder sensitive data, but is not a runtime authz engine. Implementation + test plan drafted (`docs/internal/PLAN-classification-entitlement.md`); no code yet. |
+| **LLM-assisted ontology derivation (Phase 10) — Planned** | **June 2026** | Promoted the exploratory "ontology derivation" idea to committed Phase 10: an optional `LLMProvider` abstraction proposes a richer target ontology (vertex-vs-edge, implicit relationships, embed-vs-link, naming) from the introspected schema, which flows through the **same** `validate_config` → mapper-review (`diff_mappings`) → loader path as Auto-Map. Design principles: human-in-the-loop (never auto-applied), schema-grounded (metadata not bulk rows), classification-aware (no egress of Phase-9 Restricted/PII columns), validated/hallucination-resistant, reproducible (temperature 0 + stored provenance), and optional/provider-agnostic (deterministic `generate_default_config` stays the default). Implementation + test plan drafted (`docs/internal/PLAN-llm-ontology-derivation.md`); no code yet. |
+| **Denormalization & normal-form analysis (Phase 11) — Planned** | **June 2026** | Added Phase 11: a deterministic (no-LLM) analyzer (`src/r2g/denorm.py`) that detects source-side denormalization — embedded lookups (functional/transitive dependencies via bounded value sampling), repeating column groups, multi-valued columns, redundant reference data, and over-split 1:1 tables — and emits scored, evidence-backed findings with recommended graph remedies (extract vertex / embed array / split / merge). Reuses the `fk_inference.py` machinery (name heuristics + `create_value_sampler` bounded sampling + Suggest-FKs-style review card). Advisory by default (no silent rewrite), classification-aware (no sampling of Phase-9 Restricted/PII columns), and grounds the Phase 10 LLM proposal. Implementation + test plan drafted (`docs/internal/PLAN-denormalization-analysis.md`); no code yet. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
