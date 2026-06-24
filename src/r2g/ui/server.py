@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from r2g.catalog import CatalogManager
 from r2g.config import ConfigManager, validate_config
@@ -363,6 +363,72 @@ def create_app(
             "snapshot_id": snap.id,
             "sample_used": sampler_used,
             "candidates": [c.model_dump() for c in candidates],
+        }
+
+    @app.post("/api/sources/{name}/analyze-denorm")
+    async def analyze_denorm(name: str, body: AnalyzeDenormRequest | None = None):
+        """Return ranked denormalization findings for the source's latest snapshot.
+
+        Structural detectors (repeating groups) always run from schema metadata
+        alone (safe / free). When ``sample: true`` is passed, bounded value
+        probes additionally detect embedded lookups (functional dependencies) on
+        PostgreSQL / MySQL / SQL Server / CSV sources; other types fall back to
+        the structural signals. Read-only — it never changes the schema or data.
+        """
+        from r2g.connectors.base import normalize_source_type
+        from r2g.denorm import AnalyzeOptions, analyze_denormalization
+        from r2g.fk_inference import create_value_sampler
+
+        source = catalog.get_source(name)
+        if source is None:
+            raise HTTPException(status_code=404, detail=f"Source '{name}' not found")
+        snap = catalog.get_latest_snapshot(name)
+        if snap is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No schema snapshot for this source — take one first.",
+            )
+
+        req = body or AnalyzeDenormRequest()
+
+        sampler = None
+        sampler_used = False
+        if req.sample:
+            try:
+                sampler = create_value_sampler(
+                    source.source_type,
+                    source.connection_string,
+                    pg_schema=snap.pg_schema,
+                    source_params=source.source_params,
+                    limit=req.sample_limit,
+                )
+                sampler_used = sampler is not None
+                if sampler is None:
+                    logger.info(
+                        "denorm_sampler_unsupported",
+                        source_type=normalize_source_type(source.source_type),
+                        note="value sampling supports PG/MySQL/SQL Server/CSV; structural detectors still run",
+                    )
+            except Exception as err:  # noqa: BLE001
+                logger.warning("denorm_sampler_init_failed", error=str(err))
+
+        opts = AnalyzeOptions(
+            sample=sampler_used,
+            sample_limit=req.sample_limit,
+            min_confidence=req.min_confidence,
+            no_sample_columns=frozenset(req.no_sample_columns),
+        )
+        try:
+            findings = analyze_denormalization(snap.schema_data, options=opts, sampler=sampler)
+        finally:
+            if sampler is not None and hasattr(sampler, "close"):
+                sampler.close()
+
+        return {
+            "source": name,
+            "snapshot_id": snap.id,
+            "sample_used": sampler_used,
+            "findings": [f.model_dump() for f in findings],
         }
 
     # ── Schema endpoints ──────────────────────────────────────────────
@@ -1158,4 +1224,20 @@ class InferFksRequest(BaseModel):
     sample_limit: int = 10_000
     min_confidence: float = 0.4
     veto_on_zero_overlap: bool = True
+
+
+class AnalyzeDenormRequest(BaseModel):
+    """Parameters for POST /api/sources/{name}/analyze-denorm.
+
+    Defaults are "cheap" — structural detectors only (repeating groups), no
+    warehouse queries. Set ``sample=true`` to opt into the bounded value probes
+    that drive embedded-lookup / functional-dependency detection.
+    ``no_sample_columns`` lists columns to keep out of the sampler (bare ``col``
+    or ``table.col``), e.g. sensitive / PII fields.
+    """
+
+    sample: bool = False
+    sample_limit: int = 10_000
+    min_confidence: float = 0.4
+    no_sample_columns: list[str] = Field(default_factory=list)
 

@@ -201,6 +201,62 @@ class TestInferFksEndpoint:
         assert resp.status_code == 200
         assert resp.json()["candidates"] == []
 
+    def test_analyze_denorm_reports_repeating_group(self, client, catalog_dir):
+        client.post("/api/sources", json={
+            "name": "rg",
+            "source_type": "postgresql",
+            "connection_string": "postgresql://localhost/test",
+        })
+        mgr = CatalogManager(catalog_dir)
+        schema = Schema(tables={
+            "contact": Table(name="contact", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="phone1", data_type="text"),
+                Column(name="phone2", data_type="text"),
+            ], primary_key=["id"]),
+        })
+        mgr.create_snapshot("rg", schema)
+        resp = client.post("/api/sources/rg/analyze-denorm")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["source"] == "rg"
+        assert body["sample_used"] is False
+        kinds = {f["kind"] for f in body["findings"]}
+        assert "repeating_group" in kinds
+
+    def test_analyze_denorm_without_snapshot_returns_400(self, client):
+        client.post("/api/sources", json={
+            "name": "empty2",
+            "source_type": "postgresql",
+            "connection_string": "postgresql://localhost/test",
+        })
+        resp = client.post("/api/sources/empty2/analyze-denorm")
+        assert resp.status_code == 400
+
+    def test_analyze_denorm_unknown_source_returns_404(self, client):
+        resp = client.post("/api/sources/nope/analyze-denorm")
+        assert resp.status_code == 404
+
+    def test_analyze_denorm_skips_sampling_for_snowflake_source(self, client, catalog_dir):
+        client.post("/api/sources", json={
+            "name": "sf2",
+            "source_type": "snowflake",
+            "connection_string": "snowflake://u:p@acct/DB/PUBLIC",
+        })
+        mgr = CatalogManager(catalog_dir)
+        schema = Schema(tables={
+            "CONTACT": Table(name="CONTACT", columns=[
+                Column(name="ID", data_type="number", is_primary_key=True),
+                Column(name="PHONE1", data_type="text"),
+                Column(name="PHONE2", data_type="text"),
+            ], primary_key=["ID"]),
+        })
+        mgr.create_snapshot("sf2", schema, pg_schema="PUBLIC")
+        resp = client.post("/api/sources/sf2/analyze-denorm", json={"sample": True})
+        assert resp.status_code == 200
+        # Snowflake has no value sampler today; structural detectors still run.
+        assert resp.json()["sample_used"] is False
+
     def test_infer_fks_skips_sampling_for_snowflake_source(self, client, catalog_dir):
         client.post("/api/sources", json={
             "name": "sf",

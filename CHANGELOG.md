@@ -21,8 +21,10 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SQL Server, CSV). Read-only, classification-aware (`--no-sample-columns` escape
   hatch plus a Phase-9 `is_sampleable` hook), and resilient (probe failures
   degrade to structural signals). `--json` output supported; no schema or data is
-  ever rewritten. 11b (remaining detectors + Studio review card) and 11c
-  (remediation scaffolding + Phase-10 grounding) remain.
+  ever rewritten. Also exposed over the API as
+  `POST /api/sources/{name}/analyze-denorm` (mirrors `infer-fks`). 11b (remaining
+  detectors + Studio review card) and 11c (remediation scaffolding + Phase-10
+  grounding) remain.
 - **External data catalog — MCP tools (Phase 8b, P8.6)**: five new MCP tools —
   `list_catalogs`, `add_catalog`, `remove_catalog`, `catalog_browse`, and
   `catalog_import_source` — let an agent register a catalog, browse its
