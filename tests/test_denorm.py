@@ -11,7 +11,14 @@ from typing import Optional
 
 import pytest
 
-from r2g.denorm import AnalyzeOptions, DenormFinding, analyze_denormalization
+from r2g.denorm import (
+    AnalyzeOptions,
+    DenormFinding,
+    analyze_denormalization,
+    remediation_hint,
+    summarize_findings_for_prompt,
+    with_hints,
+)
 from r2g.types import Column, ForeignKey, Schema, Table
 
 
@@ -358,3 +365,64 @@ class TestModel:
             DenormFinding(
                 kind="x", table="t", columns=["a"], recommended_action="merge", confidence=1.5
             )
+
+
+class TestRemediationGuidance:
+    def _finding(self, kind, **kw):
+        base = dict(
+            kind=kind,
+            table="t",
+            columns=kw.pop("columns", ["a"]),
+            recommended_action=kw.pop("action", "merge"),
+            confidence=0.8,
+        )
+        base.update(kw)
+        return DenormFinding(**base)
+
+    def test_hint_per_kind_is_nonempty(self):
+        for kind, action in [
+            ("repeating_group", "embed_array"),
+            ("embedded_lookup", "extract_vertex"),
+            ("redundant_reference", "extract_vertex"),
+            ("multi_valued", "split_column"),
+            ("one_to_one", "merge"),
+        ]:
+            hint = remediation_hint(self._finding(kind, action=action))
+            assert isinstance(hint, str) and len(hint) > 10
+
+    def test_multi_valued_hint_mentions_delimiter_label(self):
+        f = self._finding(
+            "multi_valued", action="split_column", params={"delimiter_label": "comma"}
+        )
+        assert "comma" in remediation_hint(f)
+
+    def test_with_hints_attaches_hint(self):
+        f = self._finding("one_to_one", action="merge", dependents=["parent"])
+        dicts = with_hints([f])
+        assert dicts[0]["kind"] == "one_to_one"
+        assert "hint" in dicts[0]
+        assert "parent" in dicts[0]["hint"]
+
+
+class TestGrounding:
+    def test_empty(self):
+        assert summarize_findings_for_prompt([]) == ""
+
+    def test_orders_by_confidence_and_caps(self):
+        findings = [
+            DenormFinding(
+                kind="multi_valued",
+                table="t",
+                columns=[f"c{i}"],
+                recommended_action="split_column",
+                confidence=0.5 + i * 0.01,
+            )
+            for i in range(5)
+        ]
+        digest = summarize_findings_for_prompt(findings, max_items=3)
+        lines = digest.splitlines()
+        # header + 3 capped items
+        assert len(lines) == 4
+        # highest confidence (c4) listed before lower ones
+        assert lines[1].index("c4") >= 0
+        assert "grounding" in lines[0].lower()

@@ -4618,6 +4618,7 @@ function renderDenormFindings(result) {
     const confClass = confPct >= 80 ? 'high' : (confPct >= 60 ? 'mid' : 'low');
     const evidence = (f.evidence || []).join(' \u00b7 ');
     const kindLabel = _DENORM_KIND_LABELS[f.kind] || f.kind;
+    const hint = f.hint ? `<div class="fk-suggest-evidence" style="color:var(--text)">\u2192 ${escHtml(f.hint)}</div>` : '';
     return `
       <li class="fk-suggest-row" data-idx="${idx}">
         <div class="fk-suggest-line">
@@ -4629,6 +4630,7 @@ function renderDenormFindings(result) {
           </span>
         </div>
         <div class="fk-suggest-evidence">${escHtml(evidence)}</div>
+        ${hint}
         <div class="fk-suggest-actions">
           <button class="btn" onclick="dismissDenormFinding(${idx})">Dismiss</button>
         </div>

@@ -9,6 +9,16 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Denormalization analysis — advisory remediation + grounding (Phase 11c)**:
+  each finding now carries concrete remediation guidance (`remediation_hint`),
+  shown in the CLI (a "Suggested remediation" column), the API (a `hint` field on
+  every finding), and the Studio card. Added `summarize_findings_for_prompt`, a
+  compact confidence-ranked digest that grounds the (forthcoming) Phase-10
+  ontology proposal in deterministic evidence. Mechanical auto-apply is
+  intentionally deferred: the recommended remedies (vertex extraction, merge,
+  split/combine to array) are not yet representable in the source-table-bound
+  mapping + AQL expression model, so r2g advises rather than emit an invalid
+  mapping — consistent with the phase's "advise, never silently rewrite".
 - **Denormalization analysis — more detectors + Studio card (Phase 11b)**:
   three additional detectors — **multi-valued** columns (delimited lists, via a
   new bounded `delimiter_rate` probe on all four value samplers), **redundant

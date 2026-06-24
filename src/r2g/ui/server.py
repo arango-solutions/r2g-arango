@@ -376,7 +376,7 @@ def create_app(
         the structural signals. Read-only — it never changes the schema or data.
         """
         from r2g.connectors.base import normalize_source_type
-        from r2g.denorm import AnalyzeOptions, analyze_denormalization
+        from r2g.denorm import AnalyzeOptions, analyze_denormalization, with_hints
         from r2g.fk_inference import create_value_sampler
 
         source = catalog.get_source(name)
@@ -428,7 +428,7 @@ def create_app(
             "source": name,
             "snapshot_id": snap.id,
             "sample_used": sampler_used,
-            "findings": [f.model_dump() for f in findings],
+            "findings": with_hints(findings),
         }
 
     # ── Schema endpoints ──────────────────────────────────────────────

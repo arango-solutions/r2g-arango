@@ -54,7 +54,7 @@ class DenormFinding(BaseModel):
     which the (later) remediation scaffolding uses to extract a shared vertex.
     """
 
-    kind: str  # repeating_group | embedded_lookup
+    kind: str  # repeating_group | embedded_lookup | multi_valued | redundant_reference | one_to_one
     table: str
     columns: list[str]
     recommended_action: str  # extract_vertex | embed_array | split_column | merge
@@ -62,6 +62,9 @@ class DenormFinding(BaseModel):
     evidence: list[str] = Field(default_factory=list)
     determinant: list[str] = Field(default_factory=list)
     dependents: list[str] = Field(default_factory=list)
+    # Detector-specific structured data (e.g. {"delimiter": ","}) for richer
+    # remediation guidance and future auto-apply.
+    params: dict[str, str] = Field(default_factory=dict)
 
 
 # ── Options ─────────────────────────────────────────────────────────
@@ -367,7 +370,7 @@ def _detect_multi_valued(
 
         if best is None:
             continue
-        _delim, label, rate = best
+        delim, label, rate = best
         confidence = round(min(0.5 + 0.4 * rate, 0.95), 3)
         if confidence < opts.min_confidence:
             continue
@@ -381,6 +384,7 @@ def _detect_multi_valued(
                 evidence=[
                     f"'{col.name}' contains a {label} delimiter in {rate:.0%} of sampled values"
                 ],
+                params={"delimiter": delim, "delimiter_label": label},
             )
         )
     return out
@@ -515,3 +519,93 @@ def _dedupe(findings: list[DenormFinding]) -> list[DenormFinding]:
         if prior is None or f.confidence > prior.confidence:
             best[key] = f
     return list(best.values())
+
+
+# ── Remediation guidance (P11.9, advisory) ──────────────────────────
+
+
+def remediation_hint(finding: DenormFinding) -> str:
+    """Return concrete, human-readable guidance for acting on ``finding``.
+
+    Phase 11 is **advise-not-rewrite**: a finding's recommended graph model
+    often cannot be expressed in the current source-table-bound mapping (a
+    vertex extracted from a column subset has no backing source table, and the
+    field-expression engine has no array/SPLIT support yet). Rather than emit an
+    invalid mapping, we describe the change for the user (or a future
+    model-extension that can apply it mechanically). The text is deterministic so
+    it is safe to show in the CLI, API, and Studio card alike.
+    """
+    cols = ", ".join(finding.columns)
+    if finding.kind == "repeating_group":
+        return (
+            f"Move the numbered family ({cols}) on '{finding.table}' into a single "
+            f"array property, or split it into a child collection keyed back to "
+            f"'{finding.table}'."
+        )
+    if finding.kind == "embedded_lookup":
+        det = ", ".join(finding.determinant) or cols
+        deps = ", ".join(finding.dependents)
+        return (
+            f"Extract ({det}{', ' + deps if deps else ''}) into a shared lookup "
+            f"vertex and link '{finding.table}' to it by an edge on {det}; drop the "
+            f"dependent columns from '{finding.table}'."
+        )
+    if finding.kind == "redundant_reference":
+        return (
+            f"'{cols}' is repeated reference data on '{finding.table}'. Extract its "
+            f"distinct values into a lookup vertex and replace the column with an "
+            f"edge to that vertex."
+        )
+    if finding.kind == "multi_valued":
+        delim = finding.params.get("delimiter_label", "a delimiter")
+        return (
+            f"Split '{cols}' on {delim} into an array property (or a child "
+            f"collection of values) instead of a packed string on '{finding.table}'."
+        )
+    if finding.kind == "one_to_one":
+        parent = finding.dependents[0] if finding.dependents else "the referenced table"
+        return (
+            f"'{finding.table}' is a strict 1:1 extension of '{parent}'. Consider "
+            f"merging its attributes into '{parent}' (one document) rather than two "
+            f"collections joined by an edge."
+        )
+    return f"Review the {finding.kind} finding on '{finding.table}' ({cols})."
+
+
+def with_hints(findings: list[DenormFinding]) -> list[dict[str, object]]:
+    """Serialize findings to dicts, each augmented with a ``hint`` string.
+
+    Used by the CLI/API/Studio so the advisory remediation guidance travels with
+    the finding without bloating the persisted model.
+    """
+    out: list[dict[str, object]] = []
+    for f in findings:
+        d = f.model_dump(mode="json")
+        d["hint"] = remediation_hint(f)
+        out.append(d)
+    return out
+
+
+# ── Phase 10 grounding (P11.10) ─────────────────────────────────────
+
+
+def summarize_findings_for_prompt(findings: list[DenormFinding], *, max_items: int = 50) -> str:
+    """Render findings as a compact, deterministic digest for an LLM prompt.
+
+    Phase 10's ontology-derivation prompt builder consumes this so the model's
+    proposal is *grounded* in deterministic evidence (e.g. "zip determines city,
+    state — consider a Location vertex"). Ordered by confidence, capped at
+    ``max_items``, and free of any sampled raw values (evidence already carries
+    only counts/ratios). Returns an empty string when there are no findings.
+    """
+    if not findings:
+        return ""
+    ranked = sorted(findings, key=lambda f: f.confidence, reverse=True)[:max_items]
+    lines = ["Deterministic denormalization findings (advisory, grounding):"]
+    for f in ranked:
+        cols = ", ".join(f.columns)
+        lines.append(
+            f"- [{f.kind} | conf {f.confidence:.2f}] {f.table}({cols}) "
+            f"=> {f.recommended_action}: {remediation_hint(f)}"
+        )
+    return "\n".join(lines)

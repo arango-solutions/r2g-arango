@@ -2197,7 +2197,7 @@ def source_analyze_denorm(
     from rich.table import Table as RichTable
 
     from r2g.connectors.base import normalize_source_type
-    from r2g.denorm import AnalyzeOptions, analyze_denormalization
+    from r2g.denorm import AnalyzeOptions, analyze_denormalization, remediation_hint, with_hints
     from r2g.fk_inference import create_value_sampler
 
     mgr = _get_catalog()
@@ -2242,7 +2242,7 @@ def source_analyze_denorm(
             sampler.close()
 
     if as_json:
-        console.print_json(_json.dumps([f.model_dump(mode="json") for f in findings]))
+        console.print_json(_json.dumps(with_hints(findings)))
         return
 
     if not findings:
@@ -2253,19 +2253,20 @@ def source_analyze_denorm(
     tbl.add_column("Kind")
     tbl.add_column("Table")
     tbl.add_column("Columns")
-    tbl.add_column("Remedy")
     tbl.add_column("Conf", justify="right")
-    tbl.add_column("Evidence")
+    tbl.add_column("Suggested remediation")
     for f in findings:
         tbl.add_row(
             f.kind,
             f.table,
             ", ".join(f.columns),
-            f.recommended_action,
             f"{f.confidence:.2f}",
-            "; ".join(f.evidence),
+            remediation_hint(f),
         )
     console.print(tbl)
+    console.print(
+        "[dim]Advisory only — r2g does not modify your schema, data, or mapping.[/dim]"
+    )
 
 
 # ── External data catalog commands (Phase 8) ─────────────────────────
