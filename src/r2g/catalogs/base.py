@@ -91,6 +91,15 @@ class CatalogProvider(Protocol):
         """Resolve *asset* into a connectable r2g source (discover-then-connect)."""
         ...
 
+    def get_asset(self, fqn: str) -> Optional[CatalogAsset]:
+        """Fetch a single asset by its fully-qualified name, or ``None``.
+
+        Used by the import path (``catalog import-source`` / the UI / the MCP
+        tool), which takes an FQN string and must resolve it to an asset before
+        :meth:`resolve_source`.
+        """
+        ...
+
 
 SUPPORTED_CATALOG_TYPES: tuple[str, ...] = ("openmetadata",)
 

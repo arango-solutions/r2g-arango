@@ -328,6 +328,168 @@ class TestResources:
         assert "error" in data
 
 
+class _FakeProvider:
+    """A stand-in catalog provider with canned discovery responses."""
+
+    def __init__(self):
+        from r2g.catalogs.base import ASSET_DATABASE, ASSET_TABLE, CatalogAsset
+
+        self._db = CatalogAsset(
+            provider="corp",
+            provider_type="openmetadata",
+            fqn="pg.shop",
+            kind=ASSET_DATABASE,
+            name="shop",
+            source_type="postgresql",
+            connection_hint={"hostPort": "db.internal:5432", "database": "shop"},
+        )
+        self._table = CatalogAsset(
+            provider="corp",
+            provider_type="openmetadata",
+            fqn="pg.shop.public.orders",
+            kind=ASSET_TABLE,
+            name="orders",
+            source_type="postgresql",
+        )
+
+    def list_data_sources(self):
+        return [self._db]
+
+    def list_children(self, asset):
+        return [self._table]
+
+    def search(self, query, *, limit=50):
+        return [self._table]
+
+    def get_asset(self, fqn):
+        if fqn == self._db.fqn:
+            return self._db
+        if fqn == self._table.fqn:
+            return self._table
+        return None
+
+    def resolve_source(self, asset):
+        from r2g.catalogs.base import ResolvedSource
+
+        return ResolvedSource(
+            source_type="postgresql",
+            connection_string="postgresql://$R2G_DB_USER:$R2G_DB_PASSWORD@db.internal:5432/shop",
+            schema_name="public",
+            notes="Credentials are not read from the catalog.",
+        )
+
+
+class TestCatalogRegistry:
+    def test_list_empty(self, catalog):
+        from r2g.mcp_server import list_catalogs
+
+        with _patch_catalog(catalog):
+            assert list_catalogs() == []
+
+    def test_add_list_redacts_token(self, catalog):
+        from r2g.mcp_server import add_catalog, list_catalogs
+
+        with _patch_catalog(catalog):
+            result = add_catalog("corp", "http://localhost:8585", token="super-secret-token")
+            assert result["status"] == "created"
+            # Token must never be echoed back in the clear.
+            assert "super-secret-token" not in json.dumps(result)
+            listed = list_catalogs()
+        assert len(listed) == 1
+        assert listed[0]["name"] == "corp"
+        assert "super-secret-token" not in json.dumps(listed)
+
+    def test_add_unsupported_type(self, catalog):
+        from r2g.mcp_server import add_catalog
+
+        with _patch_catalog(catalog):
+            result = add_catalog("bad", "http://x", provider_type="nope")
+        assert "error" in result
+
+    def test_remove(self, catalog):
+        from r2g.mcp_server import add_catalog, remove_catalog
+
+        with _patch_catalog(catalog):
+            add_catalog("corp", "http://localhost:8585")
+            assert remove_catalog("corp")["status"] == "removed"
+            assert "error" in remove_catalog("corp")
+
+
+class TestCatalogBrowse:
+    def test_unknown_catalog(self, catalog):
+        from r2g.mcp_server import catalog_browse
+
+        with _patch_catalog(catalog):
+            result = catalog_browse("ghost")
+        assert "error" in result
+
+    def test_list_sources(self, catalog):
+        import r2g.mcp_server as m
+
+        with _patch_catalog(catalog), patch.object(
+            m, "_build_catalog_provider", return_value=_FakeProvider()
+        ):
+            result = m.catalog_browse("corp")
+        assert result["count"] == 1
+        assert result["assets"][0]["name"] == "shop"
+
+    def test_descend_path(self, catalog):
+        import r2g.mcp_server as m
+
+        with _patch_catalog(catalog), patch.object(
+            m, "_build_catalog_provider", return_value=_FakeProvider()
+        ):
+            result = m.catalog_browse("corp", path="pg.shop")
+        assert result["assets"][0]["name"] == "orders"
+
+    def test_path_not_found(self, catalog):
+        import r2g.mcp_server as m
+
+        with _patch_catalog(catalog), patch.object(
+            m, "_build_catalog_provider", return_value=_FakeProvider()
+        ):
+            result = m.catalog_browse("corp", path="pg.nope")
+        assert "error" in result
+
+    def test_search(self, catalog):
+        import r2g.mcp_server as m
+
+        with _patch_catalog(catalog), patch.object(
+            m, "_build_catalog_provider", return_value=_FakeProvider()
+        ):
+            result = m.catalog_browse("corp", search="ord")
+        assert result["count"] == 1
+
+
+class TestCatalogImportSource:
+    def test_import_creates_source(self, catalog):
+        import r2g.mcp_server as m
+
+        with _patch_catalog(catalog), patch.object(
+            m, "_build_catalog_provider", return_value=_FakeProvider()
+        ):
+            result = m.catalog_import_source("corp", "pg.shop", "shop_src")
+        assert result["status"] == "imported"
+        assert result["source"]["name"] == "shop_src"
+        assert result["source_type"] == "postgresql"
+        assert result["schema_name"] == "public"
+        # The created source actually lands in the catalog, redacted.
+        src = catalog.get_source("shop_src")
+        assert src is not None
+        assert src.source_type == "postgresql"
+        # Connection string (with $ENV placeholders) is redacted in the response.
+        assert "$R2G_DB_PASSWORD" not in json.dumps(result["source"])
+
+    def test_asset_not_found(self, catalog):
+        import r2g.mcp_server as m
+
+        with _patch_catalog(catalog), patch.object(
+            m, "_build_catalog_provider", return_value=_FakeProvider()
+        ):
+            result = m.catalog_import_source("corp", "pg.ghost", "x")
+        assert "error" in result
+
+
 class TestSafeError:
     def test_scrubs_dsn_credentials(self):
         from r2g.mcp_server import _safe_error

@@ -9,6 +9,14 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **External data catalog — MCP tools (Phase 8b, P8.6)**: five new MCP tools —
+  `list_catalogs`, `add_catalog`, `remove_catalog`, `catalog_browse`, and
+  `catalog_import_source` — let an agent register a catalog, browse its
+  `service → database → schema → table` tree (or search), and import a discovered
+  asset as a normal r2g source, mirroring the CLI/UI. Tokens are redacted on read
+  and `$ENV_VAR` token references resolve at use time; errors are DSN-scrubbed and
+  credentials are never taken from the catalog. `get_asset` is now part of the
+  `CatalogProvider` protocol (the CLI, UI, and MCP all rely on it).
 - **External data catalog — Studio UI import (Phase 8b)**: an "Import from
   catalog" path in the Studio (folder button on the Sources panel) — register a
   catalog, browse its `service → database → schema` tree, and import a

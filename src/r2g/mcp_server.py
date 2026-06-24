@@ -24,7 +24,9 @@ mcp = FastMCP(
         "R2G is a relational-to-graph ETL pipeline. Use these tools to introspect "
         "PostgreSQL schemas, generate ArangoDB graph mappings, validate configs, "
         "trigger data loads, compare schema snapshots, and manage the source/project catalog. "
-        "Start by calling list_sources and list_projects to see what's configured."
+        "You can also browse connected external data catalogs (e.g. OpenMetadata) via "
+        "list_catalogs / catalog_browse and import a discovered asset as a source with "
+        "catalog_import_source. Start by calling list_sources and list_projects to see what's configured."
     ),
 )
 
@@ -221,6 +223,173 @@ def add_target(
         return {"status": "created", "target": _redact_target(target.model_dump(mode="json"))}
     except ValueError as e:
         return {"error": _safe_error(e)}
+
+
+# ── External data catalogs (Phase 8) ─────────────────────────────────
+
+
+def _redact_catalog(dump: dict[str, Any]) -> dict[str, Any]:
+    """Redact the stored token before returning a catalog config to an agent."""
+    from r2g.security import redact_for_display
+
+    out = dict(dump)
+    out["token"] = redact_for_display(out.get("token") or "")
+    return out
+
+
+def _build_catalog_provider(mgr: Any, name: str) -> Any:
+    """Build a live catalog provider from a registered config.
+
+    Raises ``ValueError`` if the catalog is unknown. A ``$ENV_VAR`` token
+    reference is resolved from the environment at use time (mirroring the CLI
+    and UI), so secrets stay out of the catalog file.
+    """
+    from r2g.catalogs.base import create_catalog_provider
+
+    cfg = mgr.get_catalog(name)
+    if cfg is None:
+        raise ValueError(f"Catalog '{name}' not found. Register it with add_catalog.")
+    token = cfg.token
+    if token and token.startswith("$"):
+        token = os.environ.get(token[1:], token)
+    return create_catalog_provider(
+        cfg.provider_type, cfg.endpoint, name=cfg.name, token=token or None, params=cfg.params
+    )
+
+
+@mcp.tool()
+def list_catalogs() -> list[dict[str, Any]]:
+    """List registered external data catalogs (e.g. OpenMetadata) used for source discovery."""
+    mgr = _get_catalog()
+    return [_redact_catalog(c.model_dump(mode="json")) for c in mgr.list_catalogs()]
+
+
+@mcp.tool()
+def add_catalog(
+    name: str,
+    endpoint: str,
+    provider_type: str = "openmetadata",
+    token: str = "",
+    description: str = "",
+) -> dict[str, Any]:
+    """Register an external data catalog for source discovery.
+
+    Args:
+        name: Unique local name for this catalog connection
+        endpoint: Catalog base URL, e.g. "http://localhost:8585"
+        provider_type: Catalog type (currently "openmetadata")
+        token: API token, or a "$ENV_VAR" reference; stored encrypted at rest
+        description: Human-readable description
+    """
+    mgr = _get_catalog()
+    try:
+        cfg = mgr.add_catalog(name, provider_type, endpoint, token=token, description=description)
+        return {"status": "created", "catalog": _redact_catalog(cfg.model_dump(mode="json"))}
+    except ValueError as e:
+        return {"error": _safe_error(e)}
+
+
+@mcp.tool()
+def remove_catalog(name: str) -> dict[str, Any]:
+    """Remove a registered external data catalog.
+
+    Args:
+        name: Catalog name to remove
+    """
+    mgr = _get_catalog()
+    if mgr.remove_catalog(name):
+        return {"status": "removed", "name": name}
+    return {"error": f"Catalog '{name}' not found"}
+
+
+@mcp.tool()
+def catalog_browse(
+    name: str,
+    path: str | None = None,
+    search: str | None = None,
+) -> dict[str, Any]:
+    """Browse an external data catalog.
+
+    With no arguments, lists the catalog's top-level data sources/services. With
+    ``path`` (an asset FQN), lists that asset's children (descending
+    service → database → schema → table). With ``search``, returns matching tables.
+
+    Args:
+        name: Registered catalog name
+        path: Optional asset FQN to descend into (e.g. "service.database")
+        search: Optional text to search tables by
+    """
+    mgr = _get_catalog()
+    try:
+        provider = _build_catalog_provider(mgr, name)
+    except ValueError as e:
+        return {"error": _safe_error(e)}
+    try:
+        if search:
+            assets = provider.search(search)
+        elif path:
+            asset = provider.get_asset(path)
+            if asset is None:
+                return {"error": f"Asset '{path}' not found in catalog '{name}'"}
+            assets = provider.list_children(asset)
+        else:
+            assets = provider.list_data_sources()
+    except Exception as e:
+        return {"error": _safe_error(e)}
+    return {
+        "catalog": name,
+        "count": len(assets),
+        "assets": [a.model_dump(mode="json") for a in assets],
+    }
+
+
+@mcp.tool()
+def catalog_import_source(
+    name: str,
+    asset_fqn: str,
+    source_name: str,
+    description: str = "",
+) -> dict[str, Any]:
+    """Resolve a catalog asset into an r2g source (discover-then-connect).
+
+    Credentials are NOT taken from the catalog: the generated connection string
+    uses "$R2G_DB_USER" / "$R2G_DB_PASSWORD" placeholders that r2g resolves from
+    the environment at connect time.
+
+    Args:
+        name: Registered catalog name
+        asset_fqn: Asset FQN to import (database / schema / topic)
+        source_name: Name for the new r2g source
+        description: Optional description for the new source
+    """
+    mgr = _get_catalog()
+    try:
+        provider = _build_catalog_provider(mgr, name)
+    except ValueError as e:
+        return {"error": _safe_error(e)}
+    try:
+        asset = provider.get_asset(asset_fqn)
+        if asset is None:
+            return {"error": f"Asset '{asset_fqn}' not found in catalog '{name}'"}
+        resolved = provider.resolve_source(asset)
+        source = mgr.add_source(
+            source_name,
+            resolved.source_type,
+            resolved.connection_string,
+            description=description or f"Imported from catalog '{name}' ({asset_fqn})",
+            source_params=resolved.source_params,
+        )
+    except ValueError as e:
+        return {"error": _safe_error(e)}
+    except Exception as e:
+        return {"error": _safe_error(e)}
+    return {
+        "status": "imported",
+        "source": _redact_source(source.model_dump(mode="json")),
+        "source_type": resolved.source_type,
+        "schema_name": resolved.schema_name,
+        "notes": resolved.notes,
+    }
 
 
 # ── Schema Introspection ─────────────────────────────────────────────
