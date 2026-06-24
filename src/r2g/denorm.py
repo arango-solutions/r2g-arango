@@ -84,6 +84,8 @@ class AnalyzeOptions:
     fd_threshold: float = 0.98
     determinant_max_distinct_ratio: float = 0.5
     max_determinants_per_table: int = 12
+    multivalue_min_rate: float = 0.7
+    redundant_max_distinct_ratio: float = 0.1
     no_sample_columns: frozenset[str] = frozenset()
     is_sampleable: Optional[Callable[[str, str], bool]] = field(default=None)
 
@@ -114,6 +116,11 @@ class DenormSampler(Protocol):
         functionally determines the dependent (1.0 == perfect FD)."""
         ...
 
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> Optional[float]:
+        """Fraction of sampled non-null ``column`` values containing ``delimiter``
+        (the signal for a delimited multi-valued attribute)."""
+        ...
+
 
 # ── Entry point ─────────────────────────────────────────────────────
 
@@ -138,10 +145,30 @@ def analyze_denormalization(
     findings: list[DenormFinding] = []
     for table in schema.tables.values():
         findings.extend(_detect_repeating_groups(table, opts))
+        findings.extend(_detect_one_to_one(table, schema, opts))
 
     if opts.sample and sampler is not None:
         for table in schema.tables.values():
-            findings.extend(_detect_embedded_lookups(table, sampler, opts, sampleable))
+            pk_set = set(table.primary_key)
+            non_pk = [c for c in table.columns if c.name not in pk_set]
+
+            # One distinct-ratio probe per sampleable non-key column, shared by
+            # the FD and redundant-reference detectors.
+            ratios: dict[str, float] = {}
+            for col in non_pk:
+                if not sampleable(table.name, col.name):
+                    continue
+                r = _safe_probe(sampler.distinct_ratio, table.name, col.name)
+                if r is not None:
+                    ratios[col.name] = r
+
+            lookups = _detect_embedded_lookups(table, sampler, opts, ratios)
+            findings.extend(lookups)
+            used = {c for f in lookups for c in f.columns}
+            findings.extend(
+                _detect_multi_valued(table, sampler, opts, sampleable, pk_set)
+            )
+            findings.extend(_detect_redundant_reference(table, opts, ratios, used))
 
     deduped = _dedupe(findings)
     ranked = sorted(deduped, key=lambda f: f.confidence, reverse=True)
@@ -222,7 +249,7 @@ def _detect_embedded_lookups(
     table: Table,
     sampler: DenormSampler,
     opts: AnalyzeOptions,
-    sampleable: Callable[[str, str], bool],
+    ratios: dict[str, float],
 ) -> list[DenormFinding]:
     """Detect a non-key column that functionally determines other non-key
     columns (2NF/3NF violation = an embedded lookup that wants its own vertex).
@@ -230,17 +257,11 @@ def _detect_embedded_lookups(
     Candidate determinants are non-PK columns that *repeat* (low distinct ratio);
     a dependent is any other non-PK column that is single-valued within the
     determinant's groups. Unique columns (ids, emails) naturally fail both tests.
+    ``ratios`` is the shared per-column distinct-ratio probe map (sampleable
+    columns only).
     """
     pk_set = set(table.primary_key)
     non_pk = [c for c in table.columns if c.name not in pk_set]
-
-    ratios: dict[str, float] = {}
-    for col in non_pk:
-        if not sampleable(table.name, col.name):
-            continue
-        r = _safe_probe(sampler.distinct_ratio, table.name, col.name)
-        if r is not None:
-            ratios[col.name] = r
 
     determinants = sorted(
         (
@@ -297,6 +318,162 @@ def _detect_embedded_lookups(
                 evidence=evidence,
                 determinant=[det],
                 dependents=dependents,
+            )
+        )
+    return out
+
+
+# ── Detector: multi-valued attributes (sampled) ─────────────────────
+
+
+# Probed in priority order; the first delimiter over the threshold wins.
+_MULTIVALUE_DELIMITERS: tuple[tuple[str, str], ...] = (
+    (",", "comma"),
+    (";", "semicolon"),
+    ("|", "pipe"),
+    ("\t", "tab"),
+)
+
+
+def _detect_multi_valued(
+    table: Table,
+    sampler: DenormSampler,
+    opts: AnalyzeOptions,
+    sampleable: Callable[[str, str], bool],
+    pk_set: set[str],
+) -> list[DenormFinding]:
+    """Detect a text column holding a delimited list (``"a,b,c"``).
+
+    A column qualifies when a single delimiter appears in at least
+    ``multivalue_min_rate`` of sampled non-null values — a consistent signal of a
+    packed multi-valued attribute that wants to be an array / child collection.
+    """
+    out: list[DenormFinding] = []
+    for col in table.columns:
+        if col.name in pk_set:
+            continue
+        if pg_type_to_json_type(col.data_type) != "string":
+            continue
+        if not sampleable(table.name, col.name):
+            continue
+
+        best: Optional[tuple[str, str, float]] = None
+        for delim, label in _MULTIVALUE_DELIMITERS:
+            rate = _safe_probe(sampler.delimiter_rate, table.name, col.name, delim)
+            if rate is None or rate < opts.multivalue_min_rate:
+                continue
+            if best is None or rate > best[2]:
+                best = (delim, label, rate)
+
+        if best is None:
+            continue
+        _delim, label, rate = best
+        confidence = round(min(0.5 + 0.4 * rate, 0.95), 3)
+        if confidence < opts.min_confidence:
+            continue
+        out.append(
+            DenormFinding(
+                kind="multi_valued",
+                table=table.name,
+                columns=[col.name],
+                recommended_action="split_column",
+                confidence=confidence,
+                evidence=[
+                    f"'{col.name}' contains a {label} delimiter in {rate:.0%} of sampled values"
+                ],
+            )
+        )
+    return out
+
+
+# ── Detector: 1:1 over-normalization (structural) ───────────────────
+
+
+def _detect_one_to_one(
+    table: Table, schema: Schema, opts: AnalyzeOptions
+) -> list[DenormFinding]:
+    """Detect an over-split 1:1 extension table.
+
+    When a table's entire primary key is also a foreign key to another table,
+    the two are in strict 1:1 (the child is a vertical partition of the parent)
+    and are usually better merged / embedded than kept as two collections + an
+    edge. Purely structural — no sampling required.
+    """
+    pk = set(table.primary_key)
+    if not pk:
+        return []
+    out: list[DenormFinding] = []
+    for fk in table.foreign_keys:
+        if set(fk.columns) != pk:
+            continue
+        if fk.foreign_table not in schema.tables:
+            continue
+        confidence = 0.8
+        if confidence < opts.min_confidence:
+            continue
+        out.append(
+            DenormFinding(
+                kind="one_to_one",
+                table=table.name,
+                columns=list(table.primary_key),
+                recommended_action="merge",
+                confidence=round(confidence, 3),
+                evidence=[
+                    f"primary key ({', '.join(table.primary_key)}) is also a foreign key to "
+                    f"'{fk.foreign_table}' — a strict 1:1 extension of that table"
+                ],
+                determinant=list(table.primary_key),
+                dependents=[fk.foreign_table],
+            )
+        )
+    return out
+
+
+# ── Detector: redundant reference data (sampled) ────────────────────
+
+
+def _detect_redundant_reference(
+    table: Table,
+    opts: AnalyzeOptions,
+    ratios: dict[str, float],
+    used_columns: set[str],
+) -> list[DenormFinding]:
+    """Detect a descriptive text column with very few distinct values relative
+    to row count — duplicated reference data that wants its own lookup vertex.
+
+    Columns already explained by an embedded-lookup finding are suppressed to
+    avoid double-reporting. Numeric/boolean low-cardinality columns (flags,
+    counts) are intentionally ignored; the signal targets repeated *labels*.
+    """
+    pk_set = set(table.primary_key)
+    out: list[DenormFinding] = []
+    for col in table.columns:
+        if col.name in pk_set or col.name in used_columns:
+            continue
+        if pg_type_to_json_type(col.data_type) != "string":
+            continue
+        ratio = ratios.get(col.name)
+        if ratio is None or not (0.0 < ratio <= opts.redundant_max_distinct_ratio):
+            continue
+        confidence = 0.55
+        if ratio <= 0.05:
+            confidence += 0.1
+        if ratio <= 0.01:
+            confidence += 0.1
+        confidence = round(min(confidence, 0.8), 3)
+        if confidence < opts.min_confidence:
+            continue
+        out.append(
+            DenormFinding(
+                kind="redundant_reference",
+                table=table.name,
+                columns=[col.name],
+                recommended_action="extract_vertex",
+                confidence=confidence,
+                evidence=[
+                    f"'{col.name}' has a very low distinct ratio ({ratio:.3f}) — repeated "
+                    f"reference data better modelled as a lookup vertex"
+                ],
             )
         )
     return out

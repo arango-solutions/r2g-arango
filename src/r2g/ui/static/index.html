@@ -2169,6 +2169,9 @@ function openActionsMenu(ev) {
     { label: 'Suggest FKs', icon: '\u2197', shortcut: 'i', disabled: dis,
       hint: 'Scan the source schema for likely foreign keys (by name and value overlap) and propose new edges to accept or dismiss.',
       onClick: suggestFks },
+    { label: 'Analyze denormalization', icon: '\u2728', shortcut: 'n', disabled: dis,
+      hint: 'Detect denormalization smells (repeating column groups, embedded lookups, multi-valued columns, redundant reference data, over-split 1:1 tables) and recommend graph remedies. Advisory \u2014 nothing is changed.',
+      onClick: analyzeDenorm },
     { label: 'Diff', icon: '\u00B1', shortcut: '\u2318D', disabled: dis,
       hint: 'Show what changed in the mapping versus the last saved version.',
       onClick: showDiff },
@@ -4548,6 +4551,122 @@ function acceptAllFkSuggestions() {
   closeFloatingCard('fk-suggestions');
 }
 
+// ── Denormalization analysis (Phase 11) ──
+
+let _pendingDenormFindings = [];
+
+const _DENORM_KIND_LABELS = {
+  repeating_group: 'Repeating group',
+  embedded_lookup: 'Embedded lookup',
+  multi_valued: 'Multi-valued column',
+  redundant_reference: 'Redundant reference',
+  one_to_one: '1:1 over-normalization',
+};
+
+async function analyzeDenorm({ sample = false } = {}) {
+  if (!currentProject) return;
+
+  openFloatingCard({
+    id: 'denorm-findings',
+    title: 'Analyzing denormalization\u2026',
+    body: '<p style="color:var(--text-dim)">Scanning schema' + (sample ? ' and sampling values' : '') + '\u2026</p>',
+    status: { kind: 'info', label: 'working' },
+    actions: [],
+    position: { right: 20, bottom: 120 },
+  });
+
+  try {
+    const project = await apiFetch(`/api/projects/${currentProject}`);
+    const source = project.source_name || project.sourceName;
+    if (!source) {
+      throw new Error('No source attached to this project');
+    }
+    const body = { sample, min_confidence: 0.4 };
+    const result = await apiFetch(`/api/sources/${encodeURIComponent(source)}/analyze-denorm`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    renderDenormFindings(result);
+  } catch (e) {
+    openFloatingCard({
+      id: 'denorm-findings',
+      title: 'Analyze denormalization',
+      body: `<p style="color:var(--red)">${escHtml(e.message || String(e))}</p>`,
+      status: { kind: 'error', label: 'failed' },
+    });
+  }
+}
+
+function renderDenormFindings(result) {
+  const findings = (result && result.findings) || [];
+  if (!findings.length) {
+    openFloatingCard({
+      id: 'denorm-findings',
+      title: 'Denormalization analysis',
+      body: '<p style="color:var(--text-dim)">No denormalization findings met the confidence threshold. Run <code>r2g source analyze-denorm &lt;name&gt; --sample</code> from the CLI to enable value sampling (embedded lookups, multi-valued and redundant columns).</p>',
+      status: { kind: 'info', label: '0 found' },
+    });
+    return;
+  }
+
+  const sampleNote = result.sample_used
+    ? '<span class="hint" style="color:var(--green)">Value sampling ON</span>'
+    : '<span class="hint">Structural only \u2014 use CLI <code>--sample</code> for embedded-lookup / multi-valued checks</span>';
+
+  const rows = findings.map((f, idx) => {
+    const confPct = Math.round((f.confidence || 0) * 100);
+    const confClass = confPct >= 80 ? 'high' : (confPct >= 60 ? 'mid' : 'low');
+    const evidence = (f.evidence || []).join(' \u00b7 ');
+    const kindLabel = _DENORM_KIND_LABELS[f.kind] || f.kind;
+    return `
+      <li class="fk-suggest-row" data-idx="${idx}">
+        <div class="fk-suggest-line">
+          <span class="fk-suggest-conf ${confClass}">${confPct}%</span>
+          <span class="fk-suggest-method">${escHtml(kindLabel)}</span>
+          <span class="fk-suggest-arrow">
+            <code>${escHtml(f.table)}</code>(${escHtml((f.columns || []).join(', '))})
+            \u2192 ${escHtml(f.recommended_action || '')}
+          </span>
+        </div>
+        <div class="fk-suggest-evidence">${escHtml(evidence)}</div>
+        <div class="fk-suggest-actions">
+          <button class="btn" onclick="dismissDenormFinding(${idx})">Dismiss</button>
+        </div>
+      </li>`;
+  }).join('');
+
+  const bodyHtml = `
+    <div class="fk-suggest-header">
+      <span>${findings.length} finding${findings.length === 1 ? '' : 's'}</span>
+      ${sampleNote}
+    </div>
+    <ul class="fk-suggest-list">${rows}</ul>
+    <p class="hint" style="margin-top:10px">Advisory only \u2014 r2g does not change your schema or mapping. Remediation scaffolding (accept \u2192 mapping edit) lands in a later release.</p>
+  `;
+
+  _pendingDenormFindings = findings.slice();
+
+  openFloatingCard({
+    id: 'denorm-findings',
+    title: 'Denormalization findings',
+    body: bodyHtml,
+    status: { kind: 'ok', label: `${findings.length} found` },
+    actions: [
+      { label: 'Dismiss all', onClick: () => closeFloatingCard('denorm-findings') },
+      { label: 'Close', onClick: () => closeFloatingCard('denorm-findings') },
+    ],
+  });
+}
+
+function dismissDenormFinding(idx) {
+  _pendingDenormFindings.splice(idx, 1);
+  if (!_pendingDenormFindings.length) {
+    closeFloatingCard('denorm-findings');
+    return;
+  }
+  renderDenormFindings({ findings: _pendingDenormFindings, sample_used: false });
+}
+
 // ── Settings ──
 
 function showSettings() {
@@ -5161,6 +5280,8 @@ function _menuCanvas() {
       hint: 'Re-case all generated names at once (e.g. PascalCase collections, camelCase properties and edges). Manual renames and system attributes are left untouched.' },
     { label: 'Suggest foreign keys\u2026', icon: '\u2699', shortcut: 'i', onClick: () => suggestFks(),
       hint: 'Scan the source schema for likely foreign keys (by column name and value overlap) and propose new edges to accept or dismiss.' },
+    { label: 'Analyze denormalization\u2026', icon: '\u2728', shortcut: 'n', onClick: () => analyzeDenorm(),
+      hint: 'Detect denormalization smells (repeating groups, embedded lookups, multi-valued columns, redundant reference data, 1:1 over-splits) and recommend graph remedies. Advisory only.' },
     { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping,
       hint: 'Check the current mapping for errors and warnings (missing keys, unresolved columns, reserved-attribute conflicts) without saving.' },
     { label: 'Save', icon: '\u2630', shortcut: '\u2318S', onClick: saveMapping,
@@ -6455,6 +6576,7 @@ registerShortcut('meta+enter', 'Open load dialog', 'global', () => showLoadModal
 registerShortcut('ctrl+enter', 'Open load dialog', 'global', () => showLoadModal());
 registerShortcut('a', 'Auto-map all', 'global', () => autoMap());
 registerShortcut('i', 'Suggest foreign keys', 'global', () => suggestFks());
+registerShortcut('n', 'Analyze denormalization', 'global', () => analyzeDenorm());
 registerShortcut('1', 'View: Topology', 'global', () => setLens('topology'));
 registerShortcut('2', 'View: Coverage', 'global', () => setLens('coverage'));
 registerShortcut('3', 'View: Validation', 'global', () => setLens('validation'));

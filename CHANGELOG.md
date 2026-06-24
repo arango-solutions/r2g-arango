@@ -9,6 +9,16 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Denormalization analysis — more detectors + Studio card (Phase 11b)**:
+  three additional detectors — **multi-valued** columns (delimited lists, via a
+  new bounded `delimiter_rate` probe on all four value samplers), **redundant
+  reference** data (text columns with a very low distinct ratio, suppressed when
+  already explained by an embedded-lookup finding), and **1:1 over-normalization**
+  (structural: a table whose entire primary key is also a foreign key to another
+  table → recommend merge/embed). Plus a read-only **Studio findings card** in
+  the Mapping Studio, reachable from the Actions menu, the canvas right-click
+  menu, and the `n` shortcut (clone of the Suggest-FKs card). Advisory only —
+  accepting a finding into the mapping arrives in 11c.
 - **Denormalization analysis — deterministic core (Phase 11a)**: a new
   `r2g source analyze-denorm <name>` command surfaces *advisory*, evidence-backed
   denormalization findings on a source's latest snapshot. Detects **repeating

@@ -771,6 +771,19 @@ class PostgresValueSampler:
         """  # noqa: S608 - identifiers are quoted; schema is from the catalog
         return self._scalar(q, (self.limit,))
 
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        q = f"""
+            WITH s AS (
+                SELECT "{column}" AS v
+                FROM "{self.schema_name}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                LIMIT %s
+            )
+            SELECT COALESCE(AVG(CASE WHEN strpos(v, %s) > 0 THEN 1.0 ELSE 0.0 END), 0)::float
+            FROM s
+        """  # noqa: S608 - identifiers are quoted; schema is from the catalog
+        return self._scalar(q, (self.limit, delimiter))
+
 
 # ── Concrete MySQL value sampler ────────────────────────────────────
 
@@ -933,6 +946,19 @@ class MySQLValueSampler:
         """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
         return self._scalar(q, (self.limit,))
 
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        db = self._qi(self.schema_name)
+        q = f"""
+            SELECT AVG(CASE WHEN LOCATE(%s, v) > 0 THEN 1.0 ELSE 0.0 END) AS rate
+            FROM (
+                SELECT {self._qi(column)} AS v
+                FROM {db}.{self._qi(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+                LIMIT %s
+            ) s
+        """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+        return self._scalar(q, (delimiter, self.limit))
+
 
 # ── Concrete SQL Server value sampler ───────────────────────────────
 
@@ -1089,6 +1115,18 @@ class SQLServerValueSampler:
             ) g
         """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
         return self._scalar(q, (self.limit,))
+
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        s = self._qi(self.schema_name)
+        q = f"""
+            SELECT AVG(CAST(CASE WHEN CHARINDEX(%s, v) > 0 THEN 1.0 ELSE 0.0 END AS FLOAT)) AS rate
+            FROM (
+                SELECT TOP (%s) {self._qi(column)} AS v
+                FROM {s}.{self._qi(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+            ) l
+        """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+        return self._scalar(q, (delimiter, self.limit))
 
 
 # ── Concrete CSV value sampler ──────────────────────────────────────
@@ -1254,6 +1292,22 @@ class CsvValueSampler:
             return None
         single = grouped.get_column("dcount") <= 1
         return float(single.sum() / single.len())
+
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> SamplerResult:
+        import polars as pl
+
+        frame = self._read_columns(table, [column])
+        if frame is None or not frame.columns:
+            return None
+        name = frame.columns[0]
+        series = frame.get_column(name).filter(
+            pl.col(name).is_not_null() & (pl.col(name) != "")
+        )
+        total = series.len()
+        if total == 0:
+            return None
+        contains = series.str.contains(delimiter, literal=True)
+        return float(contains.sum() / total)
 
 
 def create_value_sampler(

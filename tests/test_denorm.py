@@ -12,7 +12,7 @@ from typing import Optional
 import pytest
 
 from r2g.denorm import AnalyzeOptions, DenormFinding, analyze_denormalization
-from r2g.types import Column, Schema, Table
+from r2g.types import Column, ForeignKey, Schema, Table
 
 
 def _col(name: str, data_type: str = "text", pk: bool = False) -> Column:
@@ -35,9 +35,10 @@ class FakeSampler:
     present returns ``None`` (the "couldn't evaluate" signal).
     """
 
-    def __init__(self, distinct=None, fd=None, *, raise_on=None):
+    def __init__(self, distinct=None, fd=None, delim=None, *, raise_on=None):
         self.distinct = distinct or {}
         self.fd = fd or {}
+        self.delim = delim or {}
         self.raise_on = raise_on or set()
         self.sampled_columns: list[tuple[str, str]] = []
 
@@ -50,6 +51,9 @@ class FakeSampler:
     def group_single_valued(self, table, determinant_columns, dependent_column) -> Optional[float]:
         det = determinant_columns[0]
         return self.fd.get((table, det, dependent_column))
+
+    def delimiter_rate(self, table: str, column: str, delimiter: str) -> Optional[float]:
+        return self.delim.get((table, column, delimiter))
 
 
 # ── Repeating groups (structural) ───────────────────────────────────
@@ -212,6 +216,128 @@ class TestEmbeddedLookup:
             sampler=sampler,
         )
         assert isinstance(findings, list)
+
+
+class TestMultiValued:
+    def _table(self):
+        return _table(
+            "post",
+            [_col("id", "integer", pk=True), _col("tags", "text"), _col("title", "text")],
+            pk=["id"],
+        )
+
+    def test_delimited_column_detected(self):
+        sampler = FakeSampler(delim={("post", "tags", ","): 0.95, ("post", "title", ","): 0.0})
+        findings = analyze_denormalization(
+            _schema(self._table()), options=AnalyzeOptions(sample=True), sampler=sampler
+        )
+        mv = [f for f in findings if f.kind == "multi_valued"]
+        assert len(mv) == 1
+        assert mv[0].columns == ["tags"]
+        assert mv[0].recommended_action == "split_column"
+        assert "comma" in mv[0].evidence[0]
+
+    def test_below_threshold_not_detected(self):
+        sampler = FakeSampler(delim={("post", "tags", ","): 0.3})
+        findings = analyze_denormalization(
+            _schema(self._table()), options=AnalyzeOptions(sample=True), sampler=sampler
+        )
+        assert [f for f in findings if f.kind == "multi_valued"] == []
+
+    def test_not_run_without_sampler(self):
+        findings = analyze_denormalization(_schema(self._table()))
+        assert [f for f in findings if f.kind == "multi_valued"] == []
+
+
+class TestOneToOne:
+    def test_pk_equals_fk_detected(self):
+        users = _table("users", [_col("id", "integer", pk=True)], pk=["id"])
+        profile = _table(
+            "user_profile",
+            [_col("user_id", "integer", pk=True), _col("bio", "text")],
+            pk=["user_id"],
+        )
+        profile.foreign_keys = [
+            ForeignKey(columns=["user_id"], foreign_table="users", foreign_columns=["id"])
+        ]
+        # Structural — runs with no sampler.
+        findings = analyze_denormalization(_schema(users, profile))
+        oto = [f for f in findings if f.kind == "one_to_one"]
+        assert len(oto) == 1
+        assert oto[0].table == "user_profile"
+        assert oto[0].columns == ["user_id"]
+        assert oto[0].recommended_action == "merge"
+        assert "users" in oto[0].evidence[0]
+
+    def test_partial_pk_fk_not_one_to_one(self):
+        # A FK that covers only part of the PK is a normal child, not 1:1.
+        parent = _table("parent", [_col("id", "integer", pk=True)], pk=["id"])
+        child = _table(
+            "child",
+            [_col("parent_id", "integer", pk=True), _col("seq", "integer", pk=True)],
+            pk=["parent_id", "seq"],
+        )
+        child.foreign_keys = [
+            ForeignKey(columns=["parent_id"], foreign_table="parent", foreign_columns=["id"])
+        ]
+        findings = analyze_denormalization(_schema(parent, child))
+        assert [f for f in findings if f.kind == "one_to_one"] == []
+
+
+class TestRedundantReference:
+    def test_low_cardinality_label_detected(self):
+        t = _table(
+            "orders",
+            [_col("id", "integer", pk=True), _col("status_label", "text")],
+            pk=["id"],
+        )
+        sampler = FakeSampler(distinct={("orders", "status_label"): 0.004})
+        findings = analyze_denormalization(
+            _schema(t), options=AnalyzeOptions(sample=True), sampler=sampler
+        )
+        rr = [f for f in findings if f.kind == "redundant_reference"]
+        assert len(rr) == 1
+        assert rr[0].columns == ["status_label"]
+        assert rr[0].recommended_action == "extract_vertex"
+
+    def test_high_cardinality_not_flagged(self):
+        t = _table(
+            "orders",
+            [_col("id", "integer", pk=True), _col("note", "text")],
+            pk=["id"],
+        )
+        sampler = FakeSampler(distinct={("orders", "note"): 0.9})
+        findings = analyze_denormalization(
+            _schema(t), options=AnalyzeOptions(sample=True), sampler=sampler
+        )
+        assert [f for f in findings if f.kind == "redundant_reference"] == []
+
+    def test_suppressed_when_part_of_embedded_lookup(self):
+        # city/state are dependents of zip → must not also be reported as
+        # standalone redundant_reference findings.
+        sampler = FakeSampler(
+            distinct={
+                ("customers", "zip"): 0.05,
+                ("customers", "city"): 0.05,
+                ("customers", "state"): 0.02,
+            },
+            fd={
+                ("customers", "zip", "city"): 1.0,
+                ("customers", "zip", "state"): 1.0,
+                ("customers", "city", "state"): 0.0,
+                ("customers", "city", "zip"): 0.2,
+                ("customers", "state", "zip"): 0.0,
+                ("customers", "state", "city"): 0.0,
+            },
+        )
+        findings = analyze_denormalization(
+            _schema(_customers_table()),
+            options=AnalyzeOptions(sample=True),
+            sampler=sampler,
+        )
+        rr_cols = {tuple(f.columns) for f in findings if f.kind == "redundant_reference"}
+        assert ("city",) not in rr_cols
+        assert ("state",) not in rr_cols
 
 
 class TestModel:
