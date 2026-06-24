@@ -2153,6 +2153,121 @@ def source_infer_fks(
             console.print("[dim]No new FKs to accept.[/dim]")
 
 
+@source_app.command("analyze-denorm")
+def source_analyze_denorm(
+    name: str = typer.Argument(..., help="Source name"),
+    sample: bool = typer.Option(
+        False,
+        "--sample",
+        help=(
+            "Run bounded data probes to detect embedded lookups / functional "
+            "dependencies (PostgreSQL, MySQL, SQL Server, CSV). Structural "
+            "detectors (repeating groups) run regardless."
+        ),
+    ),
+    sample_limit: int = typer.Option(
+        10_000,
+        "--sample-limit",
+        help="Row cap per probe for --sample queries",
+    ),
+    min_confidence: float = typer.Option(
+        0.4,
+        "--min-confidence",
+        help="Drop findings below this confidence (0..1)",
+    ),
+    no_sample_columns: str = typer.Option(
+        "",
+        "--no-sample-columns",
+        help=(
+            "Comma-separated columns to never value-sample (bare 'col' or "
+            "'table.col'); use for sensitive/PII columns. Phase-9 classifications "
+            "will gate this automatically once available."
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit findings as JSON"),
+) -> None:
+    """Detect denormalization smells in a source's latest snapshot.
+
+    Surfaces *advisory*, evidence-backed findings (a repeating column family, or
+    a non-key column that functionally determines other columns = an embedded
+    lookup) with a recommended graph remedy. Read-only: it changes nothing.
+    """
+    import json as _json
+
+    from rich.table import Table as RichTable
+
+    from r2g.connectors.base import normalize_source_type
+    from r2g.denorm import AnalyzeOptions, analyze_denormalization
+    from r2g.fk_inference import create_value_sampler
+
+    mgr = _get_catalog()
+    source = mgr.get_source(name)
+    if source is None:
+        console.print(f"[red]Source '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+    snap = mgr.get_latest_snapshot(name)
+    if snap is None:
+        console.print(
+            f"[red]No snapshot for '{name}'. Run `r2g source snapshot {name}` first.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    sampler = None
+    if sample:
+        sampler = create_value_sampler(
+            source.source_type,
+            source.connection_string,
+            pg_schema=snap.pg_schema,
+            source_params=source.source_params,
+            limit=sample_limit,
+        )
+        if sampler is None:
+            console.print(
+                f"[yellow]--sample is only supported for PostgreSQL, MySQL, SQL Server, and CSV "
+                f"sources (got '{normalize_source_type(source.source_type)}'); running structural "
+                f"detectors only.[/yellow]"
+            )
+
+    excluded = frozenset(c.strip() for c in no_sample_columns.split(",") if c.strip())
+    opts = AnalyzeOptions(
+        sample=bool(sampler),
+        sample_limit=sample_limit,
+        min_confidence=min_confidence,
+        no_sample_columns=excluded,
+    )
+    try:
+        findings = analyze_denormalization(snap.schema_data, options=opts, sampler=sampler)
+    finally:
+        if sampler is not None and hasattr(sampler, "close"):
+            sampler.close()
+
+    if as_json:
+        console.print_json(_json.dumps([f.model_dump(mode="json") for f in findings]))
+        return
+
+    if not findings:
+        console.print("[dim]No denormalization findings met the confidence threshold.[/dim]")
+        return
+
+    tbl = RichTable(title=f"Denormalization findings for '{name}'")
+    tbl.add_column("Kind")
+    tbl.add_column("Table")
+    tbl.add_column("Columns")
+    tbl.add_column("Remedy")
+    tbl.add_column("Conf", justify="right")
+    tbl.add_column("Evidence")
+    for f in findings:
+        tbl.add_row(
+            f.kind,
+            f.table,
+            ", ".join(f.columns),
+            f.recommended_action,
+            f"{f.confidence:.2f}",
+            "; ".join(f.evidence),
+        )
+    console.print(tbl)
+
+
 # ── External data catalog commands (Phase 8) ─────────────────────────
 
 

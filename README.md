@@ -413,6 +413,7 @@ r2g stream --dry-run \
 | `source snapshot` | Introspect the schema from a source and save a snapshot |
 | `source dump` | Dump every table in a cataloged source to CSV files (source-agnostic replacement for `dump-tables`) |
 | `source infer-fks` | Propose foreign keys for a source's latest schema snapshot (`--sample` for value-overlap scoring, `--accept` to write back) |
+| `source analyze-denorm` | Detect denormalization smells (repeating column groups; embedded lookups via `--sample`) and recommend graph remedies — advisory, read-only (`--min-confidence`, `--no-sample-columns`, `--json`) |
 
 ### `r2g project` — project management
 

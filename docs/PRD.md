@@ -790,7 +790,7 @@ have asked for exactly this "describe my domain, suggest the graph" capability.
 
 ---
 
-### Phase 11: Denormalization & normal-form analysis -- Planned
+### Phase 11: Denormalization & normal-form analysis -- 11a implemented; 11b–11c planned
 
 > **Deterministic, no LLM.** Phase 10 asks a model to *propose* a better
 > ontology; Phase 11 is the complementary **rules + sampling** engine that
@@ -842,10 +842,13 @@ produces high-quality, deterministic *grounding* for the Phase 10 LLM proposal.
 
 #### Phasing
 
-- **11a (engine + CLI, the deterministic core):** P11.1–P11.3, P11.7. Structural
-  detectors + the functional-dependency sampler + CLI, fully unit-testable with a
-  fake sampler (canned counts), exactly like `test_fk_inference.py`.
-- **11b (more detectors + Studio review):** P11.4–P11.6, P11.8.
+- **11a (engine + CLI, the deterministic core):** P11.1–P11.3, P11.7 (CLI only) —
+  **implemented**. Structural repeating-group detector + the functional-dependency
+  sampler (`distinct_ratio` + `group_single_valued` bounded probes on all four
+  value samplers) + the `r2g source analyze-denorm` command, fully unit-tested
+  with a fake sampler (canned counts), exactly like `test_fk_inference.py`. The
+  `POST /api/sources/{name}/analyze-denorm` half of P11.7 ships with 11b.
+- **11b (more detectors + Studio review):** P11.4–P11.6, P11.7 (API), P11.8.
 - **11c (remediation + grounding):** P11.9, P11.10.
 
 #### Non-functional notes
@@ -922,5 +925,6 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **Classification propagation & entitlement-aware loading (Phase 9) — Planned** | **June 2026** | Added Phase 9 on the Phase 8 catalog backbone: a three-tier governance posture — capture & propagate catalog classifications/owners/tiers onto target collections/fields + column-level lineage (P9.1–P9.4, incl. the mosaic = max-sensitivity rule), advise & gate via a pre-load entitlement report + exclude-above-threshold default + transform-at-load masking reusing the field-expression engine (P9.5–P9.6, P9.9), and enable enforcement by emitting a classification manifest + suggested ArangoDB RBAC / OPA / tier-layout artifacts (r2g never enforces) plus classification re-sync (P9.7–P9.8). Lane discipline: r2g carries governance metadata and refuses to silently launder sensitive data, but is not a runtime authz engine. Implementation + test plan drafted (`docs/internal/PLAN-classification-entitlement.md`); no code yet. |
 | **LLM-assisted ontology derivation (Phase 10) — Planned** | **June 2026** | Promoted the exploratory "ontology derivation" idea to committed Phase 10: an optional `LLMProvider` abstraction proposes a richer target ontology (vertex-vs-edge, implicit relationships, embed-vs-link, naming) from the introspected schema, which flows through the **same** `validate_config` → mapper-review (`diff_mappings`) → loader path as Auto-Map. Design principles: human-in-the-loop (never auto-applied), schema-grounded (metadata not bulk rows), classification-aware (no egress of Phase-9 Restricted/PII columns), validated/hallucination-resistant, reproducible (temperature 0 + stored provenance), and optional/provider-agnostic (deterministic `generate_default_config` stays the default). Implementation + test plan drafted (`docs/internal/PLAN-llm-ontology-derivation.md`); no code yet. |
 | **Denormalization & normal-form analysis (Phase 11) — Planned** | **June 2026** | Added Phase 11: a deterministic (no-LLM) analyzer (`src/r2g/denorm.py`) that detects source-side denormalization — embedded lookups (functional/transitive dependencies via bounded value sampling), repeating column groups, multi-valued columns, redundant reference data, and over-split 1:1 tables — and emits scored, evidence-backed findings with recommended graph remedies (extract vertex / embed array / split / merge). Reuses the `fk_inference.py` machinery (name heuristics + `create_value_sampler` bounded sampling + Suggest-FKs-style review card). Advisory by default (no silent rewrite), classification-aware (no sampling of Phase-9 Restricted/PII columns), and grounds the Phase 10 LLM proposal. Implementation + test plan drafted (`docs/internal/PLAN-denormalization-analysis.md`); no code yet. |
+| **Denormalization analysis (Phase 11a) — Implemented** | **June 2026** | Shipped the deterministic core: `src/r2g/denorm.py` (`DenormFinding`, `AnalyzeOptions`, `analyze_denormalization`) with a structural repeating-group detector and a sampler-gated embedded-lookup (functional-dependency) detector. Extended all four value samplers (PG/MySQL/SQL Server/CSV) with bounded `distinct_ratio` + `group_single_valued` probes, surfaced through the existing `create_value_sampler`. New read-only `r2g source analyze-denorm <name> [--sample] [--sample-limit] [--min-confidence] [--no-sample-columns] [--json]` CLI. Advisory only; classification gate (`no_sample_columns` + `is_sampleable` hook) keeps sensitive columns out of the sampler. Unit-tested with a fake sampler; 1217 tests passing, mypy clean. 11b (remaining detectors + Studio review card) and 11c (remediation scaffolding + Phase-10 grounding) remain. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.

@@ -9,6 +9,20 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Denormalization analysis — deterministic core (Phase 11a)**: a new
+  `r2g source analyze-denorm <name>` command surfaces *advisory*, evidence-backed
+  denormalization findings on a source's latest snapshot. Detects **repeating
+  column groups** (`phone1/phone2/phone3`, structural, no sampling) and, with
+  `--sample`, **embedded lookups** — a non-key column that functionally determines
+  other non-key columns (e.g. `zip → city, state`), recommending extraction into a
+  shared vertex. Backed by `src/r2g/denorm.py` (`analyze_denormalization`,
+  mirroring `infer_foreign_keys`) and two new bounded probes (`distinct_ratio`,
+  `group_single_valued`) added to all four value samplers (PostgreSQL, MySQL,
+  SQL Server, CSV). Read-only, classification-aware (`--no-sample-columns` escape
+  hatch plus a Phase-9 `is_sampleable` hook), and resilient (probe failures
+  degrade to structural signals). `--json` output supported; no schema or data is
+  ever rewritten. 11b (remaining detectors + Studio review card) and 11c
+  (remediation scaffolding + Phase-10 grounding) remain.
 - **External data catalog — MCP tools (Phase 8b, P8.6)**: five new MCP tools —
   `list_catalogs`, `add_catalog`, `remove_catalog`, `catalog_browse`, and
   `catalog_import_source` — let an agent register a catalog, browse its

@@ -713,6 +713,64 @@ class PostgresValueSampler:
                 pass
             return None
 
+    # ── Denormalization probes (PRD Phase 11) ──────────────────────
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        """Run a bounded scalar query, returning its float value or ``None``."""
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("denorm_sampler_connect_failed", error=str(err))
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+            if not row or row[0] is None:
+                return None
+            return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning("denorm_sampler_query_failed", error=str(err))
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        q = f"""
+            WITH s AS (
+                SELECT "{column}" AS v
+                FROM "{self.schema_name}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                LIMIT %s
+            )
+            SELECT COUNT(DISTINCT v)::float / GREATEST(COUNT(*), 1)::float FROM s
+        """  # noqa: S608 - identifiers are quoted; schema is from the catalog
+        return self._scalar(q, (self.limit,))
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        det = ", ".join(f'"{c}"' for c in determinant_columns)
+        not_null = " AND ".join(f'"{c}" IS NOT NULL' for c in determinant_columns)
+        q = f"""
+            WITH s AS (
+                SELECT {det}, "{dependent_column}" AS dep
+                FROM "{self.schema_name}"."{table}"
+                LIMIT %s
+            ),
+            g AS (
+                SELECT {det}, COUNT(DISTINCT dep) AS dcount
+                FROM s
+                WHERE {not_null}
+                GROUP BY {det}
+            )
+            SELECT COALESCE(AVG(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END), 0)::float
+            FROM g
+        """  # noqa: S608 - identifiers are quoted; schema is from the catalog
+        return self._scalar(q, (self.limit,))
+
 
 # ── Concrete MySQL value sampler ────────────────────────────────────
 
@@ -822,6 +880,59 @@ class MySQLValueSampler:
             )
             return None
 
+    # ── Denormalization probes (PRD Phase 11) ──────────────────────
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("denorm_sampler_connect_failed", error=str(err))
+            return None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                row = cur.fetchone()
+            if not row or row[0] is None:
+                return None
+            return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning("denorm_sampler_query_failed", error=str(err))
+            return None
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        db = self._qi(self.schema_name)
+        q = f"""
+            SELECT COUNT(DISTINCT v) / GREATEST(COUNT(*), 1) AS ratio
+            FROM (
+                SELECT {self._qi(column)} AS v
+                FROM {db}.{self._qi(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+                LIMIT %s
+            ) s
+        """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+        return self._scalar(q, (self.limit,))
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        db = self._qi(self.schema_name)
+        det = ", ".join(self._qi(c) for c in determinant_columns)
+        not_null = " AND ".join(f"{self._qi(c)} IS NOT NULL" for c in determinant_columns)
+        q = f"""
+            SELECT AVG(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END) AS frac
+            FROM (
+                SELECT COUNT(DISTINCT dep) AS dcount
+                FROM (
+                    SELECT {det}, {self._qi(dependent_column)} AS dep
+                    FROM {db}.{self._qi(table)}
+                    LIMIT %s
+                ) s
+                WHERE {not_null}
+                GROUP BY {det}
+            ) g
+        """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+        return self._scalar(q, (self.limit,))
+
 
 # ── Concrete SQL Server value sampler ───────────────────────────────
 
@@ -924,6 +1035,60 @@ class SQLServerValueSampler:
                 error=str(err),
             )
             return None
+
+    # ── Denormalization probes (PRD Phase 11) ──────────────────────
+
+    def _scalar(self, query: str, params: tuple) -> SamplerResult:
+        try:
+            conn = self._conn_lazy()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("denorm_sampler_connect_failed", error=str(err))
+            return None
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(query, params)
+                row = cur.fetchone()
+            finally:
+                cur.close()
+            if not row or row[0] is None:
+                return None
+            return float(row[0])
+        except Exception as err:  # noqa: BLE001
+            logger.warning("denorm_sampler_query_failed", error=str(err))
+            return None
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        s = self._qi(self.schema_name)
+        q = f"""
+            SELECT CAST(COUNT(DISTINCT v) AS FLOAT) / NULLIF(COUNT(*), 0) AS ratio
+            FROM (
+                SELECT TOP (%s) {self._qi(column)} AS v
+                FROM {s}.{self._qi(table)}
+                WHERE {self._qi(column)} IS NOT NULL
+            ) l
+        """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+        return self._scalar(q, (self.limit,))
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        s = self._qi(self.schema_name)
+        det = ", ".join(self._qi(c) for c in determinant_columns)
+        not_null = " AND ".join(f"{self._qi(c)} IS NOT NULL" for c in determinant_columns)
+        q = f"""
+            SELECT AVG(CAST(CASE WHEN dcount <= 1 THEN 1.0 ELSE 0.0 END AS FLOAT)) AS frac
+            FROM (
+                SELECT COUNT(DISTINCT dep) AS dcount
+                FROM (
+                    SELECT TOP (%s) {det}, {self._qi(dependent_column)} AS dep
+                    FROM {s}.{self._qi(table)}
+                ) l
+                WHERE {not_null}
+                GROUP BY {det}
+            ) g
+        """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+        return self._scalar(q, (self.limit,))
 
 
 # ── Concrete CSV value sampler ──────────────────────────────────────
@@ -1030,6 +1195,65 @@ class CsvValueSampler:
             return None
         overlap = len(local_vals & foreign_vals) / len(local_vals)
         return float(overlap)
+
+    # ── Denormalization probes (PRD Phase 11) ──────────────────────
+
+    def _read_columns(self, table: str, columns: list[str]):
+        """Read ``columns`` of ``table`` as raw text (type inference off), bounded
+        by ``limit``; returns a Polars frame or ``None`` if unreadable."""
+        import polars as pl
+
+        path = self._resolve(table)
+        if path is None:
+            return None
+        try:
+            return pl.read_csv(
+                str(path),
+                separator=self.delimiter,
+                has_header=self.has_header,
+                columns=columns,
+                n_rows=self.limit,
+                infer_schema_length=0,
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                "csv_denorm_sampler_read_failed", table=table, columns=columns, error=str(err)
+            )
+            return None
+
+    def distinct_ratio(self, table: str, column: str) -> SamplerResult:
+        import polars as pl
+
+        frame = self._read_columns(table, [column])
+        if frame is None or not frame.columns:
+            return None
+        series = frame.get_column(frame.columns[0]).filter(
+            pl.col(frame.columns[0]).is_not_null() & (pl.col(frame.columns[0]) != "")
+        )
+        total = series.len()
+        if total == 0:
+            return None
+        return float(series.n_unique() / total)
+
+    def group_single_valued(
+        self, table: str, determinant_columns: list[str], dependent_column: str
+    ) -> SamplerResult:
+        import polars as pl
+
+        frame = self._read_columns(table, [*determinant_columns, dependent_column])
+        if frame is None or not frame.columns:
+            return None
+        for d in determinant_columns:
+            frame = frame.filter(pl.col(d).is_not_null() & (pl.col(d) != ""))
+        if frame.is_empty():
+            return None
+        grouped = frame.group_by(determinant_columns).agg(
+            pl.col(dependent_column).n_unique().alias("dcount")
+        )
+        if grouped.is_empty():
+            return None
+        single = grouped.get_column("dcount") <= 1
+        return float(single.sum() / single.len())
 
 
 def create_value_sampler(
