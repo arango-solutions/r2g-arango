@@ -9,6 +9,24 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Classification capture & propagate (Phase 9a)**: the governance backbone for
+  carrying catalog classifications across the relational→graph boundary. A new
+  `Classification` model (`tags`, `tier`, `glossary_terms`, `source`) annotates
+  `Column`; `CatalogAsset` and `ResolvedSource` gain `column_classifications`,
+  `owners`, and `tier`. The OpenMetadata provider now reads `columns,tags,owners`
+  and parses per-column tags, table owners, and the `Tier.*` confidentiality tier
+  (glossary terms split out by tag source); `resolve_source` captures
+  `table → column → Classification` for table/schema/database assets, best-effort
+  so a limited governance API never blocks import. The resolved map persists on
+  `SourceConfig.classifications` (with `data_owners`/`data_tier`) at
+  `catalog import-source` and is merged onto `Column.classification` at
+  `source snapshot`. New `r2g.classification` module supplies the sensitivity
+  lattice (`public < internal < confidential < restricted`), an overridable
+  tag/tier→level map, `max_sensitivity`/`exceeds_threshold`/`tier_of`, and
+  `recompute_mosaic` — the max-of-contributors mosaic rule over fan-in
+  properties, vertex collections, and edges. Advise/gate (9b) and
+  emit-enforcement artifacts + re-sync (9c) remain; r2g carries governance
+  metadata and never acts as a runtime authorization engine.
 - **Denormalization analysis — advisory remediation + grounding (Phase 11c)**:
   each finding now carries concrete remediation guidance (`remediation_hint`),
   shown in the CLI (a "Suggested remediation" column), the API (a `hint` field on

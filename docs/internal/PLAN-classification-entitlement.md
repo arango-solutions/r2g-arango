@@ -1,6 +1,12 @@
 # Implementation & Test Plan: Classification Propagation & Entitlement-Aware Loading (PRD Phase 9)
 
-> **Status: PLANNED (June 2026).** This is the detailed companion to PRD
+> **Status: 9a IMPLEMENTED (June 2026); 9b–9c PLANNED.** 9a (capture &
+> propagate — the backbone) is shipped: the `Classification` model + sensitivity
+> lattice + mosaic recompute, OpenMetadata column-tag/owner/tier capture, the
+> `SourceConfig.classifications` carrier, and the `source snapshot` merge onto
+> `Column.classification`. The load-path governance-attribute stamping and the
+> lineage manifest (plan items 7–8) are folded into 9b/9c where they are
+> consumed. This is the detailed companion to PRD
 > §"Phase 9: Classification propagation & entitlement-aware loading". It builds
 > directly on the Phase 8 external-catalog backbone (`src/r2g/catalogs/`) shipped
 > in 8a–8b.

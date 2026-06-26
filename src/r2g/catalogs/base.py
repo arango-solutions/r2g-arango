@@ -26,6 +26,8 @@ from typing import Any, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
+from r2g.types import Classification
+
 # Catalog asset kinds, coarsely normalized across providers.
 ASSET_SERVICE = "service"
 ASSET_DATABASE = "database"
@@ -53,6 +55,13 @@ class CatalogAsset(BaseModel):
     parent_fqn: Optional[str] = None
     connection_hint: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
+    # Governance metadata (PRD Phase 9). ``column_classifications`` is keyed by
+    # column name (populated for table assets fetched with column tags); ``owners``
+    # and ``tier`` are asset-level. All empty by default so non-governed catalogs
+    # behave unchanged.
+    column_classifications: dict[str, Classification] = Field(default_factory=dict)
+    owners: list[str] = Field(default_factory=list)
+    tier: Optional[str] = None
 
 
 class ResolvedSource(BaseModel):
@@ -67,6 +76,13 @@ class ResolvedSource(BaseModel):
     source_params: dict[str, Any] = Field(default_factory=dict)
     schema_name: Optional[str] = None
     notes: str = ""
+    # Governance carrier (PRD Phase 9a): table → column → classification, plus
+    # asset-level owners/tier. Threaded into ``SourceConfig.classifications`` at
+    # import so it survives without re-querying the catalog. Empty for catalogs /
+    # assets that carry no classification.
+    column_classifications: dict[str, dict[str, Classification]] = Field(default_factory=dict)
+    owners: list[str] = Field(default_factory=list)
+    tier: Optional[str] = None
 
 
 @runtime_checkable

@@ -57,11 +57,35 @@ class ForeignKey(BaseModel):
         return d
 
 
+class Classification(BaseModel):
+    """Governance classification carried from an external catalog (PRD Phase 9).
+
+    ``tags`` are catalog tag FQNs (e.g. ``"PII.Sensitive"``); ``tier`` is a
+    confidentiality-tier FQN if present (e.g. ``"Tier.Tier1"``); ``glossary_terms``
+    are business-glossary references; ``source`` records provenance. Everything is
+    optional/empty by default, so sources not imported from a catalog carry no
+    classification and behave exactly as before.
+    """
+
+    tags: List[str] = Field(default_factory=list)
+    tier: Optional[str] = None
+    glossary_terms: List[str] = Field(default_factory=list)
+    source: str = "catalog"
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.tags and self.tier is None and not self.glossary_terms
+
+
 class Column(BaseModel):
     name: str
     data_type: str
     is_nullable: bool = False
     is_primary_key: bool = False
+    # Governance classification (PRD Phase 9). ``None`` for non-catalog sources
+    # and untagged columns; populated at ``source snapshot`` for catalog-imported
+    # sources by merging the resolved classification map onto the schema.
+    classification: Optional[Classification] = None
 
 
 class Table(BaseModel):

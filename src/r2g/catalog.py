@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 from r2g.log import get_logger
 from r2g.security import CredentialCipher, load_secret_key
-from r2g.types import Schema
+from r2g.types import Classification, Schema
 
 logger = get_logger(__name__)
 
@@ -42,6 +42,14 @@ class SourceConfig(BaseModel):
     description: str = ""
     owner: str = ""
     source_params: dict[str, Any] = Field(default_factory=dict)
+    # Governance carrier (PRD Phase 9a). ``classifications`` is the resolved
+    # ``table → column → Classification`` map captured at ``catalog import-source``
+    # so it survives without re-querying the catalog; ``data_owners`` / ``data_tier``
+    # are the asset-level catalog owners and confidentiality tier. Empty for
+    # sources not imported from a catalog (fully backward compatible).
+    classifications: dict[str, dict[str, Classification]] = Field(default_factory=dict)
+    data_owners: list[str] = Field(default_factory=list)
+    data_tier: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -191,6 +199,9 @@ class CatalogManager:
         description: str = "",
         owner: str = "",
         source_params: dict[str, Any] | None = None,
+        classifications: dict[str, dict[str, Classification]] | None = None,
+        data_owners: list[str] | None = None,
+        data_tier: str | None = None,
     ) -> SourceConfig:
         # Catalog accepts any *known* source type so future types
         # (csv, kafka) can be pre-registered; the connector factory
@@ -217,6 +228,9 @@ class CatalogManager:
             description=description,
             owner=owner,
             source_params=source_params or {},
+            classifications=classifications or {},
+            data_owners=data_owners or [],
+            data_tier=data_tier,
             created_at=now,
             updated_at=now,
         )

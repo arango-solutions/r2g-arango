@@ -72,3 +72,35 @@ class TestCatalogRegistry:
         mgr.add_catalog("c", "openmetadata", "http://h:8585")  # no token
         raw = json.loads((tmp_path / "catalog.json").read_text())
         assert raw["catalog_providers"]["c"]["token"] == ""
+
+
+class TestSourceClassifications:
+    """Phase 9a: SourceConfig.classifications round-trips through save/load."""
+
+    def test_classifications_round_trip(self, tmp_path):
+        from r2g.types import Classification
+
+        mgr = _mgr(tmp_path)
+        mgr.add_source(
+            "shop",
+            "postgresql",
+            "postgresql://h/shop",
+            classifications={"customer": {"email": Classification(tags=["PII.Sensitive"])}},
+            data_owners=["Data Team"],
+            data_tier="Tier.Tier1",
+        )
+        # fresh manager re-reads from disk
+        got = CatalogManager(str(tmp_path)).get_source("shop")
+        assert got is not None
+        assert got.data_owners == ["Data Team"]
+        assert got.data_tier == "Tier.Tier1"
+        clf = got.classifications["customer"]["email"]
+        assert isinstance(clf, Classification)
+        assert clf.tags == ["PII.Sensitive"]
+
+    def test_default_source_has_no_classifications(self, tmp_path):
+        mgr = _mgr(tmp_path)
+        src = mgr.add_source("plain", "postgresql", "postgresql://h/db")
+        assert src.classifications == {}
+        assert src.data_owners == []
+        assert src.data_tier is None

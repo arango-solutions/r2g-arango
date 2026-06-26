@@ -40,6 +40,26 @@ def _fake_get(path, params=None):
     if path == "/databaseSchemas":
         return {"data": [{"name": "public", "fullyQualifiedName": "pg.shop.public"}]}
     if path == "/tables":
+        if "columns" in (params.get("fields") or ""):
+            # Governance capture (Phase 9a): include column tags + owners.
+            return {
+                "data": [
+                    {
+                        "name": "users",
+                        "fullyQualifiedName": "pg.shop.public.users",
+                        "owners": [{"name": "data-team"}],
+                        "columns": [
+                            {"name": "id", "tags": []},
+                            {"name": "email", "tags": [{"tagFQN": "PII.Sensitive"}]},
+                        ],
+                    },
+                    {
+                        "name": "orders",
+                        "fullyQualifiedName": "pg.shop.public.orders",
+                        "columns": [{"name": "id", "tags": []}],
+                    },
+                ]
+            }
         return {
             "data": [
                 {"name": "users", "fullyQualifiedName": "pg.shop.public.users"},
@@ -63,6 +83,16 @@ def _fake_get(path, params=None):
             "name": "users", "fullyQualifiedName": "pg.shop.public.users", "serviceType": "Postgres",
             "service": {"name": "pg"}, "database": {"name": "shop"},
             "databaseSchema": {"name": "public"},
+            "tags": [{"tagFQN": "Tier.Tier1"}],
+            "owners": [{"name": "data-team", "displayName": "Data Team"}],
+            "columns": [
+                {"name": "id", "tags": []},
+                {"name": "email", "tags": [{"tagFQN": "PII.Sensitive", "source": "Classification"}]},
+                {"name": "ssn", "tags": [
+                    {"tagFQN": "PII.Sensitive"},
+                    {"tagFQN": "Glossary.NationalID", "source": "Glossary"},
+                ]},
+            ],
         }
     if path == "/search/query":
         return {
@@ -184,3 +214,58 @@ class TestGetAsset:
         assert t.source_type == "postgresql"
         assert t.connection_hint["database"] == "shop"
         assert t.connection_hint["schema"] == "public"
+
+
+class TestClassificationCapture:
+    def test_table_asset_parses_column_tags_owners_tier(self):
+        p = _provider()
+        t = p.get_asset("pg.shop.public.users")
+        # asset-level tier + owners
+        assert t.tier == "Tier.Tier1"
+        assert t.owners == ["Data Team"]
+        # per-column classifications (untagged columns omitted)
+        cc = t.column_classifications
+        assert "id" not in cc
+        assert cc["email"].tags == ["PII.Sensitive"]
+        # glossary terms split out from classification tags
+        assert cc["ssn"].tags == ["PII.Sensitive"]
+        assert cc["ssn"].glossary_terms == ["Glossary.NationalID"]
+
+    def test_resolve_table_carries_classifications(self):
+        p = _provider()
+        t = p.get_asset("pg.shop.public.users")
+        resolved = p.resolve_source(t)
+        assert resolved.tier == "Tier.Tier1"
+        assert resolved.owners == ["Data Team"]
+        assert set(resolved.column_classifications["users"]) == {"email", "ssn"}
+
+    def test_resolve_schema_captures_all_table_columns(self):
+        p = _provider()
+        asset = p.get_asset("pg.shop.public")
+        resolved = p.resolve_source(asset)
+        # schema-level capture lists tables with column tags
+        assert "users" in resolved.column_classifications
+        assert resolved.column_classifications["users"]["email"].tags == ["PII.Sensitive"]
+        # table with no tagged columns is omitted
+        assert "orders" not in resolved.column_classifications
+
+    def test_capture_failure_is_non_fatal(self):
+        p = _provider()
+        asset = p.get_asset("pg.shop.public")
+
+        def _boom(path, params=None):
+            if path == "/tables":
+                raise RuntimeError("governance API unavailable")
+            return _fake_get(path, params)
+
+        p._get = _boom  # type: ignore[method-assign]
+        resolved = p.resolve_source(asset)
+        # import still succeeds; classifications simply empty
+        assert resolved.column_classifications == {}
+        assert resolved.connection_string.endswith("/shop")
+
+    def test_no_credentials_in_resolved_classifications(self):
+        p = _provider()
+        resolved = p.resolve_source(p.get_asset("pg.shop.public.users"))
+        blob = resolved.model_dump_json()
+        assert "password" not in blob.lower() or "$R2G_DB_PASSWORD" in blob

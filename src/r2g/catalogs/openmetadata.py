@@ -30,8 +30,73 @@ from r2g.catalogs.base import (
     ResolvedSource,
 )
 from r2g.log import get_logger
+from r2g.types import Classification
 
 logger = get_logger(__name__)
+
+# Field selector requesting per-column tags + table owners (PRD Phase 9a).
+_TABLE_GOVERNANCE_FIELDS = "columns,tags,owners"
+
+
+def _split_tags(tag_objs: Any) -> tuple[list[str], list[str], Optional[str]]:
+    """Split OpenMetadata tag objects into (classification tags, glossary terms, tier FQN).
+
+    OpenMetadata represents glossary terms as tags with ``source == "Glossary"``
+    and confidentiality tiers as mutually-exclusive tags under the ``Tier.*``
+    classification. Everything else is a plain classification tag.
+    """
+    tags: list[str] = []
+    glossary: list[str] = []
+    tier: Optional[str] = None
+    for t in tag_objs or []:
+        fqn = t.get("tagFQN") or ""
+        if not fqn:
+            continue
+        source = (t.get("source") or "").lower()
+        if source == "glossary":
+            glossary.append(fqn)
+        elif fqn.lower().startswith("tier."):
+            if tier is None:
+                tier = fqn
+        else:
+            tags.append(fqn)
+    return tags, glossary, tier
+
+
+def _classification_from_tags(tag_objs: Any) -> Classification:
+    tags, glossary, tier = _split_tags(tag_objs)
+    return Classification(tags=tags, tier=tier, glossary_terms=glossary, source="catalog")
+
+
+def _owners_of(entity: dict[str, Any]) -> list[str]:
+    """Extract owner display names from an entity (handles list + legacy single)."""
+    out: list[str] = []
+    owners = entity.get("owners")
+    if isinstance(owners, list):
+        for o in owners:
+            if isinstance(o, dict):
+                name = o.get("displayName") or o.get("name")
+                if name:
+                    out.append(str(name))
+    owner = entity.get("owner")
+    if isinstance(owner, dict):
+        name = owner.get("displayName") or owner.get("name")
+        if name:
+            out.append(str(name))
+    return out
+
+
+def _column_classifications(entity: dict[str, Any]) -> dict[str, Classification]:
+    """Per-column classifications from a table entity's ``columns`` field."""
+    out: dict[str, Classification] = {}
+    for col in entity.get("columns") or []:
+        name = col.get("name")
+        if not name:
+            continue
+        clf = _classification_from_tags(col.get("tags"))
+        if not clf.is_empty:
+            out[str(name)] = clf
+    return out
 
 # OpenMetadata serviceType (lower-cased) -> r2g source_type.
 _SERVICETYPE_TO_R2G: dict[str, str] = {
@@ -293,12 +358,19 @@ class OpenMetadataProvider:
             "Credentials are not read from the catalog; set $R2G_DB_USER / "
             "$R2G_DB_PASSWORD (or edit the connection string / use r2g secrets)."
         )
+        classifications = self._capture_relational_classifications(asset)
 
         if r2g_type == "snowflake":
             account = config.get("account") or config.get("hostPort") or ""
             conn = f"snowflake://$R2G_DB_USER:$R2G_DB_PASSWORD@{account}/{database or ''}"
             return ResolvedSource(
-                source_type=r2g_type, connection_string=conn, schema_name=schema, notes=notes
+                source_type=r2g_type,
+                connection_string=conn,
+                schema_name=schema,
+                notes=notes,
+                column_classifications=classifications,
+                owners=asset.owners,
+                tier=asset.tier,
             )
 
         host, port = _split_host_port(
@@ -308,8 +380,58 @@ class OpenMetadataProvider:
         hostspec = f"{host}:{port}" if port else host
         conn = f"{scheme}://$R2G_DB_USER:$R2G_DB_PASSWORD@{hostspec}/{database or ''}"
         return ResolvedSource(
-            source_type=r2g_type, connection_string=conn, schema_name=schema, notes=notes
+            source_type=r2g_type,
+            connection_string=conn,
+            schema_name=schema,
+            notes=notes,
+            column_classifications=classifications,
+            owners=asset.owners,
+            tier=asset.tier,
         )
+
+    def _capture_relational_classifications(
+        self, asset: CatalogAsset
+    ) -> dict[str, dict[str, Classification]]:
+        """Capture ``table → column → Classification`` for a relational asset.
+
+        For a table asset this is just that table's columns; for a schema or
+        database asset we list its tables (one paginated call) requesting column
+        tags. Capture is best-effort: any failure logs and yields ``{}`` so a
+        missing/limited governance API never blocks ``catalog import-source``.
+        """
+        try:
+            if asset.kind == ASSET_TABLE:
+                if asset.column_classifications:
+                    return {asset.name: dict(asset.column_classifications)}
+                fetched = self.get_asset(asset.fqn)
+                if fetched and fetched.column_classifications:
+                    return {asset.name: dict(fetched.column_classifications)}
+                return {}
+            params: dict[str, Any]
+            if asset.kind == ASSET_SCHEMA:
+                params = {"databaseSchema": asset.fqn}
+            elif asset.kind == ASSET_DATABASE:
+                params = {"database": asset.fqn}
+            else:
+                return {}
+            params.update({"fields": _TABLE_GOVERNANCE_FIELDS, "limit": 1000})
+            data = self._get("/tables", params)
+            out: dict[str, dict[str, Classification]] = {}
+            for entity in data.get("data", []):
+                name = entity.get("name")
+                if not name:
+                    continue
+                cols = _column_classifications(entity)
+                if cols:
+                    out[str(name)] = cols
+            return out
+        except Exception as err:  # noqa: BLE001
+            logger.warning(
+                "openmetadata_capture_classifications_failed",
+                fqn=asset.fqn,
+                error=str(err),
+            )
+            return {}
 
     def _resolve_kafka(self, asset: CatalogAsset) -> ResolvedSource:
         config = self._fetch_service_config(self._service_name(asset), messaging=True)
@@ -350,12 +472,12 @@ class OpenMetadataProvider:
                 messaging = (entity.get("serviceType") or "").lower() in ("kafka", "redpanda")
                 return self._service_asset(entity, messaging=messaging)
             if n == 2:
-                entity = self._get(f"/databases/name/{fqn}", {"fields": "tags"})
+                entity = self._get(f"/databases/name/{fqn}", {"fields": "tags,owners"})
                 return self._asset_from_entity(entity, ASSET_DATABASE)
             if n == 3:
-                entity = self._get(f"/databaseSchemas/name/{fqn}", {"fields": "tags"})
+                entity = self._get(f"/databaseSchemas/name/{fqn}", {"fields": "tags,owners"})
                 return self._asset_from_entity(entity, ASSET_SCHEMA)
-            entity = self._get(f"/tables/name/{fqn}", {"fields": "tags"})
+            entity = self._get(f"/tables/name/{fqn}", {"fields": _TABLE_GOVERNANCE_FIELDS})
             return self._asset_from_entity(entity, ASSET_TABLE)
         except Exception as err:  # noqa: BLE001
             logger.warning("openmetadata_get_asset_failed", fqn=fqn, error=str(err))
@@ -388,6 +510,7 @@ class OpenMetadataProvider:
             hint["schema"] = entity.get("name")
         if kind == ASSET_TABLE:
             hint["schema"] = schema_ref.get("name")
+        _, _, tier = _split_tags(entity.get("tags"))
         return CatalogAsset(
             provider=self.name,
             provider_type=self.provider_type,
@@ -397,6 +520,11 @@ class OpenMetadataProvider:
             source_type=_SERVICETYPE_TO_R2G.get(stype),
             connection_hint=hint,
             tags=[t.get("tagFQN", "") for t in (entity.get("tags") or []) if t.get("tagFQN")],
+            owners=_owners_of(entity),
+            tier=tier,
+            column_classifications=(
+                _column_classifications(entity) if kind == ASSET_TABLE else {}
+            ),
         )
 
 

@@ -1903,6 +1903,15 @@ def source_snapshot(
             source_params=source.source_params,
         )
         schema = connector.get_schema()
+        if source.classifications:
+            from r2g.classification import annotate_schema
+
+            annotated = annotate_schema(schema, source.classifications)
+            if annotated:
+                console.print(
+                    f"  [cyan]Annotated {annotated} column(s) with catalog "
+                    f"classifications.[/cyan]"
+                )
         previous = mgr.get_latest_snapshot(name) if compare_last else None
         snap = mgr.create_snapshot(name, schema, pg_schema=pg_schema)
         console.print(
@@ -2414,6 +2423,9 @@ def catalog_import_source(
             resolved.connection_string,
             description=description or f"Imported from catalog '{name}' ({asset_fqn})",
             source_params=resolved.source_params,
+            classifications=resolved.column_classifications,
+            data_owners=resolved.owners,
+            data_tier=resolved.tier,
         )
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
@@ -2428,6 +2440,14 @@ def catalog_import_source(
         f"({resolved.source_type}) from catalog '{name}'."
     )
     console.print(f"  Connection: [dim]{resolved.connection_string}[/dim]")
+    classified_cols = sum(len(cols) for cols in resolved.column_classifications.values())
+    if classified_cols:
+        console.print(
+            f"  [cyan]Captured classifications for {classified_cols} column(s) "
+            f"across {len(resolved.column_classifications)} table(s).[/cyan]"
+        )
+    if resolved.tier:
+        console.print(f"  Tier: [cyan]{resolved.tier}[/cyan]")
     if resolved.notes:
         console.print(f"  [yellow]{resolved.notes}[/yellow]")
     if resolved.schema_name:
