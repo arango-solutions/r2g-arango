@@ -423,6 +423,12 @@ r2g stream --dry-run \
 | `project list` | List all projects |
 | `project status` | Show the status of a project (last load, snapshot age, mapping path) |
 
+### `r2g entitlements` — governance (Phase 9)
+
+| Command | Description |
+|---|---|
+| `entitlements report` | List a project's mapped fields at/above a sensitivity threshold with source lineage (mosaic = max-of-contributors). Advisory: at load, above-threshold fields are excluded by default unless `--allow-sensitive` or masked (`--threshold`, `--json`) |
+
 ### `r2g secrets` — catalog credential encryption
 
 | Command | Description |

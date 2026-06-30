@@ -759,6 +759,42 @@ def create_app(
 
     # ── Load endpoints ─────────────────────────────────────────────────
 
+    @app.get("/api/projects/{name}/entitlements")
+    async def get_entitlements(name: str, threshold: str = "confidential"):
+        """Pre-load entitlement report: classified fields + mosaic levels (Phase 9b)."""
+        from r2g.classification import SENSITIVITY_ORDER
+        from r2g.governance import build_entitlement_report
+
+        threshold = (threshold or "confidential").strip().lower()
+        if threshold not in SENSITIVITY_ORDER:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid threshold; expected one of: {', '.join(SENSITIVITY_ORDER)}",
+            )
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        snap = catalog.get_latest_snapshot(project.source_name)
+        if snap is None:
+            raise HTTPException(status_code=400, detail="No schema snapshot available")
+        try:
+            config = ConfigManager.load_config(project.mapping_config_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to load mapping config: {e}")
+
+        report = build_entitlement_report(
+            config, snap.schema_data, threshold=threshold, project=name
+        )
+        return {
+            "project": name,
+            "threshold": threshold,
+            "summary": report.summary(),
+            "collection_levels": report.collection_levels,
+            "edge_levels": report.edge_levels,
+            "fields": [f.model_dump() for f in report.fields],
+            "above_threshold": [f.model_dump() for f in report.above_threshold],
+        }
+
     @app.post("/api/projects/{name}/load", status_code=202)
     async def start_load(name: str, body: LoadRequest):
         project = catalog.get_project(name)
@@ -781,6 +817,35 @@ def create_app(
         issues = validate_config(snap.schema_data, config)
         if issues:
             raise HTTPException(status_code=400, detail={"validation_errors": issues})
+
+        # Phase 9b governance gate: exclude above-threshold, unmasked fields by
+        # default (unless the caller opts in with allow_sensitive). Advisory — the
+        # excluded set + lineage are reported, never silently dropped.
+        from r2g.governance import (
+            apply_sensitivity_gate,
+            build_entitlement_report,
+            write_lineage_manifest,
+        )
+
+        report = build_entitlement_report(
+            config,
+            snap.schema_data,
+            threshold=body.sensitivity_threshold,
+            project=name,
+        )
+        config, gate_excluded = apply_sensitivity_gate(
+            config, report, allow_sensitive=body.allow_sensitive
+        )
+        # Reflect the gate's decisions onto the report so the lineage manifest
+        # records each field's true handling (excluded vs loaded).
+        excluded_keys = {(f.target_collection, f.target_property) for f in gate_excluded}
+        for f in report.fields:
+            if (f.target_collection, f.target_property) in excluded_keys:
+                f.excluded = True
+        try:
+            write_lineage_manifest(report, Path(project.mapping_config_path).parent)
+        except OSError as e:
+            logger.warning("lineage_manifest_write_failed", project=name, error=str(e))
 
         load_record = catalog.start_load(project_name=name, load_type="streaming")
         load_id = load_record.id
@@ -893,7 +958,19 @@ def create_app(
         _running_loads[load_id] = {"thread": thread, "queue": progress_queue, "pipeline": pipeline}
         thread.start()
 
-        return {"load_id": load_id, "status": "started"}
+        return {
+            "load_id": load_id,
+            "status": "started",
+            "excluded_sensitive_fields": [
+                {
+                    "collection": f.target_collection,
+                    "property": f.target_property,
+                    "level": f.level,
+                    "source_columns": f.source_columns,
+                }
+                for f in gate_excluded
+            ],
+        }
 
     @app.get("/api/projects/{name}/load/{load_id}/status")
     async def get_load_status(name: str, load_id: str):
@@ -1166,6 +1243,11 @@ class LoadRequest(BaseModel):
     exclude_tables: list[str] | None = None
     dry_run: bool = False
     graph_name: str | None = None
+    # Phase 9b governance gate. By default, fields at/above ``sensitivity_threshold``
+    # (the mosaic-recomputed level) that are not masked are excluded from the load;
+    # ``allow_sensitive`` is the explicit opt-out.
+    allow_sensitive: bool = False
+    sensitivity_threshold: str = "confidential"
 
 
 class TargetCreateRequest(BaseModel):

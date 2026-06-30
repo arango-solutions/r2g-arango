@@ -160,6 +160,71 @@ class TestLoadEndpoint:
         assert "_system" in resp.json()["detail"]
 
 
+class TestLoadSensitivityGate:
+    """Phase 9b: the load gate excludes above-threshold fields by default."""
+
+    def _gated_client(self, catalog_dir, tmp_path):
+        from starlette.testclient import TestClient
+
+        from r2g.types import Classification
+
+        schema = Schema(tables={
+            "users": Table(name="users", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="name", data_type="text"),
+                Column(name="email", data_type="text",
+                       classification=Classification(tags=["PII.Sensitive"])),
+            ], primary_key=["id"]),
+        })
+        config = ConfigManager.generate_default_config(schema)
+        path = str(tmp_path / "gated_mapping.yaml")
+        ConfigManager.save_config(config, path)
+        mgr = CatalogManager(catalog_dir)
+        mgr.add_source("gsrc", "postgresql", "postgresql://localhost/db")
+        mgr.create_snapshot("gsrc", schema)
+        mgr.create_project("gproj", "gsrc", path, arango_database="g_graph")
+        return TestClient(create_app(catalog_dir=catalog_dir))
+
+    @patch("r2g.ui.server.StreamingPipeline")
+    @patch("r2g.ui.server.ArangoWriter")
+    def test_pii_excluded_by_default(self, mock_writer, mock_pipeline, catalog_dir, tmp_path):
+        mock_pipeline.return_value = MagicMock(errors={})
+        client = self._gated_client(catalog_dir, tmp_path)
+        resp = client.post("/api/projects/gproj/load", json={"dry_run": True})
+        assert resp.status_code == 202, resp.text
+        excluded = resp.json()["excluded_sensitive_fields"]
+        props = {e["property"] for e in excluded}
+        assert "email" in props
+        time.sleep(0.2)
+
+    @patch("r2g.ui.server.StreamingPipeline")
+    @patch("r2g.ui.server.ArangoWriter")
+    def test_allow_sensitive_loads_everything(self, mock_writer, mock_pipeline, catalog_dir, tmp_path):
+        mock_pipeline.return_value = MagicMock(errors={})
+        client = self._gated_client(catalog_dir, tmp_path)
+        resp = client.post(
+            "/api/projects/gproj/load", json={"dry_run": True, "allow_sensitive": True}
+        )
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["excluded_sensitive_fields"] == []
+        time.sleep(0.2)
+
+    @patch("r2g.ui.server.StreamingPipeline")
+    @patch("r2g.ui.server.ArangoWriter")
+    def test_lineage_manifest_written(self, mock_writer, mock_pipeline, catalog_dir, tmp_path):
+        import json as _json
+
+        mock_pipeline.return_value = MagicMock(errors={})
+        client = self._gated_client(catalog_dir, tmp_path)
+        client.post("/api/projects/gproj/load", json={"dry_run": True})
+        manifest = tmp_path / "governance" / "lineage.json"
+        assert manifest.exists()
+        data = _json.loads(manifest.read_text())
+        handling = {e["target"]: e["handling"] for e in data["fields"]}
+        assert handling["users.email"] == "excluded"
+        time.sleep(0.2)
+
+
 class TestLoadStatusEndpoint:
     @patch("r2g.ui.server.StreamingPipeline")
     @patch("r2g.ui.server.ArangoWriter")

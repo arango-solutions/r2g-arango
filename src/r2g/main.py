@@ -24,9 +24,11 @@ app = typer.Typer(help="R2G-ETL: Relational to Graph Pipeline")
 source_app = typer.Typer(help="Manage data sources")
 project_app = typer.Typer(help="Manage projects")
 catalog_app = typer.Typer(help="Connect to external data catalogs (discovery)")
+entitlements_app = typer.Typer(help="Governance: classification entitlement reports (Phase 9)")
 app.add_typer(source_app, name="source")
 app.add_typer(project_app, name="project")
 app.add_typer(catalog_app, name="catalog")
+app.add_typer(entitlements_app, name="entitlements")
 console = Console()
 log = get_logger(__name__)
 
@@ -2545,6 +2547,111 @@ def project_status(
         table.add_row("Last Load", "[dim]none[/dim]")
 
     console.print(table)
+
+
+# ── Entitlements (governance) commands ────────────────────────────────
+
+
+@entitlements_app.command("report")
+def entitlements_report(
+    project: str = typer.Argument(..., help="Project name"),
+    threshold: str = typer.Option(
+        "confidential",
+        "--threshold",
+        help="Lattice level to flag at/above: public|internal|confidential|restricted",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the full report as JSON"),
+) -> None:
+    """Report classified fields at/above a sensitivity threshold for a project.
+
+    Walks the project's mapping over its latest (classification-annotated)
+    snapshot, recomputes entity sensitivity (the mosaic = max-of-contributors
+    rule), and lists every mapped field at/above ``--threshold`` with its source
+    lineage. Advisory only — r2g carries governance metadata and advises; it does
+    not enforce access at query time.
+    """
+    from r2g.classification import SENSITIVITY_ORDER
+    from r2g.governance import build_entitlement_report
+
+    threshold = threshold.strip().lower()
+    if threshold not in SENSITIVITY_ORDER:
+        console.print(
+            f"[red]Invalid --threshold '{threshold}'.[/red] "
+            f"Expected one of: {', '.join(SENSITIVITY_ORDER)}."
+        )
+        raise typer.Exit(code=1)
+
+    mgr = _get_catalog()
+    proj = mgr.get_project(project)
+    if proj is None:
+        console.print(f"[red]Project '{project}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    snap = mgr.get_latest_snapshot(proj.source_name)
+    if snap is None:
+        console.print(
+            f"[red]No schema snapshot for source '{proj.source_name}'.[/red] "
+            "Run `r2g source snapshot` first."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        config = ConfigManager.load_config(proj.mapping_config_path)
+    except Exception as e:
+        console.print(f"[red]Failed to load mapping config:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    report = build_entitlement_report(
+        config, snap.schema_data, threshold=threshold, project=project
+    )
+
+    if as_json:
+        payload = report.model_dump()
+        payload["summary"] = report.summary()
+        console.print_json(json.dumps(payload, default=str))
+        return
+
+    above = report.above_threshold
+    masked = report.masked_fields
+    if not above:
+        console.print(
+            f"[green]No mapped fields at/above '{threshold}' for project "
+            f"'{project}'.[/green]"
+        )
+    else:
+        table = RichTable(title=f"Entitlement report for '{project}' (\u2265 {threshold})")
+        table.add_column("Target", style="cyan")
+        table.add_column("Level")
+        table.add_column("Source columns", style="dim")
+        table.add_column("Tags", style="dim")
+        for f in above:
+            table.add_row(
+                f"{f.target_collection}.{f.target_property}",
+                f.level,
+                ", ".join(f"{f.source_table}.{c}" for c in f.source_columns),
+                ", ".join(f.tags) or "[dim]\u2014[/dim]",
+            )
+        console.print(table)
+
+    s = report.summary()
+    console.print(
+        f"[dim]{s['total_fields']} mapped fields; {s['above_threshold']} at/above "
+        f"threshold; {s['masked']} masked.[/dim]"
+    )
+    if masked:
+        console.print(
+            "[dim]Masked: "
+            + ", ".join(
+                f"{f.target_collection}.{f.target_property} ({f.mask_kind})" for f in masked
+            )
+            + "[/dim]"
+        )
+    if above:
+        console.print(
+            "[yellow]Advisory:[/yellow] at load, above-threshold fields are excluded "
+            "by default (pass --allow-sensitive to override, or mask them). r2g advises; "
+            "the serving layer enforces."
+        )
 
 
 # ── History command ──────────────────────────────────────────────────

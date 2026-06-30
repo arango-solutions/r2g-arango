@@ -15,3 +15,7 @@ mapping.yaml
 import.sh
 test_run/
 
+.prd-drift-queue/
+.claude/
+CLAUDE.md
+.coverage

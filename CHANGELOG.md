@@ -9,6 +9,28 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Entitlement report, load gate & masking (Phase 9b)**: the
+  advise-and-gate layer on top of the 9a classification carrier. New
+  `src/r2g/governance.py` builds an **entitlement report** (each target property,
+  its source-column lineage, the mosaic-recomputed sensitivity level, and whether
+  it is masked), a default-exclude **threshold gate** (above-threshold *unmasked*
+  source columns are added to `exclude_fields` for the run unless `allow_sensitive`
+  is set), and a `governance/lineage.json` **manifest** recording each field's
+  handling. New `src/r2g/masking.py` supplies `hash`/`tokenize`/`redact`/`nullify`
+  masking expressions built on the existing `FieldExpression` engine (hashes are
+  AQL-delegated, so they work for every source type) and sentinel-tagged so the
+  gate treats a masked field as safe to load. Surfaced via `r2g entitlements
+  report <project> [--threshold] [--json]`, `GET /api/projects/{name}/entitlements`,
+  and the load gate on `POST /api/projects/{name}/load` (`allow_sensitive`,
+  `sensitivity_threshold`; the excluded set is reported, never silently dropped).
+  The Mapping Studio gains an **entitlement-report panel** (Actions menu, canvas
+  context menu, and the `g` shortcut) listing above-threshold fields with source
+  lineage; a paint-only **sensitivity lens** (View as → Sensitivity / press `5`)
+  that tints source columns and target properties by mosaic-recomputed tier
+  (source-column color = the highest level it feeds) with a legend; and a
+  one-click **"mask this field"** target-property context action that writes a
+  masking `FieldExpression` (hash / tokenize / redact / nullify) so the field
+  clears the load gate. r2g advises and emits; the serving layer enforces.
 - **Classification capture & propagate (Phase 9a)**: the governance backbone for
   carrying catalog classifications across the relational→graph boundary. A new
   `Classification` model (`tags`, `tier`, `glossary_terms`, `source`) annotates

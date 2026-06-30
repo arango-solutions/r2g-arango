@@ -946,6 +946,18 @@
     background: rgba(248,113,113,.08);
   }
 
+  /* Lens: sensitivity (Phase 9b) — color rows by mosaic-recomputed tier.
+     Paint-only: a left border + tint on source columns and target properties.
+     Source-column color = the highest level it feeds (mosaic = max). */
+  body.lens-sensitivity .source-col-row, body.lens-sensitivity .target-prop-row { opacity: .45; }
+  body.lens-sensitivity .source-col-row[class*="sens-"],
+  body.lens-sensitivity .target-prop-row[class*="sens-"] { opacity: 1; }
+  body.lens-sensitivity .sens-restricted   { box-shadow: inset 3px 0 0 #da1a20; background: rgba(218,26,32,.06); }
+  body.lens-sensitivity .sens-confidential { box-shadow: inset 3px 0 0 #fbbf24; background: rgba(251,191,36,.06); }
+  body.lens-sensitivity .sens-internal     { box-shadow: inset 3px 0 0 #38bdf8; }
+  body.lens-sensitivity .sens-public       { box-shadow: inset 3px 0 0 var(--border); }
+  body.lens-sensitivity .sens-masked       { box-shadow: inset 3px 0 0 #34d399; background: rgba(52,211,153,.06); }
+
   /* Lens: diff */
   body.lens-diff .source-card.diff-added .source-card-header,
   body.lens-diff .target-card.diff-added .target-card-header { box-shadow: inset 3px 0 0 var(--green); }
@@ -1032,7 +1044,7 @@
       <span class="pc-label">Project</span><span id="active-project-name">No project</span>
     </button>
     <span class="toolbar-status">
-      <span class="lens-chip" id="lens-chip" role="button" tabindex="0" aria-label="Active graph lens; click to cycle" data-hint="Active graph lens. Click to cycle Topology &rarr; Coverage &rarr; Validation &rarr; Diff. Lenses only recolor the graph (no relayout). Also: right-click canvas &rarr; View as, or press 1-4.">Topology</span>
+      <span class="lens-chip" id="lens-chip" role="button" tabindex="0" aria-label="Active graph lens; click to cycle" data-hint="Active graph lens. Click to cycle Topology &rarr; Coverage &rarr; Validation &rarr; Diff &rarr; Sensitivity. Lenses only recolor the graph (no relayout). Also: right-click canvas &rarr; View as, or press 1-5.">Topology</span>
       <span class="lens-chip" id="dirty-chip" style="display:none;color:var(--yellow);border-color:var(--yellow);cursor:default" data-hint="You have unsaved mapping changes. Press Cmd/Ctrl+S or use Save to persist them.">Unsaved</span>
     </span>
   </div>
@@ -2172,6 +2184,9 @@ function openActionsMenu(ev) {
     { label: 'Analyze denormalization', icon: '\u2728', shortcut: 'n', disabled: dis,
       hint: 'Detect denormalization smells (repeating column groups, embedded lookups, multi-valued columns, redundant reference data, over-split 1:1 tables) and recommend graph remedies. Advisory \u2014 nothing is changed.',
       onClick: analyzeDenorm },
+    { label: 'Entitlement report', icon: '\u26E8', shortcut: 'g', disabled: dis,
+      hint: 'List mapped fields at/above the sensitivity threshold (from catalog classifications), with source lineage. At load, above-threshold fields are excluded by default unless allowed or masked.',
+      onClick: showEntitlements },
     { label: 'Diff', icon: '\u00B1', shortcut: '\u2318D', disabled: dis,
       hint: 'Show what changed in the mapping versus the last saved version.',
       onClick: showDiff },
@@ -2622,6 +2637,76 @@ function removeFieldExpression(collKey, targetProp) {
   if (!coll.fieldExpressions) return;
   const idx = coll.fieldExpressions.findIndex(f => f.target === targetProp);
   if (idx >= 0) coll.fieldExpressions.splice(idx, 1);
+}
+
+// ── Phase 9b: transform-at-load masking (mirrors src/r2g/masking.py) ──
+const MASK_SENTINEL = 'r2g:mask:';
+const MASK_KINDS = {
+  hash: 'Irreversible MD5 digest (not joinable)',
+  tokenize: 'Stable SHA-512 token (joinable across rows)',
+  redact: 'Replace with a constant "***"',
+  nullify: 'Drop the value (set to null)',
+};
+
+function _sourceColForProp(coll, prop) {
+  const fx = (coll.fieldExpressions || []).find(f => f.target === prop);
+  if (fx && fx.sources && fx.sources.length) return fx.sources[0];
+  const fm = coll.fieldMappings || {};
+  for (const [src, tgt] of Object.entries(fm)) if (tgt === prop) return src;
+  return prop;
+}
+
+function _maskExpressionFor(kind, col) {
+  if (kind === 'redact') return '"***"';
+  if (kind === 'nullify') return 'null';
+  if (kind === 'hash') return `MD5(TO_STRING(@${col}))`;
+  if (kind === 'tokenize') return `SHA512(TO_STRING(@${col}))`;
+  return null;
+}
+
+function isMaskedProp(coll, prop) {
+  const fx = (coll.fieldExpressions || []).find(f => f.target === prop);
+  return !!(fx && (fx.description || '').startsWith(MASK_SENTINEL));
+}
+
+function maskField(collKey, prop, kind) {
+  const coll = editState.collections[collKey];
+  if (!coll || prop === '_key') return;
+  if (!MASK_KINDS[kind]) return;
+  const col = _sourceColForProp(coll, prop);
+  const expression = _maskExpressionFor(kind, col);
+  const fx = ensureFieldExpression(collKey, prop, [col]);
+  fx.sources = [col];
+  fx.expression = expression;
+  fx.engine = 'aql';
+  fx.description = MASK_SENTINEL + kind;
+  markDirty();
+  renderMapper();
+  toast(`Masking '${prop}' with ${kind}. Masked fields pass the load gate.`, 'success');
+}
+
+function unmaskField(collKey, prop) {
+  const coll = editState.collections[collKey];
+  if (!coll) return;
+  removeFieldExpression(collKey, prop);
+  markDirty();
+  renderMapper();
+  toast(`Removed mask from '${prop}'.`, 'info');
+}
+
+function _menuMaskField(collKey, prop) {
+  const coll = editState.collections[collKey];
+  const masked = coll ? isMaskedProp(coll, prop) : false;
+  if (masked) {
+    return { label: 'Unmask field', icon: '\u2622', onClick: () => unmaskField(collKey, prop),
+      hint: 'Remove the masking transform so the raw value is loaded again.' };
+  }
+  return { label: 'Mask this field', icon: '\u2622', disabled: prop === '_key', submenu: [
+    { label: 'Hash (MD5)', onClick: () => maskField(collKey, prop, 'hash'), hint: MASK_KINDS.hash },
+    { label: 'Tokenize (SHA-512)', onClick: () => maskField(collKey, prop, 'tokenize'), hint: MASK_KINDS.tokenize },
+    { label: 'Redact (\u201C***\u201D)', onClick: () => maskField(collKey, prop, 'redact'), hint: MASK_KINDS.redact },
+    { label: 'Nullify', onClick: () => maskField(collKey, prop, 'nullify'), hint: MASK_KINDS.nullify },
+  ], hint: 'De-identify this property at load (reuses the expression engine). A masked field clears the sensitivity gate.' };
 }
 
 function drawConnectors() {
@@ -4669,6 +4754,102 @@ function dismissDenormFinding(idx) {
   renderDenormFindings({ findings: _pendingDenormFindings, sample_used: false });
 }
 
+// ── Phase 9b: Entitlement report panel ──
+
+const _ENTITLEMENT_THRESHOLD = 'confidential';
+
+function _levelClass(level) {
+  if (level === 'restricted') return 'low';   // pink/red-ish — most sensitive
+  if (level === 'confidential') return 'mid';  // amber
+  return 'high';                                // green — internal/public
+}
+
+async function showEntitlements() {
+  if (!currentProject) return;
+
+  openFloatingCard({
+    id: 'entitlements',
+    title: 'Checking entitlements\u2026',
+    body: '<p style="color:var(--text-dim)">Computing classification levels across the mapping\u2026</p>',
+    status: { kind: 'info', label: 'working' },
+    actions: [],
+    position: { right: 20, bottom: 120 },
+  });
+
+  try {
+    const result = await apiFetch(
+      `/api/projects/${encodeURIComponent(currentProject)}/entitlements?threshold=${_ENTITLEMENT_THRESHOLD}`
+    );
+    renderEntitlements(result);
+  } catch (e) {
+    openFloatingCard({
+      id: 'entitlements',
+      title: 'Entitlement report',
+      body: `<p style="color:var(--red)">${escHtml(e.message || String(e))}</p>`,
+      status: { kind: 'error', label: 'failed' },
+    });
+  }
+}
+
+function renderEntitlements(result) {
+  const above = (result && result.above_threshold) || [];
+  const allFields = (result && result.fields) || [];
+  const masked = allFields.filter(f => f.masked);
+  const summary = result.summary || {};
+  const threshold = result.threshold || _ENTITLEMENT_THRESHOLD;
+
+  if (!above.length) {
+    openFloatingCard({
+      id: 'entitlements',
+      title: 'Entitlement report',
+      body: `<p style="color:var(--text-dim)">No mapped fields at/above <code>${escHtml(threshold)}</code>.${masked.length ? ` ${masked.length} field(s) masked.` : ''} Classifications come from the catalog at <code>source snapshot</code>.</p>`,
+      status: { kind: 'ok', label: 'clean' },
+    });
+    return;
+  }
+
+  const rows = above.map(f => {
+    const cls = _levelClass(f.level);
+    const lineage = (f.source_columns || []).map(c => `${f.source_table}.${c}`).join(', ');
+    const tags = (f.tags || []).join(', ');
+    return `
+      <li class="fk-suggest-row">
+        <div class="fk-suggest-line">
+          <span class="fk-suggest-conf ${cls}">${escHtml(f.level)}</span>
+          <span class="fk-suggest-arrow">
+            <code>${escHtml(f.target_collection)}.${escHtml(f.target_property)}</code>
+            &larr; ${escHtml(lineage)}
+          </span>
+        </div>
+        ${tags ? `<div class="fk-suggest-evidence">${escHtml(tags)}</div>` : ''}
+      </li>`;
+  }).join('');
+
+  const maskedNote = masked.length
+    ? `<p class="hint" style="margin-top:8px;color:var(--green)">${masked.length} field(s) masked: ${escHtml(masked.map(f => `${f.target_collection}.${f.target_property} (${f.mask_kind || 'mask'})`).join(', '))}</p>`
+    : '';
+
+  const bodyHtml = `
+    <div class="fk-suggest-header">
+      <span>${above.length} field${above.length === 1 ? '' : 's'} \u2265 ${escHtml(threshold)}</span>
+      <span class="hint">${summary.total_fields || allFields.length} mapped \u00b7 ${masked.length} masked</span>
+    </div>
+    <ul class="fk-suggest-list">${rows}</ul>
+    ${maskedNote}
+    <p class="hint" style="margin-top:10px">Advisory \u2014 at load these are <b>excluded by default</b>. Pass <code>allow_sensitive</code> (load dialog) or mask them to include. r2g advises; the serving layer enforces.</p>
+  `;
+
+  openFloatingCard({
+    id: 'entitlements',
+    title: 'Entitlement report',
+    body: bodyHtml,
+    status: { kind: above.length ? 'info' : 'ok', label: `${above.length} \u2265 ${threshold}` },
+    actions: [
+      { label: 'Close', onClick: () => closeFloatingCard('entitlements') },
+    ],
+  });
+}
+
 // ── Settings ──
 
 function showSettings() {
@@ -5207,6 +5388,7 @@ function _menuTargetProperty(collKey, prop) {
   const coll = editState.collections[collKey];
   return [
     menuEditExpression(collKey, prop, 'Define how this property\u2019s value is computed \u2014 identity pass-through or an AQL / KSQL / Python expression over one or more source columns.'),
+    _menuMaskField(collKey, prop),
     { label: 'Mark as _key source', icon: '\u29B7', disabled: prop === '_key', onClick: () => markPropAsKey(collKey, prop),
       hint: 'Use this property\u2019s source column to derive the document _key (the stable primary identifier).' },
     { label: 'Unmap', danger: true, icon: '\u2716', onClick: () => unmapTargetProp(collKey, prop),
@@ -5284,6 +5466,8 @@ function _menuCanvas() {
       hint: 'Scan the source schema for likely foreign keys (by column name and value overlap) and propose new edges to accept or dismiss.' },
     { label: 'Analyze denormalization\u2026', icon: '\u2728', shortcut: 'n', onClick: () => analyzeDenorm(),
       hint: 'Detect denormalization smells (repeating groups, embedded lookups, multi-valued columns, redundant reference data, 1:1 over-splits) and recommend graph remedies. Advisory only.' },
+    { label: 'Entitlement report\u2026', icon: '\u26E8', shortcut: 'g', onClick: () => showEntitlements(),
+      hint: 'Show mapped fields at/above the sensitivity threshold with source lineage. Above-threshold fields are excluded at load by default unless allowed or masked.' },
     { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping,
       hint: 'Check the current mapping for errors and warnings (missing keys, unresolved columns, reserved-attribute conflicts) without saving.' },
     { label: 'Save', icon: '\u2630', shortcut: '\u2318S', onClick: saveMapping,
@@ -5296,6 +5480,7 @@ function _menuCanvas() {
       { label: 'Coverage' + (currentLens === 'coverage' ? '  \u2713' : ''), shortcut: '2', onClick: () => setLens('coverage') },
       { label: 'Validation' + (currentLens === 'validation' ? '  \u2713' : ''), shortcut: '3', onClick: () => setLens('validation') },
       { label: 'Diff' + (currentLens === 'diff' ? '  \u2713' : ''), shortcut: '4', onClick: () => setLens('diff') },
+      { label: 'Sensitivity' + (currentLens === 'sensitivity' ? '  \u2713' : ''), shortcut: '5', onClick: () => setLens('sensitivity') },
     ], hint: 'Switch the graph lens. Lenses only recolor the stable layout \u2014 they never rebuild or relayout the graph.' },
     '-',
     { label: 'Expand all tables', onClick: () => expandAllTables(true),
@@ -6259,6 +6444,28 @@ function renderLegend() {
           <span class="legend-text">Warning</span>
         </div>
       </div>
+      <div class="legend-section">
+        <div class="legend-section-title">Sensitivity (View as, press 5)</div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="12"><rect x="0" y="0" width="4" height="12" fill="#da1a20"/></svg>
+          <span class="legend-text">Restricted</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="12"><rect x="0" y="0" width="4" height="12" fill="#fbbf24"/></svg>
+          <span class="legend-text">Confidential</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="12"><rect x="0" y="0" width="4" height="12" fill="#38bdf8"/></svg>
+          <span class="legend-text">Internal</span>
+        </div>
+        <div class="legend-row">
+          <svg class="legend-swatch" width="28" height="12"><rect x="0" y="0" width="4" height="12" fill="#34d399"/></svg>
+          <span class="legend-text">Masked <small>(passes the load gate)</small></span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-text"><small>Source column color = the highest level it feeds (mosaic = max). Reflects the <em>saved</em> mapping. Right-click a target property &rarr; Mask this field.</small></span>
+        </div>
+      </div>
     </div>`;
   // Restore collapsed state — collapsed by default so it doesn't cover the canvas.
   if (window._legendCollapsed === undefined) {
@@ -6284,7 +6491,9 @@ let currentLens = 'topology';
 
 function setLens(name) {
   currentLens = name;
-  document.body.classList.remove('lens-topology', 'lens-coverage', 'lens-validation', 'lens-diff');
+  document.body.classList.remove(
+    'lens-topology', 'lens-coverage', 'lens-validation', 'lens-diff', 'lens-sensitivity'
+  );
   document.body.classList.add('lens-' + name);
   const chip = document.getElementById('lens-chip');
   if (chip) {
@@ -6300,7 +6509,10 @@ function applyLens() {
   // Paint-only: no relayout. Mutate classes on existing DOM.
   // First clear paint-only attributes from all relevant nodes
   document.querySelectorAll('.source-col-row, .target-prop-row').forEach(el => {
-    el.classList.remove('mapped', 'unmapped');
+    el.classList.remove(
+      'mapped', 'unmapped',
+      'sens-public', 'sens-internal', 'sens-confidential', 'sens-restricted', 'sens-masked'
+    );
   });
   document.querySelectorAll('.source-card, .target-card').forEach(el => {
     el.classList.remove('diff-added', 'diff-changed', 'diff-removed');
@@ -6315,6 +6527,56 @@ function applyLens() {
   if (currentLens === 'coverage') _applyCoverageLens();
   else if (currentLens === 'validation') _applyValidationLens();
   else if (currentLens === 'diff') _applyDiffLens();
+  else if (currentLens === 'sensitivity') _applySensitivityLens();
+}
+
+// ── Phase 9b: sensitivity lens (paint-only) ──
+let _sensitivityCache = { project: null, data: null };
+
+async function _applySensitivityLens() {
+  if (!currentProject) return;
+  try {
+    if (_sensitivityCache.project !== currentProject || !_sensitivityCache.data) {
+      const data = await apiFetch(
+        `/api/projects/${encodeURIComponent(currentProject)}/entitlements?threshold=confidential`
+      );
+      _sensitivityCache = { project: currentProject, data };
+    }
+    _paintSensitivity(_sensitivityCache.data);
+  } catch (e) {
+    toast('Sensitivity lens unavailable: ' + e.message, 'error');
+  }
+}
+
+// Invalidate the cache when the mapping/snapshot changes.
+function invalidateSensitivityCache() { _sensitivityCache = { project: null, data: null }; }
+
+function _paintSensitivity(data) {
+  const fields = (data && data.fields) || [];
+  // Highest level a source column feeds, and the level/masked state per target prop.
+  const srcLevel = {};
+  for (const f of fields) {
+    const cls = f.masked ? 'masked' : f.level;
+    const tgt = document.querySelector(
+      `.target-prop-row[data-collection="${f.target_collection}"][data-prop="${f.target_property}"]`
+    );
+    if (tgt) tgt.classList.add('sens-' + cls);
+    for (const c of (f.source_columns || [])) {
+      const key = f.source_table + '\u0000' + c;
+      if (!(key in srcLevel) || _sensRank(f.level) > _sensRank(srcLevel[key])) {
+        srcLevel[key] = f.level;
+      }
+    }
+  }
+  for (const [key, level] of Object.entries(srcLevel)) {
+    const [tbl, col] = key.split('\u0000');
+    const row = document.querySelector(`.source-col-row[data-table="${tbl}"][data-col="${col}"]`);
+    if (row) row.classList.add('sens-' + level);
+  }
+}
+
+function _sensRank(level) {
+  return { public: 0, internal: 1, confidential: 2, restricted: 3 }[level] || 0;
 }
 
 function _applyCoverageLens() {
@@ -6401,6 +6663,8 @@ function clearDirty() {
   _isDirty = false;
   const chip = document.getElementById('dirty-chip');
   if (chip) chip.style.display = 'none';
+  // The saved mapping just changed on disk; refresh the sensitivity lens data.
+  invalidateSensitivityCache();
 }
 
 function scheduleValidation() {
@@ -6579,10 +6843,12 @@ registerShortcut('ctrl+enter', 'Open load dialog', 'global', () => showLoadModal
 registerShortcut('a', 'Auto-map all', 'global', () => autoMap());
 registerShortcut('i', 'Suggest foreign keys', 'global', () => suggestFks());
 registerShortcut('n', 'Analyze denormalization', 'global', () => analyzeDenorm());
+registerShortcut('g', 'Entitlement report', 'global', () => showEntitlements());
 registerShortcut('1', 'View: Topology', 'global', () => setLens('topology'));
 registerShortcut('2', 'View: Coverage', 'global', () => setLens('coverage'));
 registerShortcut('3', 'View: Validation', 'global', () => setLens('validation'));
 registerShortcut('4', 'View: Diff', 'global', () => setLens('diff'));
+registerShortcut('5', 'View: Sensitivity', 'global', () => setLens('sensitivity'));
 registerShortcut('h', 'Toggle history strip', 'global', () => toggleBottomStrip());
 
 document.addEventListener('keydown', e => {
@@ -6600,7 +6866,7 @@ document.addEventListener('keydown', e => {
 
 // Toolbar lens chip cycles topology -> coverage -> validation -> diff -> topology
 function cycleLens() {
-  const order = ['topology', 'coverage', 'validation', 'diff'];
+  const order = ['topology', 'coverage', 'validation', 'diff', 'sensitivity'];
   const i = order.indexOf(currentLens);
   setLens(order[(i + 1) % order.length]);
 }

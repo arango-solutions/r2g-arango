@@ -954,3 +954,48 @@ class TestCatalogEndpoints:
         # the imported source is now a normal source
         names = [s["name"] for s in client.get("/api/sources").json()]
         assert "shop_src" in names
+
+
+class TestEntitlementsApi:
+    """Phase 9b: GET /api/projects/{name}/entitlements."""
+
+    def _setup(self, client, tmp_path, catalog_dir):
+        from r2g.types import Classification
+
+        schema = Schema(tables={
+            "customer": Table(name="customer", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="email", data_type="text",
+                       classification=Classification(tags=["PII.Sensitive"])),
+                Column(name="name", data_type="text"),
+            ], primary_key=["id"]),
+        })
+        config = ConfigManager.generate_default_config(schema)
+        mapping_path = str(tmp_path / "ent_mapping.yaml")
+        ConfigManager.save_config(config, mapping_path)
+        mgr = CatalogManager(catalog_dir)
+        mgr.add_source("esrc", "postgresql", "postgresql://localhost/db")
+        mgr.create_snapshot("esrc", schema)
+        client.post("/api/projects", json={
+            "name": "eproj", "source_name": "esrc", "mapping_config_path": mapping_path,
+        })
+
+    def test_report_flags_pii(self, client, tmp_path, catalog_dir):
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.get("/api/projects/eproj/entitlements")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["threshold"] == "confidential"
+        above = {f["target_property"] for f in data["above_threshold"]}
+        assert "email" in above
+        levels = {f["target_property"]: f["level"] for f in data["fields"]}
+        assert levels["email"] == "restricted"
+        assert levels["name"] == "public"
+
+    def test_unknown_project_404(self, client):
+        assert client.get("/api/projects/nope/entitlements").status_code == 404
+
+    def test_invalid_threshold_400(self, client, tmp_path, catalog_dir):
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.get("/api/projects/eproj/entitlements?threshold=secret")
+        assert resp.status_code == 400
