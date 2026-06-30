@@ -9,6 +9,32 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Enforcement artifacts & classification re-sync (Phase 9c)**: the "enable
+  enforcement — emit, don't enforce" layer. `src/r2g/governance.py` gains
+  `classification_manifest` (canonical per-collection/edge/field classification
+  + lineage + owners + sync timestamp), `suggested_rbac` (per-clearance ArangoDB
+  collection read-grants, cumulative: a `confidential` clearance reads
+  public/internal/confidential but not restricted), `policy_rego` (a default-deny
+  OPA/Rego stub keyed on collection level vs. principal clearance, no `opa`
+  dependency), and `tier_layout_recommendation` (group collections by tier with a
+  suggested database/prefix per tier). `write_governance_artifacts` emits them all
+  under `<project>/governance/`, keyed by **target** (ArangoDB) collection names.
+  Surfaced via `r2g entitlements emit <project> [--threshold] [--out] [--tier-layout]
+  [--no-rego]`, `POST /api/projects/{name}/governance/emit`, and `emit_governance` /
+  `tier_layout` on the load endpoint. `r2g catalog resync-classifications <source>`
+  re-pulls classifications from the bound catalog (provenance now stored on
+  `SourceConfig`: `catalog_name`, `catalog_asset_fqn`, `classifications_synced_at`),
+  refreshes the stored map, re-merges onto the latest snapshot, and reports
+  lattice-level drift via the new `diff_classifications` helper (escalations
+  called out). The CDC/temporal path carries the policy onto changed rows:
+  `cdc-start` / `kafka-start` gain `--govern` (+ `--allow-sensitive`,
+  `--sensitivity-threshold`) which applies the same sensitivity gate to the
+  mapping so subsequent row changes don't launder newly sensitive columns.
+  Retroactively re-gating already-loaded data on a tier rise is intentionally out
+  of scope (a serving-layer/backfill concern); r2g advises and gates future
+  writes. A gated OpenMetadata classification e2e test ships
+  (skip-when-unavailable). r2g emits; the serving layer enforces. **Phase 9 is
+  complete (9a + 9b + 9c).**
 - **Entitlement report, load gate & masking (Phase 9b)**: the
   advise-and-gate layer on top of the 9a classification carrier. New
   `src/r2g/governance.py` builds an **entitlement report** (each target property,

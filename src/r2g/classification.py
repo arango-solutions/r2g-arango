@@ -243,3 +243,58 @@ def recompute_mosaic(
         result.edges[label] = max_sensitivity(contributors)
 
     return result
+
+
+# ── Classification drift (PRD Phase 9c, re-sync) ─────────────────────────────
+
+
+class ClassificationDelta(BaseModel):
+    """One column whose lattice level changed between two classification maps."""
+
+    table: str
+    column: str
+    old_level: str
+    new_level: str
+
+    @property
+    def escalated(self) -> bool:
+        return sensitivity_rank(self.new_level) > sensitivity_rank(self.old_level)
+
+    @property
+    def direction(self) -> str:
+        return "escalated" if self.escalated else "de-escalated"
+
+
+def diff_classifications(
+    old: dict[str, dict[str, Classification]],
+    new: dict[str, dict[str, Classification]],
+    *,
+    tag_levels: Optional[dict[str, str]] = None,
+) -> list[ClassificationDelta]:
+    """Return the per-column lattice-level changes from ``old`` to ``new``.
+
+    Both inputs are ``table → column → Classification`` maps (e.g. an old vs new
+    ``SourceConfig.classifications``). Only columns whose *lattice level* changed
+    are reported; tag/owner churn that does not move the level is ignored. A
+    column missing on a side is treated as ``public`` (no signal). Sorted by
+    table then column for stable output.
+    """
+    deltas: list[ClassificationDelta] = []
+    tables = set(old) | set(new)
+    for table in tables:
+        old_cols = old.get(table, {})
+        new_cols = new.get(table, {})
+        for column in set(old_cols) | set(new_cols):
+            old_level = tier_of(old_cols.get(column), tag_levels=tag_levels)
+            new_level = tier_of(new_cols.get(column), tag_levels=tag_levels)
+            if old_level != new_level:
+                deltas.append(
+                    ClassificationDelta(
+                        table=table,
+                        column=column,
+                        old_level=old_level,
+                        new_level=new_level,
+                    )
+                )
+    deltas.sort(key=lambda d: (d.table, d.column))
+    return deltas

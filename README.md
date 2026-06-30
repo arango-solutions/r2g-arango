@@ -394,8 +394,8 @@ r2g stream --dry-run \
 | `cdc-setup` | Create a PostgreSQL logical replication slot for CDC (`--slot`, `--plugin test_decoding\|wal2json`) |
 | `cdc-teardown` | Drop a logical replication slot |
 | `cdc-status` | Show replication slot metadata (active, LSN positions) |
-| `cdc-start` | Start the CDC listener: polls for changes, transforms via mapping config, applies deltas to ArangoDB in near real-time (`--poll-interval`, `--batch-size`, `--create-slot/--no-create-slot`, `--conflict-policy`) |
-| `kafka-start` | Start Kafka CDC consumer: consumes Debezium or flat JSON messages from Kafka topics, transforms via mapping config, applies deltas to ArangoDB (`--brokers`, `--topics`, `--group-id`, `--format`, `--offset-reset`, `--conflict-policy`) |
+| `cdc-start` | Start the CDC listener: polls for changes, transforms via mapping config, applies deltas to ArangoDB in near real-time (`--poll-interval`, `--batch-size`, `--create-slot/--no-create-slot`, `--conflict-policy`, `--temporal`; `--govern` applies the Phase 9 sensitivity gate so changed rows carry classification policy — `--allow-sensitive`, `--sensitivity-threshold`) |
+| `kafka-start` | Start Kafka CDC consumer: consumes Debezium or flat JSON messages from Kafka topics, transforms via mapping config, applies deltas to ArangoDB (`--brokers`, `--topics`, `--group-id`, `--format`, `--offset-reset`, `--conflict-policy`, `--temporal`, `--govern`) |
 | `stream` | Stream data directly from PostgreSQL to ArangoDB via HTTP API (no intermediate files); supports `--dry-run`, `--pg-schema`, `--drop-collections`, `--workers`, `--include-tables`, `--exclude-tables`, `--skip-existing`, `--on-duplicate`, `--since`, and `--since-column` |
 | `mapping-diff` | Compare two mapping configs and show what ArangoDB changes are needed |
 | `selective-reload` | Compute and execute a selective reload based on mapping changes |
@@ -428,6 +428,10 @@ r2g stream --dry-run \
 | Command | Description |
 |---|---|
 | `entitlements report` | List a project's mapped fields at/above a sensitivity threshold with source lineage (mosaic = max-of-contributors). Advisory: at load, above-threshold fields are excluded by default unless `--allow-sensitive` or masked (`--threshold`, `--json`) |
+| `entitlements emit` | Emit the Phase 9c governance artifacts under `<project>/governance/`: `classification-manifest.json`, `suggested-rbac.json` (collection grants by clearance), `policy.rego` (OPA stub), `lineage.json`, and (with `--tier-layout`) `tier-layout.json`. r2g emits; the serving layer enforces (`--threshold`, `--out`, `--tier-layout`, `--no-rego`) |
+| `catalog resync-classifications` | Re-pull classifications/owners/tier from the catalog a source was imported from, refresh the stored map + `classifications_synced_at`, and re-merge onto the latest snapshot's columns (counters source-policy drift) |
+
+The load API also accepts `emit_governance` / `tier_layout` to drop the artifact set on a governed load.
 
 ### `r2g secrets` — catalog credential encryption
 

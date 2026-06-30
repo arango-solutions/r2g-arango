@@ -50,6 +50,13 @@ class SourceConfig(BaseModel):
     classifications: dict[str, dict[str, Classification]] = Field(default_factory=dict)
     data_owners: list[str] = Field(default_factory=list)
     data_tier: Optional[str] = None
+    # Catalog provenance (Phase 9c) so `catalog resync-classifications` can
+    # re-pull from the originating catalog/asset without re-specifying them.
+    catalog_name: Optional[str] = None
+    catalog_asset_fqn: Optional[str] = None
+    # When classifications were last (re)synced from the bound catalog. Surfaced
+    # in CLI/UI so staleness is visible.
+    classifications_synced_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -202,6 +209,8 @@ class CatalogManager:
         classifications: dict[str, dict[str, Classification]] | None = None,
         data_owners: list[str] | None = None,
         data_tier: str | None = None,
+        catalog_name: str | None = None,
+        catalog_asset_fqn: str | None = None,
     ) -> SourceConfig:
         # Catalog accepts any *known* source type so future types
         # (csv, kafka) can be pre-registered; the connector factory
@@ -231,6 +240,9 @@ class CatalogManager:
             classifications=classifications or {},
             data_owners=data_owners or [],
             data_tier=data_tier,
+            catalog_name=catalog_name,
+            catalog_asset_fqn=catalog_asset_fqn,
+            classifications_synced_at=now if classifications else None,
             created_at=now,
             updated_at=now,
         )
@@ -365,6 +377,18 @@ class CatalogManager:
         )
         catalog.snapshots[snap.id] = snap
         self._save(catalog)
+        return snap
+
+    def update_snapshot_schema(self, snapshot_id: str, schema: Schema) -> SchemaSnapshot:
+        """Replace a snapshot's schema in place (used by classification re-sync)."""
+        catalog = self._load()
+        snap = catalog.snapshots.get(snapshot_id)
+        if snap is None:
+            raise ValueError(f"Snapshot '{snapshot_id}' not found")
+        snap.schema_data = schema
+        catalog.snapshots[snapshot_id] = snap
+        self._save(catalog)
+        logger.info("snapshot_schema_updated", snapshot_id=snapshot_id)
         return snap
 
     def get_latest_snapshot(self, source_name: str) -> SchemaSnapshot | None:

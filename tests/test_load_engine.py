@@ -224,6 +224,24 @@ class TestLoadSensitivityGate:
         assert handling["users.email"] == "excluded"
         time.sleep(0.2)
 
+    @patch("r2g.ui.server.StreamingPipeline")
+    @patch("r2g.ui.server.ArangoWriter")
+    def test_emit_governance_writes_artifacts(self, mock_writer, mock_pipeline, catalog_dir, tmp_path):
+        # Phase 9c: a governed load with emit_governance drops the full set.
+        mock_pipeline.return_value = MagicMock(errors={})
+        client = self._gated_client(catalog_dir, tmp_path)
+        resp = client.post(
+            "/api/projects/gproj/load",
+            json={"dry_run": True, "emit_governance": True, "tier_layout": True},
+        )
+        assert resp.status_code == 202, resp.text
+        gov = tmp_path / "governance"
+        assert (gov / "classification-manifest.json").exists()
+        assert (gov / "suggested-rbac.json").exists()
+        assert (gov / "policy.rego").exists()
+        assert (gov / "tier-layout.json").exists()
+        time.sleep(0.2)
+
 
 class TestLoadStatusEndpoint:
     @patch("r2g.ui.server.StreamingPipeline")

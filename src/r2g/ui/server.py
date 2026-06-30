@@ -795,6 +795,62 @@ def create_app(
             "above_threshold": [f.model_dump() for f in report.above_threshold],
         }
 
+    @app.post("/api/projects/{name}/governance/emit")
+    async def emit_governance(
+        name: str,
+        threshold: str = "confidential",
+        tier_layout: bool = False,
+    ):
+        """Emit the Phase 9c governance artifacts for a project (advise, not enforce)."""
+        from r2g.classification import SENSITIVITY_ORDER
+        from r2g.governance import build_entitlement_report, write_governance_artifacts
+
+        threshold = (threshold or "confidential").strip().lower()
+        if threshold not in SENSITIVITY_ORDER:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid threshold; expected one of: {', '.join(SENSITIVITY_ORDER)}",
+            )
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        snap = catalog.get_latest_snapshot(project.source_name)
+        if snap is None:
+            raise HTTPException(status_code=400, detail="No schema snapshot available")
+        try:
+            config = ConfigManager.load_config(project.mapping_config_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to load mapping config: {e}")
+
+        source = catalog.get_source(project.source_name)
+        owners = source.data_owners if source else []
+        synced = (
+            source.classifications_synced_at.isoformat()
+            if source and source.classifications_synced_at
+            else None
+        )
+        report = build_entitlement_report(
+            config, snap.schema_data, threshold=threshold, project=name
+        )
+        out_dir = Path(project.mapping_config_path).parent
+        try:
+            written = write_governance_artifacts(
+                report,
+                out_dir,
+                owners=owners,
+                database=project.arango_database,
+                tier_layout=tier_layout,
+                synced_at=synced,
+            )
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to write artifacts: {e}")
+        return {
+            "project": name,
+            "threshold": threshold,
+            "artifacts": {k: str(v) for k, v in written.items()},
+            "summary": report.summary(),
+        }
+
     @app.post("/api/projects/{name}/load", status_code=202)
     async def start_load(name: str, body: LoadRequest):
         project = catalog.get_project(name)
@@ -842,8 +898,26 @@ def create_app(
         for f in report.fields:
             if (f.target_collection, f.target_property) in excluded_keys:
                 f.excluded = True
+        out_dir = Path(project.mapping_config_path).parent
         try:
-            write_lineage_manifest(report, Path(project.mapping_config_path).parent)
+            if body.emit_governance:
+                from r2g.governance import write_governance_artifacts
+
+                synced = (
+                    source.classifications_synced_at.isoformat()
+                    if source.classifications_synced_at
+                    else None
+                )
+                write_governance_artifacts(
+                    report,
+                    out_dir,
+                    owners=source.data_owners,
+                    database=project.arango_database,
+                    tier_layout=body.tier_layout,
+                    synced_at=synced,
+                )
+            else:
+                write_lineage_manifest(report, out_dir)
         except OSError as e:
             logger.warning("lineage_manifest_write_failed", project=name, error=str(e))
 
@@ -1248,6 +1322,10 @@ class LoadRequest(BaseModel):
     # ``allow_sensitive`` is the explicit opt-out.
     allow_sensitive: bool = False
     sensitivity_threshold: str = "confidential"
+    # Phase 9c: on a governed load, also emit the enforcement artifacts
+    # (classification manifest, suggested-RBAC, policy.rego) next to lineage.json.
+    emit_governance: bool = False
+    tier_layout: bool = False
 
 
 class TargetCreateRequest(BaseModel):

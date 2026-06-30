@@ -999,3 +999,51 @@ class TestEntitlementsApi:
         self._setup(client, tmp_path, catalog_dir)
         resp = client.get("/api/projects/eproj/entitlements?threshold=secret")
         assert resp.status_code == 400
+
+
+class TestGovernanceEmitApi:
+    """Phase 9c: POST /api/projects/{name}/governance/emit."""
+
+    def _setup(self, client, tmp_path, catalog_dir):
+        from r2g.types import Classification
+
+        schema = Schema(tables={
+            "customer": Table(name="customer", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="email", data_type="text",
+                       classification=Classification(tags=["PII.Sensitive"])),
+                Column(name="name", data_type="text"),
+            ], primary_key=["id"]),
+        })
+        config = ConfigManager.generate_default_config(schema)
+        mapping_path = str(tmp_path / "gov_mapping.yaml")
+        ConfigManager.save_config(config, mapping_path)
+        mgr = CatalogManager(catalog_dir)
+        mgr.add_source("gsrc", "postgresql", "postgresql://localhost/db")
+        mgr.create_snapshot("gsrc", schema)
+        client.post("/api/projects", json={
+            "name": "gproj", "source_name": "gsrc", "mapping_config_path": mapping_path,
+        })
+        return tmp_path
+
+    def test_emit_writes_artifacts(self, client, tmp_path, catalog_dir):
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.post("/api/projects/gproj/governance/emit?tier_layout=true")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        arts = data["artifacts"]
+        assert "classification-manifest.json" in arts
+        assert "suggested-rbac.json" in arts
+        assert "policy.rego" in arts
+        assert "tier-layout.json" in arts
+        # the returned paths are authoritative (server may manage the project dir)
+        from pathlib import Path as _P
+        assert _P(arts["classification-manifest.json"]).exists()
+
+    def test_unknown_project_404(self, client):
+        assert client.post("/api/projects/nope/governance/emit").status_code == 404
+
+    def test_invalid_threshold_400(self, client, tmp_path, catalog_dir):
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.post("/api/projects/gproj/governance/emit?threshold=secret")
+        assert resp.status_code == 400

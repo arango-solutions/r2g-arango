@@ -104,3 +104,46 @@ class TestSourceClassifications:
         assert src.classifications == {}
         assert src.data_owners == []
         assert src.data_tier is None
+        assert src.catalog_name is None
+        assert src.catalog_asset_fqn is None
+        assert src.classifications_synced_at is None
+
+    def test_catalog_provenance_round_trips(self, tmp_path):
+        from r2g.types import Classification
+
+        mgr = _mgr(tmp_path)
+        src = mgr.add_source(
+            "shop",
+            "postgresql",
+            "postgresql://h/shop",
+            classifications={"customer": {"email": Classification(tags=["PII.Sensitive"])}},
+            catalog_name="om",
+            catalog_asset_fqn="svc.shop.public",
+        )
+        # importing with classifications stamps a sync timestamp
+        assert src.classifications_synced_at is not None
+        got = CatalogManager(str(tmp_path)).get_source("shop")
+        assert got.catalog_name == "om"
+        assert got.catalog_asset_fqn == "svc.shop.public"
+        assert got.classifications_synced_at is not None
+
+    def test_update_snapshot_schema(self, tmp_path):
+        from r2g.classification import annotate_schema
+        from r2g.types import Classification, Column, Schema, Table
+
+        mgr = _mgr(tmp_path)
+        mgr.add_source("shop", "postgresql", "postgresql://h/shop")
+        schema = Schema(tables={
+            "customer": Table(
+                name="customer",
+                columns=[Column(name="email", data_type="text")],
+                primary_key=["email"],
+            )
+        })
+        snap = mgr.create_snapshot("shop", schema)
+        annotate_schema(schema, {"customer": {"email": Classification(tags=["PII.Sensitive"])}})
+        mgr.update_snapshot_schema(snap.id, schema)
+        got = CatalogManager(str(tmp_path)).get_latest_snapshot("shop")
+        col = got.schema_data.tables["customer"].columns[0]
+        assert col.classification is not None
+        assert col.classification.tags == ["PII.Sensitive"]

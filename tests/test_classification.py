@@ -10,6 +10,7 @@ from r2g.classification import (
     PUBLIC,
     SENSITIVITY_ORDER,
     annotate_schema,
+    diff_classifications,
     exceeds_threshold,
     max_sensitivity,
     recompute_mosaic,
@@ -220,3 +221,47 @@ class TestMosaicRecompute:
         assert above["customer.email"] == "restricted"
         assert above["customer.loyalty_tier"] == "confidential"
         assert "customer.first_name" not in above
+
+
+class TestDiffClassifications:
+    def test_detects_escalation(self):
+        old = {"customer": {"email": Classification()}}  # public
+        new = {"customer": {"email": _pii()}}            # restricted
+        deltas = diff_classifications(old, new)
+        assert len(deltas) == 1
+        d = deltas[0]
+        assert (d.table, d.column) == ("customer", "email")
+        assert d.old_level == "public" and d.new_level == "restricted"
+        assert d.escalated and d.direction == "escalated"
+
+    def test_detects_de_escalation(self):
+        old = {"customer": {"email": _pii()}}
+        new = {"customer": {"email": Classification()}}
+        deltas = diff_classifications(old, new)
+        assert deltas[0].direction == "de-escalated"
+        assert not deltas[0].escalated
+
+    def test_no_change_when_level_stable(self):
+        # tag churn that does not move the lattice level is ignored
+        old = {"customer": {"email": Classification(tags=["PII.Sensitive"])}}
+        new = {"customer": {"email": Classification(tags=["PII.Sensitive", "Extra.Tag"])}}
+        assert diff_classifications(old, new) == []
+
+    def test_new_and_removed_columns(self):
+        old = {}
+        new = {"customer": {"ssn": _pii()}}
+        deltas = diff_classifications(old, new)
+        assert deltas[0].old_level == "public" and deltas[0].new_level == "restricted"
+        # removed (present old, gone new) de-escalates to public
+        deltas2 = diff_classifications(new, old)
+        assert deltas2[0].direction == "de-escalated"
+
+    def test_sorted_output(self):
+        old = {}
+        new = {
+            "b": {"y": _pii()},
+            "a": {"z": _tier1(), "a": _pii()},
+        }
+        deltas = diff_classifications(old, new)
+        keys = [(d.table, d.column) for d in deltas]
+        assert keys == sorted(keys)

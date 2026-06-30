@@ -27,9 +27,11 @@ from pydantic import BaseModel, Field
 
 from r2g.classification import (
     PUBLIC,
+    SENSITIVITY_ORDER,
     exceeds_threshold,
     max_sensitivity,
     recompute_mosaic,
+    sensitivity_rank,
     tier_of,
 )
 from r2g.masking import is_masking_expression, mask_kind_of
@@ -282,7 +284,257 @@ def write_lineage_manifest(report: EntitlementReport, out_dir: str | Path) -> Pa
     return path
 
 
+# ── Phase 9c: enable enforcement — emit, don't enforce ────────────────────
+#
+# r2g never sits in the query-time authz path. On a governed load it *emits*
+# the metadata a serving layer needs to enforce: a canonical classification
+# manifest, a suggested ArangoDB collection-RBAC grant table, an optional
+# OPA/Rego policy stub, and (optionally) a per-tier physical-layout
+# recommendation. The operator / IdP / proxy applies them.
+
+ADVISORY_NOTE = (
+    "Advisory only. r2g emits this artifact at migration time; it does NOT "
+    "enforce access. The serving layer (ArangoDB RBAC, an OPA/proxy, or your "
+    "IdP) is responsible for enforcement. Levels are mosaic-recomputed "
+    "(max-of-contributors) and may exceed any single source column's level."
+)
+
+
+def _all_entity_levels(report: EntitlementReport) -> dict[str, str]:
+    """Entity→level map keyed by **target** (ArangoDB) collection / edge names.
+
+    The mosaic levels carried on the report are keyed by *source* table name;
+    governance artifacts must reference the real target collection names a
+    serving layer grants on. Document-collection levels are recomputed as the
+    max over their fields' levels (equivalent to the mosaic collection level);
+    edge levels are already keyed by the (target) edge-collection name.
+    """
+    levels: dict[str, str] = {}
+    for f in report.fields:
+        cur = levels.get(f.target_collection, PUBLIC)
+        levels[f.target_collection] = max_sensitivity([cur, f.level])
+    for ename, lvl in report.edge_levels.items():
+        levels[ename] = lvl
+    return levels
+
+
+def classification_manifest(
+    report: EntitlementReport,
+    *,
+    owners: Optional[list[str]] = None,
+    synced_at: Optional[str] = None,
+) -> dict:
+    """Canonical per-collection/edge/field classification + lineage.
+
+    A superset of the lineage manifest: adds the data owners and the
+    classification-sync timestamp, and groups fields under their target
+    collection so a serving layer can build access rules per collection.
+    """
+    base = lineage_manifest(report)
+    target_levels = _all_entity_levels(report)
+    collections: dict[str, dict] = {}
+    for f in report.fields:
+        coll = collections.setdefault(
+            f.target_collection,
+            {
+                "level": target_levels.get(f.target_collection, PUBLIC),
+                "fields": [],
+            },
+        )
+        coll["fields"].append(
+            {
+                "property": f.target_property,
+                "level": f.level,
+                "tags": f.tags,
+                "tier": f.tier,
+                "masked": f.masked,
+                "mask_kind": f.mask_kind,
+                "excluded": f.excluded,
+                "sources": [f"{f.source_table}.{c}" for c in f.source_columns],
+            }
+        )
+    return {
+        "kind": "r2g.classification-manifest/v1",
+        "note": ADVISORY_NOTE,
+        "project": report.project,
+        "generated_at": base["generated_at"],
+        "classifications_synced_at": synced_at,
+        "owners": owners or [],
+        "threshold": report.threshold,
+        "summary": report.summary(),
+        "collection_levels": report.collection_levels,
+        "edge_levels": report.edge_levels,
+        "collections": collections,
+        "lineage": base["fields"],
+    }
+
+
+def suggested_rbac(
+    report: EntitlementReport,
+    *,
+    database: Optional[str] = None,
+) -> dict:
+    """Suggested ArangoDB collection-level grants, by clearance (cumulative).
+
+    Emits one read role per clearance level present in the graph. A clearance
+    grants read (``ro``) on every collection at or below that level — a
+    ``confidential``-cleared principal reads public/internal/confidential
+    collections but NOT restricted ones. This is a *recommendation* an operator
+    applies via ArangoDB Enterprise collection access or an IdP group mapping;
+    r2g never creates users or grants.
+    """
+    levels = _all_entity_levels(report)
+    roles = []
+    prev_readable: Optional[list[str]] = None
+    for clearance in SENSITIVITY_ORDER:
+        readable = sorted(
+            c
+            for c, lvl in levels.items()
+            if sensitivity_rank(lvl) <= sensitivity_rank(clearance)
+        )
+        # Skip empty clearances and ones that read exactly what a lower
+        # clearance already reads (no collection exists at this tier).
+        if not readable or readable == prev_readable:
+            continue
+        roles.append(
+            {
+                "role": f"r2g_clearance_{clearance}",
+                "clearance": clearance,
+                "access": "ro",
+                "collections": readable,
+            }
+        )
+        prev_readable = readable
+    return {
+        "kind": "r2g.suggested-rbac/v1",
+        "note": ADVISORY_NOTE,
+        "project": report.project,
+        "database": database,
+        "collection_levels": levels,
+        "roles": roles,
+    }
+
+
+def policy_rego(report: EntitlementReport, *, package: str = "r2g.authz") -> str:
+    """An OPA/Rego policy stub keyed on collection level vs. principal clearance.
+
+    Default-deny; allow a read when the principal's clearance rank is >= the
+    collection's mosaic level rank. Emitted as a templated string (no ``opa``
+    dependency). Advisory — wire it into an app/proxy to enforce.
+    """
+    levels = _all_entity_levels(report)
+    rank_lines = ",\n".join(
+        f'    "{lvl}": {sensitivity_rank(lvl)}' for lvl in SENSITIVITY_ORDER
+    )
+    if levels:
+        coll_lines = ",\n".join(
+            f'    "{c}": "{lvl}"' for c, lvl in sorted(levels.items())
+        )
+    else:
+        coll_lines = ""
+    return (
+        f"# Generated by r2g (PRD Phase 9c) — ADVISORY policy stub.\n"
+        f"# r2g emits; the serving layer enforces. Default-deny.\n"
+        f"package {package}\n\n"
+        f"import future.keywords.in\n\n"
+        f"sensitivity_rank := {{\n{rank_lines}\n}}\n\n"
+        f"# Mosaic-recomputed level per target collection / edge.\n"
+        f"collection_level := {{\n{coll_lines}\n}}\n\n"
+        f"default allow := false\n\n"
+        f"# Allow read when the principal's clearance dominates the collection level.\n"
+        f"allow if {{\n"
+        f"    input.action == \"read\"\n"
+        f"    level := collection_level[input.collection]\n"
+        f"    sensitivity_rank[input.principal.clearance] >= sensitivity_rank[level]\n"
+        f"}}\n\n"
+        f"# Unknown collections are denied by default (no entry == not allowed).\n"
+    )
+
+
+def tier_layout_recommendation(
+    report: EntitlementReport,
+    *,
+    database: Optional[str] = None,
+) -> dict:
+    """Recommend a per-tier physical layout so coarse collection-RBAC can bite.
+
+    Groups collections/edges by mosaic tier and suggests a database (or
+    collection-prefix) per tier. A *recommendation*, not a generated layout —
+    generating the layout is a larger mapping/load change deferred past V1.
+    """
+    levels = _all_entity_levels(report)
+    tiers: dict[str, dict] = {}
+    for coll, lvl in sorted(levels.items()):
+        tier = tiers.setdefault(
+            lvl,
+            {
+                "collections": [],
+                "suggested_database": f"{database}_{lvl}" if database else None,
+                "suggested_prefix": f"{lvl}_",
+            },
+        )
+        tier["collections"].append(coll)
+    return {
+        "kind": "r2g.tier-layout/v1",
+        "note": (
+            "Advisory layout recommendation. Separating tiers into distinct "
+            "databases/graphs (or collection prefixes) lets ArangoDB's "
+            "collection-level RBAC enforce coarse tier boundaries. r2g "
+            "recommends; it does not generate the layout."
+        ),
+        "project": report.project,
+        "database": database,
+        "strategy": "separate-database" if database else "collection-prefix",
+        "tiers": tiers,
+    }
+
+
+def write_governance_artifacts(
+    report: EntitlementReport,
+    out_dir: str | Path,
+    *,
+    owners: Optional[list[str]] = None,
+    database: Optional[str] = None,
+    tier_layout: bool = False,
+    emit_rego: bool = True,
+    synced_at: Optional[str] = None,
+) -> dict[str, Path]:
+    """Emit the Phase 9c governance artifacts under ``<out_dir>/governance/``.
+
+    Always writes the lineage manifest, the classification manifest, and the
+    suggested-RBAC table; writes ``policy.rego`` when ``emit_rego`` and the
+    tier-layout recommendation when ``tier_layout``. Returns the written paths
+    keyed by artifact name.
+    """
+    gov_dir = Path(out_dir) / "governance"
+    gov_dir.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+
+    def _write_json(name: str, payload: dict) -> None:
+        p = gov_dir / name
+        p.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        written[name] = p
+
+    _write_json("lineage.json", lineage_manifest(report))
+    _write_json(
+        "classification-manifest.json",
+        classification_manifest(report, owners=owners, synced_at=synced_at),
+    )
+    _write_json("suggested-rbac.json", suggested_rbac(report, database=database))
+    if emit_rego:
+        rego_path = gov_dir / "policy.rego"
+        rego_path.write_text(policy_rego(report), encoding="utf-8")
+        written["policy.rego"] = rego_path
+    if tier_layout:
+        _write_json(
+            "tier-layout.json",
+            tier_layout_recommendation(report, database=database),
+        )
+    return written
+
+
 __all__ = [
+    "ADVISORY_NOTE",
     "DEFAULT_THRESHOLD",
     "EntitlementField",
     "EntitlementReport",
@@ -290,4 +542,9 @@ __all__ = [
     "apply_sensitivity_gate",
     "lineage_manifest",
     "write_lineage_manifest",
+    "classification_manifest",
+    "suggested_rbac",
+    "policy_rego",
+    "tier_layout_recommendation",
+    "write_governance_artifacts",
 ]

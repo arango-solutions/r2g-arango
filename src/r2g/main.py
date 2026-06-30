@@ -1228,6 +1228,49 @@ def cdc_status(
         raise typer.Exit(code=1)
 
 
+def _govern_cdc_mapping(schema, mapping, *, govern: bool, allow_sensitive: bool, threshold: str):
+    """Apply the Phase 9 sensitivity gate to a CDC mapping (carry on changed rows).
+
+    When ``govern`` is set, build the entitlement report over the (annotated)
+    schema and exclude above-threshold unmasked fields from the mapping so
+    subsequent CDC/temporal row changes do not launder newly sensitive columns
+    into the graph. No-op (returns ``mapping`` unchanged) when ``govern`` is off
+    or the schema carries no classifications. Returns the possibly-gated mapping.
+    """
+    if not govern:
+        return mapping
+    from r2g.classification import SENSITIVITY_ORDER
+    from r2g.governance import apply_sensitivity_gate, build_entitlement_report
+
+    threshold = (threshold or "confidential").strip().lower()
+    if threshold not in SENSITIVITY_ORDER:
+        console.print(
+            f"[red]Invalid --sensitivity-threshold '{threshold}'.[/red] "
+            f"Expected one of: {', '.join(SENSITIVITY_ORDER)}."
+        )
+        raise typer.Exit(code=1)
+
+    report = build_entitlement_report(mapping, schema, threshold=threshold)
+    gated, excluded = apply_sensitivity_gate(mapping, report, allow_sensitive=allow_sensitive)
+    if excluded:
+        cols = ", ".join(
+            f"{f.target_collection}.{f.target_property}" for f in excluded
+        )
+        console.print(
+            f"[yellow]Governance gate:[/yellow] excluding {len(excluded)} "
+            f"above-threshold field(s) from CDC writes: [dim]{cols}[/dim] "
+            "(pass --allow-sensitive to override, or mask them)."
+        )
+    elif allow_sensitive and report.above_threshold:
+        console.print(
+            f"[yellow]Governance gate:[/yellow] --allow-sensitive set; loading "
+            f"{len(report.above_threshold)} above-threshold field(s) unmasked."
+        )
+    else:
+        console.print("[green]Governance gate:[/green] no above-threshold fields to exclude.")
+    return gated
+
+
 @app.command("cdc-start")
 def cdc_start(
     pg_conn: str = typer.Option(
@@ -1286,6 +1329,18 @@ def cdc_start(
         "", "--smart-field",
         help="Shard-key attribute for SmartGraph key prefixes (temporal mode, P5.8)",
     ),
+    govern: bool = typer.Option(
+        False, "--govern/--no-govern",
+        help="Apply the Phase 9 sensitivity gate so changed rows carry classification policy",
+    ),
+    allow_sensitive: bool = typer.Option(
+        False, "--allow-sensitive",
+        help="With --govern, load above-threshold fields anyway (explicit opt-out)",
+    ),
+    sensitivity_threshold: str = typer.Option(
+        "confidential", "--sensitivity-threshold",
+        help="With --govern, exclude fields at/above this level: public|internal|confidential|restricted",
+    ),
 ) -> None:
     """Start the CDC listener (continuous polling for PostgreSQL changes).
 
@@ -1329,6 +1384,11 @@ def cdc_start(
     try:
         schema = Schema.load_from_file(str(schema_file))
         mapping = ConfigManager.load_config(config_path)
+        mapping = _govern_cdc_mapping(
+            schema, mapping,
+            govern=govern, allow_sensitive=allow_sensitive,
+            threshold=sensitivity_threshold,
+        )
 
         writer = ArangoWriter(
             endpoint=endpoint,
@@ -1451,6 +1511,18 @@ def kafka_start(
         "", "--smart-field",
         help="Shard-key attribute for SmartGraph key prefixes (temporal mode, P5.8)",
     ),
+    govern: bool = typer.Option(
+        False, "--govern/--no-govern",
+        help="Apply the Phase 9 sensitivity gate so changed rows carry classification policy",
+    ),
+    allow_sensitive: bool = typer.Option(
+        False, "--allow-sensitive",
+        help="With --govern, load above-threshold fields anyway (explicit opt-out)",
+    ),
+    sensitivity_threshold: str = typer.Option(
+        "confidential", "--sensitivity-threshold",
+        help="With --govern, exclude fields at/above this level: public|internal|confidential|restricted",
+    ),
 ) -> None:
     """Start the Kafka CDC consumer (Debezium or flat JSON messages).
 
@@ -1496,6 +1568,11 @@ def kafka_start(
     try:
         schema = Schema.load_from_file(str(schema_file))
         mapping = ConfigManager.load_config(config_path)
+        mapping = _govern_cdc_mapping(
+            schema, mapping,
+            govern=govern, allow_sensitive=allow_sensitive,
+            threshold=sensitivity_threshold,
+        )
 
         writer = ArangoWriter(
             endpoint=endpoint,
@@ -2428,6 +2505,8 @@ def catalog_import_source(
             classifications=resolved.column_classifications,
             data_owners=resolved.owners,
             data_tier=resolved.tier,
+            catalog_name=name,
+            catalog_asset_fqn=asset_fqn,
         )
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
@@ -2470,6 +2549,107 @@ def catalog_remove(
     else:
         console.print(f"[yellow]Catalog '{name}' not found.[/yellow]")
         raise typer.Exit(code=1)
+
+
+@catalog_app.command("resync-classifications")
+def catalog_resync_classifications(
+    source_name: str = typer.Argument(..., help="r2g source name (imported from a catalog)"),
+) -> None:
+    """Re-pull classifications from the bound catalog and refresh the source.
+
+    A one-time copy snapshots policy at migration time; source policy drifts.
+    This re-queries the catalog/asset the source was imported from, updates the
+    stored classifications/owners/tier (+ a ``classifications_synced_at``
+    timestamp), and re-merges them onto the latest snapshot's columns so the
+    next entitlement report / load reflects current policy.
+    """
+    from datetime import datetime, timezone
+
+    from r2g.classification import annotate_schema, diff_classifications
+
+    mgr = _get_catalog()
+    source = mgr.get_source(source_name)
+    if source is None:
+        console.print(f"[red]Source '{source_name}' not found.[/red]")
+        raise typer.Exit(code=1)
+    if not source.catalog_name or not source.catalog_asset_fqn:
+        console.print(
+            f"[red]Source '{source_name}' was not imported from a catalog.[/red] "
+            "Re-sync needs a catalog binding (use `r2g catalog import-source`)."
+        )
+        raise typer.Exit(code=1)
+
+    provider = _get_catalog_provider(mgr, source.catalog_name)
+    try:
+        asset = provider.get_asset(source.catalog_asset_fqn)
+        if asset is None:
+            console.print(
+                f"[red]Asset '{source.catalog_asset_fqn}' not found in catalog "
+                f"'{source.catalog_name}'.[/red]"
+            )
+            raise typer.Exit(code=1)
+        resolved = provider.resolve_source(asset)
+    except typer.Exit:
+        raise
+    except Exception as e:
+        log.exception("catalog_resync_failed")
+        console.print(f"[red]Re-sync failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    # Diff against the previously stored classifications before overwriting, so
+    # tier drift (especially escalations) is surfaced to the operator.
+    deltas = diff_classifications(source.classifications, resolved.column_classifications)
+
+    now = datetime.now(timezone.utc)
+    mgr.update_source(
+        source_name,
+        classifications=resolved.column_classifications,
+        data_owners=resolved.owners,
+        data_tier=resolved.tier,
+        classifications_synced_at=now,
+    )
+
+    classified_cols = sum(len(cols) for cols in resolved.column_classifications.values())
+    console.print(
+        f"[green]Re-synced classifications for source '{source_name}'[/green] "
+        f"from catalog '{source.catalog_name}' ({classified_cols} column(s) across "
+        f"{len(resolved.column_classifications)} table(s))."
+    )
+
+    if deltas:
+        escalations = [d for d in deltas if d.escalated]
+        dtable = RichTable(title="Classification changes since last sync")
+        dtable.add_column("Column", style="cyan")
+        dtable.add_column("Was")
+        dtable.add_column("Now")
+        dtable.add_column("Direction")
+        for d in deltas:
+            arrow = "[red]\u2191 escalated[/red]" if d.escalated else "[dim]\u2193 de-escalated[/dim]"
+            dtable.add_row(f"{d.table}.{d.column}", d.old_level, d.new_level, arrow)
+        console.print(dtable)
+        if escalations:
+            console.print(
+                f"[yellow]Advisory:[/yellow] {len(escalations)} column(s) escalated. "
+                "Already-loaded data is not retro-gated; re-run the load (the gate "
+                "excludes them by default) or mask them. In CDC/temporal mode, pass "
+                "[bold]--govern[/bold] so changed rows carry the new policy."
+            )
+    else:
+        console.print("  [dim]No lattice-level changes since last sync.[/dim]")
+
+    snap = mgr.get_latest_snapshot(source_name)
+    if snap is not None and resolved.column_classifications:
+        annotated = annotate_schema(snap.schema_data, resolved.column_classifications)
+        mgr.update_snapshot_schema(snap.id, snap.schema_data)
+        console.print(
+            f"  [cyan]Re-merged onto latest snapshot: {annotated} column(s) "
+            f"annotated.[/cyan]"
+        )
+    elif snap is None:
+        console.print(
+            "  [yellow]No snapshot yet; run `r2g source snapshot` to apply.[/yellow]"
+        )
+    console.print(f"  Synced at: [dim]{now.isoformat()}[/dim]")
 
 
 # ── Project commands ─────────────────────────────────────────────────
@@ -2652,6 +2832,102 @@ def entitlements_report(
             "by default (pass --allow-sensitive to override, or mask them). r2g advises; "
             "the serving layer enforces."
         )
+
+
+@entitlements_app.command("emit")
+def entitlements_emit(
+    project: str = typer.Argument(..., help="Project name"),
+    threshold: str = typer.Option(
+        "confidential",
+        "--threshold",
+        help="Lattice level to flag at/above: public|internal|confidential|restricted",
+    ),
+    out: Optional[str] = typer.Option(
+        None, "--out", help="Output directory (default: the project's mapping dir)"
+    ),
+    tier_layout: bool = typer.Option(
+        False, "--tier-layout", help="Also emit a per-tier physical-layout recommendation"
+    ),
+    no_rego: bool = typer.Option(
+        False, "--no-rego", help="Skip the OPA/Rego policy stub"
+    ),
+) -> None:
+    """Emit the Phase 9c governance artifacts for a project (advise, don't enforce).
+
+    Writes, under ``<out>/governance/``: the lineage manifest, a canonical
+    ``classification-manifest.json``, a ``suggested-rbac.json`` collection-grant
+    table (by clearance), a ``policy.rego`` OPA stub, and (with --tier-layout) a
+    ``tier-layout.json`` recommendation. r2g emits this metadata; the serving
+    layer (ArangoDB RBAC / OPA / IdP) enforces it.
+    """
+    from r2g.classification import SENSITIVITY_ORDER
+    from r2g.governance import build_entitlement_report, write_governance_artifacts
+
+    threshold = threshold.strip().lower()
+    if threshold not in SENSITIVITY_ORDER:
+        console.print(
+            f"[red]Invalid --threshold '{threshold}'.[/red] "
+            f"Expected one of: {', '.join(SENSITIVITY_ORDER)}."
+        )
+        raise typer.Exit(code=1)
+
+    mgr = _get_catalog()
+    proj = mgr.get_project(project)
+    if proj is None:
+        console.print(f"[red]Project '{project}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    snap = mgr.get_latest_snapshot(proj.source_name)
+    if snap is None:
+        console.print(
+            f"[red]No schema snapshot for source '{proj.source_name}'.[/red] "
+            "Run `r2g source snapshot` first."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        config = ConfigManager.load_config(proj.mapping_config_path)
+    except Exception as e:
+        console.print(f"[red]Failed to load mapping config:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    source = mgr.get_source(proj.source_name)
+    owners = source.data_owners if source else []
+    synced_at = (
+        source.classifications_synced_at.isoformat()
+        if source and source.classifications_synced_at
+        else None
+    )
+
+    report = build_entitlement_report(
+        config, snap.schema_data, threshold=threshold, project=project
+    )
+
+    out_dir = out or str(Path(proj.mapping_config_path).parent)
+    try:
+        written = write_governance_artifacts(
+            report,
+            out_dir,
+            owners=owners,
+            database=proj.arango_database,
+            tier_layout=tier_layout,
+            emit_rego=not no_rego,
+            synced_at=synced_at,
+        )
+    except OSError as e:
+        console.print(f"[red]Failed to write governance artifacts:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[green]Emitted {len(written)} governance artifact(s)[/green] for "
+        f"project '{project}':"
+    )
+    for name_, path in written.items():
+        console.print(f"  [cyan]{name_}[/cyan] [dim]{path}[/dim]")
+    console.print(
+        "[dim]Advisory: r2g emits this governance metadata; the serving layer "
+        "(ArangoDB RBAC / OPA / IdP) enforces it.[/dim]"
+    )
 
 
 # ── History command ──────────────────────────────────────────────────

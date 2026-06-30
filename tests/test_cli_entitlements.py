@@ -96,3 +96,41 @@ class TestEntitlementsReport:
         result = runner.invoke(app, ["entitlements", "report", "nope"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
+
+
+class TestEntitlementsEmit:
+    def test_help(self):
+        result = runner.invoke(app, ["entitlements", "emit", "--help"])
+        assert result.exit_code == 0
+        assert "tier-layout" in result.output
+
+    def test_emits_artifacts_to_project_dir(self, project, tmp_path):
+        result = runner.invoke(app, ["entitlements", "emit", project])
+        assert result.exit_code == 0, result.output
+        gov = tmp_path / "governance"
+        assert (gov / "classification-manifest.json").exists()
+        assert (gov / "suggested-rbac.json").exists()
+        assert (gov / "policy.rego").exists()
+        assert (gov / "lineage.json").exists()
+        # tier-layout only with the flag
+        assert not (gov / "tier-layout.json").exists()
+
+    def test_tier_layout_flag(self, project, tmp_path):
+        result = runner.invoke(app, ["entitlements", "emit", project, "--tier-layout"])
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "governance" / "tier-layout.json").exists()
+
+    def test_no_rego_flag(self, project, tmp_path):
+        result = runner.invoke(app, ["entitlements", "emit", project, "--no-rego"])
+        assert result.exit_code == 0, result.output
+        assert not (tmp_path / "governance" / "policy.rego").exists()
+
+    def test_invalid_threshold_exits_1(self, project):
+        result = runner.invoke(app, ["entitlements", "emit", project, "--threshold", "secret"])
+        assert result.exit_code == 1
+        assert "Invalid" in result.output
+
+    def test_unknown_project_exits_1(self, project):
+        result = runner.invoke(app, ["entitlements", "emit", "nope"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
