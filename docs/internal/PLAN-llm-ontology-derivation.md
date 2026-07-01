@@ -1,8 +1,20 @@
 # Implementation & Test Plan: LLM-Assisted Ontology Derivation (PRD Phase 10)
 
-> **Status: PLANNED (June 2026).** Detailed companion to PRD §"Phase 10:
-> LLM-assisted ontology derivation". Promotes the long-standing exploratory
-> "ontology derivation (LLM integration)" idea into a committed, testable phase.
+> **Status: 10a IMPLEMENTED (June 2026); 10b–10c planned.** Detailed companion
+> to PRD §"Phase 10: LLM-assisted ontology derivation". Promotes the
+> long-standing exploratory "ontology derivation (LLM integration)" idea into a
+> committed, testable phase.
+>
+> **10a shipped:** `src/r2g/llm/` (`base.py` provider seam + factory,
+> `openai_provider.py` REST-over-`httpx` provider, `prompt.py` metadata-only /
+> classification-redacted / injection-hardened / token-budgeted digest,
+> `ontology.py` `proposal_to_mapping` hallucination gate), the `r2g ontology
+> suggest` CLI (`--domain/--provider/--model/--api-key/--apply/--yes/--json`,
+> provenance sidecar), the `r2g-arango[llm]` optional extra, and a network-free
+> fake-provider test suite (`tests/test_llm_base.py`, `test_llm_prompt.py`,
+> `test_ontology_proposal.py`, `test_cli_ontology.py`). Embed hints are advisory
+> notes only in V1. Next: **10b** (Studio diff review/apply) and **10c** (opt-in
+> sampling, additional providers).
 >
 > **Thesis.** r2g already derives a target graph deterministically
 > (`ConfigManager.generate_default_config`) and lets users refine it in the
@@ -155,7 +167,7 @@ added to `[all]`. No dependency or network call unless a suggestion is invoked.
 
 ## 4. Implementation milestones (file-level)
 
-**10a — grounded proposal, structure-only (the testable core)**
+**10a — grounded proposal, structure-only (the testable core) — DONE**
 1. `src/r2g/llm/__init__.py`, `base.py` — `LLMProvider` Protocol,
    `OntologyRequest` / `OntologyProposal`, `create_llm_provider`,
    `SUPPORTED_LLM_TYPES`.

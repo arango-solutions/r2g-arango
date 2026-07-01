@@ -25,10 +25,12 @@ source_app = typer.Typer(help="Manage data sources")
 project_app = typer.Typer(help="Manage projects")
 catalog_app = typer.Typer(help="Connect to external data catalogs (discovery)")
 entitlements_app = typer.Typer(help="Governance: classification entitlement reports (Phase 9)")
+ontology_app = typer.Typer(help="LLM-assisted ontology derivation (Phase 10)")
 app.add_typer(source_app, name="source")
 app.add_typer(project_app, name="project")
 app.add_typer(catalog_app, name="catalog")
 app.add_typer(entitlements_app, name="entitlements")
+app.add_typer(ontology_app, name="ontology")
 console = Console()
 log = get_logger(__name__)
 
@@ -2928,6 +2930,198 @@ def entitlements_emit(
         "[dim]Advisory: r2g emits this governance metadata; the serving layer "
         "(ArangoDB RBAC / OPA / IdP) enforces it.[/dim]"
     )
+
+
+# ── Ontology suggestion (LLM-assisted, Phase 10) ─────────────────────
+
+
+@ontology_app.command("suggest")
+def ontology_suggest(
+    project: str = typer.Argument(..., help="Project name"),
+    domain: str = typer.Option(
+        "", "--domain", help="Optional domain hint to ground the proposal"
+    ),
+    provider: str = typer.Option("openai", "--provider", help="LLM provider type"),
+    model: Optional[str] = typer.Option(None, "--model", help="Model name (provider default if omitted)"),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        help="API key or $ENV_VAR reference (defaults to $OPENAI_API_KEY in the environment)",
+    ),
+    apply: bool = typer.Option(False, "--apply", help="Write the proposed mapping to the project"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when applying"),
+    as_json: bool = typer.Option(False, "--json", help="Emit proposal, diff and provenance as JSON"),
+) -> None:
+    """Propose a richer target ontology for a project using an LLM (Phase 10).
+
+    The model only *proposes*: its structured output is converted into a
+    candidate ``MappingConfig``, validated and repaired against the real schema
+    (hallucinated tables/columns are dropped and reported), and shown as a diff
+    against the current mapping. Nothing is saved unless you pass ``--apply``.
+    Metadata-only — no row data is sent; Phase-9 Restricted columns are redacted.
+    """
+    import datetime as _dt
+
+    from r2g.llm import create_llm_provider, proposal_to_mapping
+    from r2g.llm.base import OntologyRequest
+    from r2g.llm.prompt import build_schema_digest
+    from r2g.mapping_diff import diff_mappings
+
+    mgr = _get_catalog()
+    proj = mgr.get_project(project)
+    if proj is None:
+        console.print(f"[red]Project '{project}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    snap = mgr.get_latest_snapshot(proj.source_name)
+    if snap is None:
+        console.print(
+            f"[red]No schema snapshot for source '{proj.source_name}'.[/red] "
+            "Run `r2g source snapshot` first."
+        )
+        raise typer.Exit(code=1)
+    schema = snap.schema_data
+
+    try:
+        current = ConfigManager.load_config(proj.mapping_config_path)
+    except Exception as e:
+        console.print(f"[red]Failed to load mapping config:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    try:
+        digest = build_schema_digest(schema, domain_hint=domain)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+    resolved_key = _resolve_env_ref(api_key) if api_key else None
+    try:
+        llm = create_llm_provider(provider, model=model, api_key=resolved_key)
+    except (ValueError, ImportError) as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+    request = OntologyRequest(
+        schema_digest=digest, domain_hint=domain, table_count=len(schema.tables)
+    )
+    if not as_json:
+        console.print(f"[dim]Requesting ontology proposal from {provider}…[/dim]")
+    try:
+        proposal = llm.propose_ontology(request)
+    except Exception as e:
+        console.print(f"[red]LLM proposal failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    new_config, notes = proposal_to_mapping(
+        proposal, schema, source_schema=current.source_schema
+    )
+    plan = diff_mappings(current, new_config, schema)
+
+    provenance = {
+        "provider": provider,
+        "model": model or "(provider default)",
+        "domain_hint": domain,
+        "table_count": len(schema.tables),
+        "proposed_collections": len(proposal.collections),
+        "proposed_edges": len(proposal.edges),
+        "proposed_renames": len(proposal.renames),
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+    }
+
+    if as_json:
+        console.print_json(
+            json.dumps(
+                {
+                    "proposal": proposal.model_dump(),
+                    "notes": notes,
+                    "changes": [c.model_dump() for c in plan.changes],
+                    "provenance": provenance,
+                },
+                default=str,
+            )
+        )
+    else:
+        _print_ontology_proposal(proposal, notes, plan, provenance)
+
+    if not apply:
+        if not as_json:
+            console.print(
+                "[dim]Preview only. Re-run with --apply to write the accepted mapping "
+                "(it still flows through validation and the mapper review).[/dim]"
+            )
+        return
+
+    if not plan.changes:
+        console.print("[green]Proposal matches the current mapping; nothing to apply.[/green]")
+        return
+
+    if not yes and not typer.confirm(f"Apply {len(plan.changes)} change(s) to '{project}'?"):
+        console.print("[yellow]Aborted; no changes written.[/yellow]")
+        raise typer.Exit(code=0)
+
+    try:
+        ConfigManager.save_config(new_config, proj.mapping_config_path)
+        prov_path = Path(proj.mapping_config_path).parent / "llm-ontology-provenance.json"
+        prov_path.write_text(json.dumps(provenance, indent=2, default=str), encoding="utf-8")
+    except Exception as e:
+        console.print(f"[red]Failed to write mapping:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[green]Applied proposal to '{project}'.[/green] Review it in the mapper "
+        f"before loading. Provenance: [dim]{prov_path}[/dim]"
+    )
+
+
+def _print_ontology_proposal(proposal, notes, plan, provenance) -> None:
+    """Render an ontology proposal, validation notes, and the resulting diff."""
+    console.print(
+        f"[bold]Ontology proposal[/bold] [dim]({provenance['provider']} / "
+        f"{provenance['model']})[/dim]"
+    )
+    console.print(
+        f"[dim]{provenance['proposed_collections']} collection hint(s), "
+        f"{provenance['proposed_edges']} relationship(s), "
+        f"{provenance['proposed_renames']} rename(s) proposed over "
+        f"{provenance['table_count']} table(s).[/dim]"
+    )
+
+    if proposal.edges:
+        et = RichTable(title="Proposed relationships")
+        et.add_column("Edge", style="cyan")
+        et.add_column("From \u2192 To")
+        et.add_column("Conf.", justify="right")
+        et.add_column("Rationale", style="dim")
+        for e in proposal.edges:
+            et.add_row(
+                e.edge_collection,
+                f"{e.from_collection} \u2192 {e.to_collection}",
+                f"{e.confidence:.2f}",
+                e.rationale or "[dim]\u2014[/dim]",
+            )
+        console.print(et)
+
+    if plan.changes:
+        ct = RichTable(title="Changes vs current mapping")
+        ct.add_column("Type", style="magenta")
+        ct.add_column("Collection / Edge", style="cyan")
+        ct.add_column("Details")
+        for change in plan.changes:
+            target = change.collection or change.edge or ""
+            details = (
+                ", ".join(f"{k}={v}" for k, v in change.details.items())
+                if change.details
+                else ""
+            )
+            ct.add_row(change.change_type, target, details)
+        console.print(ct)
+    else:
+        console.print("[green]No changes vs the current mapping.[/green]")
+
+    if notes:
+        console.print("[bold]Validation & provenance notes[/bold]")
+        for n in notes:
+            console.print(f"  [dim]\u2022[/dim] {n}")
 
 
 # ── History command ──────────────────────────────────────────────────

@@ -1,0 +1,196 @@
+"""CLI tests for ``r2g ontology suggest`` with a fake provider (Phase 10a)."""
+from __future__ import annotations
+
+import json
+import sys
+
+import pytest
+from typer.testing import CliRunner
+
+from r2g.catalog import CatalogManager
+from r2g.config import ConfigManager
+from r2g.llm.base import OntologyProposal, ProposedEdge, ProposedRename
+from r2g.main import app
+from r2g.types import Classification, Column, Schema, Table
+
+runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog(monkeypatch):
+    import structlog
+
+    def _stderr_setup(level: str = "INFO", json_output: bool = False) -> None:
+        structlog.configure(
+            wrapper_class=structlog.make_filtering_bound_logger(0),
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+            cache_logger_on_first_use=False,
+        )
+
+    monkeypatch.setattr("r2g.log.setup_logging", _stderr_setup)
+    monkeypatch.setattr("r2g.main.setup_logging", _stderr_setup)
+    _stderr_setup()
+    yield
+    structlog.reset_defaults()
+
+
+class _FakeProvider:
+    """A canned, network-free LLM provider for tests."""
+
+    provider_type = "fake"
+
+    def __init__(self, proposal: OntologyProposal):
+        self._proposal = proposal
+        self.calls: list = []
+
+    def propose_ontology(self, request):
+        self.calls.append(request)
+        return self._proposal
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    catalog_dir = tmp_path / "catalog"
+    mgr = CatalogManager(str(catalog_dir))
+    mgr.add_source("shop", "postgresql", "postgresql://localhost/shop")
+    # orders has NO declared FK; the "LLM" will surface the implicit edge.
+    schema = Schema(
+        tables={
+            "customer": Table(
+                name="customer",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(
+                        name="email",
+                        data_type="text",
+                        classification=Classification(tags=["PII.Sensitive"]),
+                    ),
+                ],
+                primary_key=["id"],
+            ),
+            "orders": Table(
+                name="orders",
+                columns=[
+                    Column(name="id", data_type="integer", is_primary_key=True),
+                    Column(name="customer_id", data_type="integer"),
+                ],
+                primary_key=["id"],
+            ),
+        }
+    )
+    mgr.create_snapshot("shop", schema, pg_schema="public")
+    config = ConfigManager.generate_default_config(schema)
+    mapping_path = tmp_path / "mapping.yaml"
+    ConfigManager.save_config(config, str(mapping_path))
+    mgr.create_project("proj", "shop", str(mapping_path))
+    monkeypatch.setattr("r2g.main._get_catalog", lambda: CatalogManager(str(catalog_dir)))
+    return "proj", str(mapping_path)
+
+
+def _proposal() -> OntologyProposal:
+    return OntologyProposal(
+        edges=[
+            ProposedEdge(
+                edge_collection="orders_to_customer",
+                from_collection="orders",
+                to_collection="customer",
+                from_fields=["customer_id"],
+                to_fields=["id"],
+                rationale="customer_id references customer.id",
+                confidence=0.9,
+            )
+        ],
+        renames=[
+            ProposedRename(
+                source_table="customer",
+                column="email",
+                target_property="email_address",
+                confidence=0.7,
+            )
+        ],
+    )
+
+
+def _patch_provider(monkeypatch, proposal: OntologyProposal) -> _FakeProvider:
+    fake = _FakeProvider(proposal)
+    monkeypatch.setattr("r2g.llm.create_llm_provider", lambda *a, **k: fake)
+    return fake
+
+
+class TestOntologySuggest:
+    def test_help(self):
+        result = runner.invoke(app, ["ontology", "suggest", "--help"])
+        assert result.exit_code == 0
+        assert "--apply" in result.output
+        assert "--domain" in result.output
+
+    def test_preview_shows_proposed_edge_and_does_not_write(self, project, monkeypatch):
+        name, mapping_path = project
+        _patch_provider(monkeypatch, _proposal())
+        before = ConfigManager.load_config(mapping_path)
+
+        result = runner.invoke(app, ["ontology", "suggest", name])
+        assert result.exit_code == 0, result.output
+        assert "orders_to_customer" in result.output
+        assert "Preview only" in result.output
+        # Nothing written without --apply.
+        after = ConfigManager.load_config(mapping_path)
+        assert after.model_dump() == before.model_dump()
+
+    def test_passes_schema_digest_to_provider(self, project, monkeypatch):
+        name, _ = project
+        fake = _patch_provider(monkeypatch, _proposal())
+        result = runner.invoke(app, ["ontology", "suggest", name])
+        assert result.exit_code == 0, result.output
+        assert fake.calls, "provider was not called"
+        digest = fake.calls[0].schema_digest
+        # Redaction: the PII column is name-only, type never sent.
+        assert "email : [redacted" in digest
+        assert "email : text" not in digest
+
+    def test_json_output(self, project, monkeypatch):
+        name, _ = project
+        _patch_provider(monkeypatch, _proposal())
+        result = runner.invoke(app, ["ontology", "suggest", name, "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["provenance"]["proposed_edges"] == 1
+        assert any(
+            c.get("edge") == "orders_to_customer" or "orders_to_customer" in str(c)
+            for c in payload["changes"]
+        )
+
+    def test_apply_writes_mapping_and_provenance(self, project, monkeypatch, tmp_path):
+        name, mapping_path = project
+        _patch_provider(monkeypatch, _proposal())
+        result = runner.invoke(app, ["ontology", "suggest", name, "--apply", "--yes"])
+        assert result.exit_code == 0, result.output
+
+        applied = ConfigManager.load_config(mapping_path)
+        assert any(e.edge_collection == "orders_to_customer" for e in applied.edges)
+        assert applied.collections["customer"].field_mappings.get("email") == "email_address"
+        prov = tmp_path / "llm-ontology-provenance.json"
+        assert prov.exists()
+        data = json.loads(prov.read_text())
+        assert data["proposed_edges"] == 1
+
+    def test_apply_declined_writes_nothing(self, project, monkeypatch):
+        name, mapping_path = project
+        _patch_provider(monkeypatch, _proposal())
+        before = ConfigManager.load_config(mapping_path)
+        result = runner.invoke(app, ["ontology", "suggest", name, "--apply"], input="n\n")
+        assert result.exit_code == 0
+        after = ConfigManager.load_config(mapping_path)
+        assert after.model_dump() == before.model_dump()
+
+    def test_unknown_project_exits_1(self, project, monkeypatch):
+        _patch_provider(monkeypatch, _proposal())
+        result = runner.invoke(app, ["ontology", "suggest", "nope"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_unknown_provider_exits_1(self, project):
+        name, _ = project
+        result = runner.invoke(app, ["ontology", "suggest", name, "--provider", "bogus"])
+        assert result.exit_code == 1
+        assert "Unsupported LLM provider" in result.output

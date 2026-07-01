@@ -9,6 +9,34 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LLM-assisted ontology derivation (Phase 10a)**: an *optional* path where a
+  model **proposes** a richer target ontology — the LLM proposes, the
+  deterministic pipeline disposes. New `src/r2g/llm/` package mirroring
+  `r2g.catalogs`: an `LLMProvider` Protocol + lazy-importing `create_llm_provider`
+  factory (`base.py`); a REST-over-`httpx` `OpenAIProvider` in
+  JSON-object/`temperature=0` mode reading `$OPENAI_API_KEY` from the environment
+  (`openai_provider.py`); a **metadata-only** prompt builder (`prompt.py`) that
+  redacts Phase-9 Restricted/PII columns to name-only (never sampled), fences
+  schema text as untrusted data with fence/`\`\`\`` neutralization (prompt-injection
+  hardening), and enforces a hard token budget; and `proposal_to_mapping`
+  (`ontology.py`) — the **hallucination gate** that starts from the Auto-Map
+  baseline, applies each proposed collection/edge/rename behind a guard mirroring
+  `validate_config`, drops references to non-existent tables/columns (recorded in
+  notes), de-dupes restated FK edges, rejects reserved-attribute rename targets,
+  and guarantees the result always passes `validate_config` (worst case:
+  Auto-Map-equivalent). Embed suggestions surface as advisory notes only (no
+  mechanical apply in V1). CLI `r2g ontology suggest <project> [--domain]
+  [--provider] [--model] [--api-key] [--apply] [--yes] [--json]` prints the
+  proposal, a `diff_mappings` diff against the current mapping, and
+  validation/provenance notes; nothing is written without `--apply` (with
+  confirmation), which also drops a `llm-ontology-provenance.json` sidecar.
+  Shipped as the optional `r2g-arango[llm]` extra (added to `[all]`); no LLM
+  dependency or network call unless a suggestion is invoked. Fully unit-tested
+  with a network-free fake provider (`tests/test_llm_base.py`,
+  `test_llm_prompt.py`, `test_ontology_proposal.py`, `test_cli_ontology.py`).
+  The Studio diff-review/apply UX (10b) and opt-in sampling / more providers
+  (10c) follow.
+
 - **Enforcement artifacts & classification re-sync (Phase 9c)**: the "enable
   enforcement — emit, don't enforce" layer. `src/r2g/governance.py` gains
   `classification_manifest` (canonical per-collection/edge/field classification
