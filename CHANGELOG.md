@@ -7,6 +7,16 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Require `relational-schema-analyzer>=0.2.0`** for the `[ontology]` extra. RSA
+  0.2.0 adds a paradigm-neutral `extra` metadata passthrough on `Column`/`Table`
+  (serialized only when non-empty, so schema dumps and fingerprints are unchanged
+  for schemas that don't use it). This is the first upstream step toward the
+  Stage 2 dependency-reversal compat layer, which will carry r2g's Phase-9
+  governance `classification` through RSA's types via `extra`. See
+  `docs/internal/PLAN-rsa-dependency-reversal.md`.
+
 ## [0.3.0] — 2026-07-05
 
 ### Added
