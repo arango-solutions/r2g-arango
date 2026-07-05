@@ -9,13 +9,23 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Require `relational-schema-analyzer>=0.2.0`** for the `[ontology]` extra. RSA
-  0.2.0 adds a paradigm-neutral `extra` metadata passthrough on `Column`/`Table`
-  (serialized only when non-empty, so schema dumps and fingerprints are unchanged
-  for schemas that don't use it). This is the first upstream step toward the
-  Stage 2 dependency-reversal compat layer, which will carry r2g's Phase-9
-  governance `classification` through RSA's types via `extra`. See
-  `docs/internal/PLAN-rsa-dependency-reversal.md`.
+- **Physical types re-based on `relational-schema-analyzer` (Stage 2, step 2).**
+  `r2g.types` `Schema`/`Table`/`Column` now subclass RSA's
+  `PhysicalSchema`/`Table`/`Column`, and `ForeignKey` is re-exported from RSA, so
+  the two projects share one physical-schema type core. `Column` keeps r2g's
+  Phase-9 `classification` as a first-class field and a legacy-preserving
+  serializer emits r2g's historical shape, so **existing snapshots,
+  `~/.r2g/catalog.json`, and saved mappings are byte-identical — no migration**
+  (guarded by a new serialization compatibility corpus). RSA-native
+  `extra['classification']` is tolerated on input. `relational-schema-analyzer` is
+  now a **core dependency** (`>=0.2.0,<0.3.0`); the `[ontology]` extra is retained
+  as an empty back-compat alias. See `docs/internal/DESIGN-rsa-compat-layer.md`.
+
+### Added
+
+- **Serialization compatibility corpus** (`tests/test_serialization_compat.py` +
+  frozen fixtures) freezing the on-disk JSON shape of the physical types and
+  `MappingConfig`, asserting byte-stability across the RSA type reversal.
 
 ## [0.3.0] — 2026-07-05
 

@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, model_serializer, model_validator
+from relational_schema_analyzer.types import Column as _RsaColumn
+from relational_schema_analyzer.types import ForeignKey as ForeignKey  # noqa: F401  (re-export)
+from relational_schema_analyzer.types import PhysicalSchema as _RsaSchema
+from relational_schema_analyzer.types import Table as _RsaTable
 
 # ArangoDB system attributes. These are managed by ArangoDB / the R2G
 # transformers (``_key`` is derived from the source PK; ``_from``/``_to`` are
@@ -10,51 +14,13 @@ from pydantic import BaseModel, Field, model_serializer, model_validator
 RESERVED_ATTRIBUTES: frozenset[str] = frozenset({"_id", "_key", "_rev", "_from", "_to"})
 
 
-class ForeignKey(BaseModel):
-    """A foreign key constraint, supporting both single- and multi-column FKs.
-
-    Accepts legacy ``column``/``foreign_column`` (str) or composite
-    ``columns``/``foreign_columns`` (list[str]).
-    """
-    columns: List[str]
-    foreign_table: str
-    foreign_columns: List[str]
-    constraint_name: Optional[str] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _accept_singular(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            if "column" in data and "columns" not in data:
-                data["columns"] = [data.pop("column")]
-            if "foreign_column" in data and "foreign_columns" not in data:
-                data["foreign_columns"] = [data.pop("foreign_column")]
-        return data
-
-    @property
-    def column(self) -> str:
-        return self.columns[0]
-
-    @property
-    def foreign_column(self) -> str:
-        return self.foreign_columns[0]
-
-    @property
-    def is_composite(self) -> bool:
-        return len(self.columns) > 1
-
-    @model_serializer
-    def _serialize(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"foreign_table": self.foreign_table}
-        if len(self.columns) == 1:
-            d["column"] = self.columns[0]
-            d["foreign_column"] = self.foreign_columns[0]
-        else:
-            d["columns"] = self.columns
-            d["foreign_columns"] = self.foreign_columns
-        if self.constraint_name is not None:
-            d["constraint_name"] = self.constraint_name
-        return d
+# ``ForeignKey`` is re-exported from ``relational_schema_analyzer.types`` (imported
+# above). RSA's ForeignKey is a superset of r2g's original — identical fields,
+# accessors (``column``/``foreign_column``/``is_composite``), singular-form
+# acceptance, and serializer key order — plus an ``is_unique`` cardinality hint
+# that r2g never sets and RSA omits from output when false. It therefore
+# serializes byte-identically to r2g's historical shape (asserted by the
+# serialization compat corpus), so unifying it here is a no-op on disk.
 
 
 class Classification(BaseModel):
@@ -77,34 +43,83 @@ class Classification(BaseModel):
         return not self.tags and self.tier is None and not self.glossary_terms
 
 
-class Column(BaseModel):
-    name: str
-    data_type: str
-    is_nullable: bool = False
-    is_primary_key: bool = False
+class Column(_RsaColumn):
+    """Physical column: the shared RSA column + r2g's Phase-9 governance.
+
+    Subclasses ``relational_schema_analyzer.types.Column`` so RSA's own code paths
+    (typemap, baseline, FK heuristics) accept r2g columns directly — the basis for
+    the dependency reversal (see ``docs/internal/DESIGN-rsa-compat-layer.md``).
+    r2g re-adds ``classification`` as a first-class field and serializes to its
+    **historical 5-key shape** (dropping RSA's enrichment fields, the computed
+    ``type_category``, and the ``extra`` passthrough) so existing snapshots and
+    ``catalog.json`` stay byte-identical. On input, a ``classification`` carried in
+    RSA's ``extra['classification']`` (an RSA-native producer) is lifted onto the
+    field so both representations round-trip.
+    """
+
     # Governance classification (PRD Phase 9). ``None`` for non-catalog sources
     # and untagged columns; populated at ``source snapshot`` for catalog-imported
     # sources by merging the resolved classification map onto the schema.
     classification: Optional[Classification] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_classification_from_extra(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("classification"):
+            extra = data.get("extra")
+            if isinstance(extra, dict) and extra.get("classification"):
+                data = {**data, "classification": extra["classification"]}
+        return data
 
-class Table(BaseModel):
-    name: str
-    columns: List[Column]
-    primary_key: List[str] = []
-    foreign_keys: List[ForeignKey] = []
-    # Partition metadata (PostgreSQL declarative partitioning). ``is_partitioned``
-    # marks a partitioned *parent*; ``partition_of`` names the root parent of a
-    # partition *child*. Non-partitioned tables (and non-Postgres sources) leave
-    # both at their defaults. The default mapping collapses partition children
-    # into their parent, so child FK constraints are rolled up onto the parent
-    # during introspection.
-    is_partitioned: bool = False
-    partition_of: Optional[str] = None
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        full = handler(self)
+        return {
+            "name": full["name"],
+            "data_type": full["data_type"],
+            "is_nullable": full["is_nullable"],
+            "is_primary_key": full["is_primary_key"],
+            "classification": full.get("classification"),
+        }
 
 
-class Schema(BaseModel):
-    tables: Dict[str, Table] = {}
+class Table(_RsaTable):
+    """Physical table: the shared RSA table narrowed to r2g's :class:`Column`.
+
+    Serializes to r2g's historical key set (dropping RSA's ``schema_name`` /
+    ``comment`` / ``is_view`` / constraint / index enrichment and the ``extra``
+    passthrough) for byte-stable snapshots.
+    """
+
+    # Narrowing the inherited RSA field to r2g's Column subclass (safe: every
+    # r2g Column is an RSA Column; the invariance warning does not apply at runtime).
+    columns: List[Column]  # type: ignore[assignment]
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        full = handler(self)
+        return {
+            "name": full["name"],
+            "columns": full["columns"],
+            "primary_key": full["primary_key"],
+            "foreign_keys": full["foreign_keys"],
+            "is_partitioned": full["is_partitioned"],
+            "partition_of": full["partition_of"],
+        }
+
+
+class Schema(_RsaSchema):
+    """Physical schema: the shared RSA :class:`PhysicalSchema` narrowed to r2g's
+    :class:`Table`. Serializes to ``{"tables": …}`` only (dropping RSA's optional
+    ``source`` provenance) for byte-stable snapshots."""
+
+    # Narrowing the inherited RSA field to r2g's Table subclass (safe, as above).
+    tables: Dict[str, Table] = {}  # type: ignore[assignment]
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: Any) -> dict[str, Any]:
+        full = handler(self)
+        return {"tables": full["tables"]}
 
     def save_to_file(self, path: str) -> None:
         with open(path, "w") as f:

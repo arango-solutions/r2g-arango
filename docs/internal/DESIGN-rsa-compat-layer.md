@@ -83,19 +83,16 @@ from relational_schema_analyzer.types import (
 class Classification(BaseModel): ...   # unchanged, stays in r2g
 
 class Column(_RsaColumn):
-    """RSA's column + r2g's Phase-9 governance, carried in `extra['classification']`."""
+    """RSA's column + r2g's Phase-9 governance classification."""
 
-    @property
-    def classification(self) -> Optional[Classification]:
-        raw = self.extra.get("classification")
-        return Classification.model_validate(raw) if raw else None
+    classification: Optional[Classification] = None   # first-class field (see note)
 
-    @classification.setter
-    def classification(self, value: Optional[Classification]) -> None:
-        if value is None or value.is_empty:
-            self.extra.pop("classification", None)
-        else:
-            self.extra["classification"] = value.model_dump()
+    @model_validator(mode="before")   # tolerate RSA-native `extra['classification']`
+    @classmethod
+    def _accept_classification_from_extra(cls, data): ...
+
+    @model_serializer(mode="wrap")    # emit r2g's historical 5-key shape
+    def _serialize(self, handler): ...
 
 class Table(_RsaTable):
     columns: list[Column]              # narrow the element type to r2g's Column
@@ -106,8 +103,18 @@ class Schema(_RsaSchema):
     @classmethod
     def load_from_file(cls, path): ...
 
-# ArangoDB models stay exactly as today, defined locally.
+# ArangoDB models + ForeignKey stay in r2g. ForeignKey is a byte-identical
+# superset in RSA, so it is re-exported (`from rsa.types import ForeignKey`).
 ```
+
+> **Implementation note (as built).** `classification` landed as a **first-class
+> field** on the `Column` subclass rather than a property over
+> `extra['classification']`. This is simpler, avoids pydantic property-setter
+> friction, and keeps the ~15 governance modules' `col.classification` reads/writes
+> unchanged. RSA's `extra` passthrough (step 1) is still honored on **input** (the
+> `_accept_classification_from_extra` validator lifts it onto the field) so
+> RSA-native producers round-trip, and it remains the storage mechanism if/when
+> Strategy 2 persists the RSA-native shape.
 
 Why subclasses, not bare aliases:
 
@@ -197,6 +204,16 @@ This is a deliberate, ADR-anticipated coupling ("promote RSA … to a hard core
 dependency"). It is acceptable **because** we are unifying types (high value), not
 just de-duping ~140 LOC. **Needs sign-off** (§9).
 
+**Import-safety verified.** RSA's `__init__` eagerly imports several submodules,
+but they lazy-import their heavy optional deps: `connectors/__init__` loads only
+`.base`/`.session` (concrete drivers like `psycopg` are imported inside
+`create_connector`), and `owl_export`/`providers`/`tool` import `rdflib`/`openai`/
+`anthropic`/`mcp` inside functions. RSA's only core deps are `pydantic` +
+`jsonschema`; the sole other top-level third-party import reachable from
+`import relational_schema_analyzer.types` is `polars`, already an r2g core
+dependency. So `import r2g.types` works on a minimal r2g install (adds only the
+light `jsonschema` transitive dep).
+
 ## 6. Migration & back-compat
 
 With Strategy 1 (§4) the serialized shape is unchanged, so **no data migration is
@@ -258,12 +275,18 @@ Land nothing until all are green (`pytest -m "not integration"`, `ruff`, `mypy`)
 
 ## 10. Proposed implementation order (once §9 is signed off)
 
-1. Write the **compat corpus** (§8.1) against *current* code; commit the frozen
-   fixtures + byte-stability tests (they pass today, guarding the refactor).
-2. Land the **`r2g.types` subclass facade** (§3–§4) + dependency change (§5).
-3. Run gates §8.2–§8.5; fix fallout (expected: none for dumps, some import/typing).
-4. **Simplify `rsa_ontology.py`** to drop the JSON round-trip (§8.4).
-5. Only then schedule ADR steps 4–6 (`fk_inference` adapter for
+1. ✅ **DONE.** Write the **compat corpus** (§8.1) against *current* code; commit the
+   frozen fixtures + byte-stability tests (they pass today, guarding the refactor).
+2. ✅ **DONE.** Land the **`r2g.types` subclass facade** (§3–§4) + dependency change
+   (§5). Gates §8.2–§8.5 green: compat corpus (7), full non-integration suite
+   (1429 passed, 1 skipped), `ruff`, `mypy` (whole package). No dump fallout; two
+   pydantic field-narrowing `type: ignore[assignment]` (invariance) added.
+3. **Simplify `rsa_ontology.py`** to drop the JSON round-trip (§8.4) — *next*. Now
+   that r2g `Schema` **is** an RSA `PhysicalSchema`, pass the instance straight into
+   RSA instead of `model_dump_json` → `model_validate_json`. Verify RSA's baseline
+   tolerates r2g's `ForeignKey` (it reads `is_unique` via the shared type, so this
+   is safe) and the golden `--engine rsa` path stays green.
+4. Only then schedule ADR steps 4–6 (`fk_inference` adapter for
    `to_edge_definition` + `sample_values` upstreaming; connector shims; delete
    duplicates; flip the dependency) as separate, independently-shippable PRs.
 

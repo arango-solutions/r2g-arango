@@ -149,8 +149,13 @@ dependency for ~140 LOC.
   - **Step 1 (RSA `extra` passthrough):** DONE — RSA 0.2.0 shipped
     (Column/Table `extra`, serialized-when-non-empty); r2g `[ontology]` now
     requires `>=0.2.0`.
-  - **Step 2 (compat layer):** DESIGNED + signed off — see
-    [`DESIGN-rsa-compat-layer.md`](DESIGN-rsa-compat-layer.md). Decisions: RSA
-    promoted to a core dependency; thin r2g subclasses over RSA types with a
-    legacy-preserving serializer (zero-migration first landing). Ready to build.
-  - **Steps 3–6:** pending step 2.
+  - **Step 2 (compat layer):** DONE — see
+    [`DESIGN-rsa-compat-layer.md`](DESIGN-rsa-compat-layer.md). `r2g.types`
+    `Schema`/`Table`/`Column` now subclass RSA's `PhysicalSchema`/`Table`/`Column`
+    (with a legacy-preserving serializer → byte-stable snapshots, guarded by the
+    serialization compat corpus); `ForeignKey` is re-exported from RSA; RSA is a
+    core dependency. Gates green (corpus + full non-integration suite + ruff +
+    mypy). Zero data migration.
+  - **Step 3 (`rsa_ontology.py` round-trip removal):** NEXT — now unblocked (r2g
+    `Schema` *is* an RSA `PhysicalSchema`).
+  - **Steps 4–6:** pending step 3.
