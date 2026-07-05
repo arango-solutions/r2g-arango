@@ -7,6 +7,17 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-04
+
+First tagged release. Everything below the 0.1.0 pre-release baseline: temporal
+graph mode validated end-to-end, MySQL/MariaDB + SQL Server sources, the
+object-centric Mapping Studio (naming conventions, rename change-management,
+FK/denormalization suggestions), the ArangoDB-backed catalog, external data
+catalog integration (Phase 8), classification propagation & entitlement-aware
+loading (Phase 9), LLM-assisted ontology derivation (Phase 10a–c) with
+deterministic grounding, denormalization analysis (Phase 11), and a hardened
+security posture.
+
 ### Added
 
 - **End-to-end validation for temporal graph mode (Phase 5)**: a
@@ -358,4 +369,5 @@ Initial phased implementation (not yet published to PyPI):
   pipeline, `r2g source dump` CLI, pure-Python FK inference with
   optional value-overlap sampler.
 
-[Unreleased]: https://github.com/ArthurKeen/r2g-arango/compare/main...HEAD
+[Unreleased]: https://github.com/ArthurKeen/r2g-arango/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ArthurKeen/r2g-arango/releases/tag/v0.2.0
