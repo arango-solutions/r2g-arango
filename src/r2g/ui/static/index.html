@@ -2184,6 +2184,9 @@ function openActionsMenu(ev) {
     { label: 'Analyze denormalization', icon: '\u2728', shortcut: 'n', disabled: dis,
       hint: 'Detect denormalization smells (repeating column groups, embedded lookups, multi-valued columns, redundant reference data, over-split 1:1 tables) and recommend graph remedies. Advisory \u2014 nothing is changed.',
       onClick: analyzeDenorm },
+    { label: 'Suggest model (AI)', icon: '\u2726', shortcut: 'm', disabled: dis,
+      hint: 'Ask an LLM to propose a richer target ontology (vertex-vs-edge, implicit relationships, clearer names) from the schema. Metadata-only \u2014 sensitive columns are redacted; every suggestion is validated against the schema and reviewed here before anything is applied. Needs the [llm] extra + $OPENAI_API_KEY.',
+      onClick: suggestOntology },
     { label: 'Entitlement report', icon: '\u26E8', shortcut: 'g', disabled: dis,
       hint: 'List mapped fields at/above the sensitivity threshold (from catalog classifications), with source lineage. At load, above-threshold fields are excluded by default unless allowed or masked.',
       onClick: showEntitlements },
@@ -4850,6 +4853,225 @@ function renderEntitlements(result) {
   });
 }
 
+// ── Phase 10b: LLM-assisted ontology suggestion ──
+
+let _ontologyProposal = null;
+
+function suggestOntology() {
+  if (!currentProject) { toast('Open a project first', 'info'); return; }
+  _ontologyProposal = null;
+  openFloatingCard({
+    id: 'ontology',
+    title: 'Suggest model (AI)',
+    body: `
+      <p style="color:var(--text-muted);margin:0 0 10px;font-size:12px">
+        Ask an LLM to propose a richer target ontology from the schema &#x2014;
+        which tables are vertices vs. edges, implicit relationships, and clearer names.
+        <b>Metadata only</b>: sensitive columns are redacted and never sampled. Every
+        suggestion is validated against the schema; you review and pick what to apply.
+        Needs the <code>[llm]</code> extra and the provider's key on the server
+        (<code>$OPENAI_API_KEY</code> / <code>$ANTHROPIC_API_KEY</code>; a local
+        endpoint may need none).
+      </p>
+      <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Domain hint (optional)</label>
+      <input id="onto-domain" type="text" placeholder="e.g. e-commerce orders and customers"
+             style="width:100%;box-sizing:border-box;margin-bottom:8px" />
+      <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Provider</label>
+      <select id="onto-provider" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+        <option value="openai">OpenAI</option>
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai-compatible">OpenAI-compatible / local</option>
+      </select>
+      <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Model (optional)</label>
+      <input id="onto-model" type="text" placeholder="provider default (e.g. gpt-4o-mini)"
+             style="width:100%;box-sizing:border-box;margin-bottom:8px" />
+      <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Base URL (openai-compatible / local only)</label>
+      <input id="onto-base-url" type="text" placeholder="e.g. http://localhost:11434/v1"
+             style="width:100%;box-sizing:border-box;margin-bottom:10px" />
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim)">
+        <input id="onto-sample" type="checkbox" style="width:auto;margin:0" />
+        Sample a few example values from non-sensitive columns to ground the model
+      </label>
+    `,
+    status: null,
+    actions: [
+      { label: 'Generate proposal', kind: 'primary', onClick: runOntologySuggest },
+      { label: 'Cancel', onClick: () => closeFloatingCard('ontology') },
+    ],
+    position: { right: 20, top: 80 },
+  });
+}
+
+async function runOntologySuggest() {
+  if (!currentProject) return;
+  const domain = (document.getElementById('onto-domain')?.value || '').trim();
+  const model = (document.getElementById('onto-model')?.value || '').trim();
+  const provider = (document.getElementById('onto-provider')?.value || 'openai').trim();
+  const baseUrl = (document.getElementById('onto-base-url')?.value || '').trim();
+  const sample = !!document.getElementById('onto-sample')?.checked;
+  openFloatingCard({
+    id: 'ontology',
+    title: 'Suggesting model\u2026',
+    body: '<p style="color:var(--text-dim)">Asking the model to propose an ontology (metadata-only)\u2026</p>',
+    status: { kind: 'info', label: 'working' },
+    actions: [],
+  });
+  try {
+    const payload = { domain, provider };
+    if (model) payload.model = model;
+    if (baseUrl) payload.base_url = baseUrl;
+    if (sample) payload.sample = true;
+    const result = await apiFetch(`/api/projects/${encodeURIComponent(currentProject)}/suggest-ontology`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    _ontologyProposal = result.proposal || {};
+    renderOntologyProposal(result);
+  } catch (e) {
+    openFloatingCard({
+      id: 'ontology',
+      title: 'Suggest model (AI)',
+      body: `<p style="color:var(--red)">${escHtml(e.message || String(e))}</p>
+             <p class="hint" style="margin-top:8px">Ensure the server has the <code>[llm]</code> extra installed and <code>$OPENAI_API_KEY</code> set.</p>`,
+      status: { kind: 'error', label: 'failed' },
+      actions: [
+        { label: 'Back', onClick: suggestOntology },
+        { label: 'Close', onClick: () => closeFloatingCard('ontology') },
+      ],
+    });
+  }
+}
+
+function renderOntologyProposal(result) {
+  const p = result.proposal || {};
+  const notes = result.notes || [];
+  const diff = result.diff || {};
+  const prov = result.provenance || {};
+  const collections = p.collections || [];
+  const edges = p.edges || [];
+  const renames = p.renames || [];
+  const embeds = p.embeds || [];
+  const changeCount = (diff.changes || []).length;
+  const totalItems = collections.length + edges.length + renames.length;
+
+  const notesHtml = notes.length ? `
+    <details style="margin-top:10px">
+      <summary class="hint" style="cursor:pointer">${notes.length} validation / provenance note${notes.length === 1 ? '' : 's'}</summary>
+      <ul class="fk-suggest-list">${notes.map(n => `<li class="fk-suggest-evidence">${escHtml(n)}</li>`).join('')}</ul>
+    </details>` : '';
+
+  if (!totalItems) {
+    openFloatingCard({
+      id: 'ontology',
+      title: 'Suggest model (AI)',
+      body: `<p style="color:var(--text-dim)">The model did not propose any structural changes beyond the current mapping.${embeds.length ? ` It offered ${embeds.length} embed hint(s) \u2014 see notes.` : ''}</p>${notesHtml}`,
+      status: { kind: 'ok', label: 'no changes' },
+      actions: [
+        { label: 'Try again', onClick: suggestOntology },
+        { label: 'Close', onClick: () => closeFloatingCard('ontology') },
+      ],
+    });
+    return;
+  }
+
+  const chip = c => `<span class="fk-suggest-conf">${(typeof c === 'number' ? c : 0.5).toFixed(2)}</span>`;
+  const cb = (kind, i) => `<input type="checkbox" data-onto-kind="${kind}" data-onto-idx="${i}" checked style="margin-right:8px" />`;
+  const section = (title, rowsHtml) => rowsHtml ? `
+    <div class="fk-suggest-header" style="margin-top:10px"><span>${title}</span></div>
+    <ul class="fk-suggest-list">${rowsHtml}</ul>` : '';
+
+  const edgeRows = edges.map((e, i) => `
+    <li class="fk-suggest-row">
+      <label class="fk-suggest-line" style="cursor:pointer">
+        ${cb('edges', i)}${chip(e.confidence)}
+        <span class="fk-suggest-arrow"><code>${escHtml(e.from_collection)}</code> &rarr; <code>${escHtml(e.to_collection)}</code>
+          <span class="hint">(${escHtml((e.from_fields || []).join(', '))} &rarr; ${escHtml((e.to_fields || []).join(', '))})</span>
+        </span>
+      </label>
+      ${e.rationale ? `<div class="fk-suggest-evidence">${escHtml(e.rationale)}</div>` : ''}
+    </li>`).join('');
+
+  const collRows = collections.map((c, i) => {
+    const bits = [];
+    if (c.collection_type === 'edge') bits.push('&rarr; <b>edge</b>');
+    if (c.target_collection && c.target_collection !== c.source_table) bits.push(`&rarr; <code>${escHtml(c.target_collection)}</code>`);
+    if (c.is_join_table) bits.push('<span class="hint">join table</span>');
+    return `
+    <li class="fk-suggest-row">
+      <label class="fk-suggest-line" style="cursor:pointer">
+        ${cb('collections', i)}${chip(c.confidence)}
+        <span class="fk-suggest-arrow"><code>${escHtml(c.source_table)}</code> ${bits.join(' ')}</span>
+      </label>
+      ${c.rationale ? `<div class="fk-suggest-evidence">${escHtml(c.rationale)}</div>` : ''}
+    </li>`;
+  }).join('');
+
+  const renameRows = renames.map((r, i) => `
+    <li class="fk-suggest-row">
+      <label class="fk-suggest-line" style="cursor:pointer">
+        ${cb('renames', i)}${chip(r.confidence)}
+        <span class="fk-suggest-arrow"><code>${escHtml(r.source_table)}.${escHtml(r.column)}</code> &rarr; <code>${escHtml(r.target_property)}</code></span>
+      </label>
+      ${r.rationale ? `<div class="fk-suggest-evidence">${escHtml(r.rationale)}</div>` : ''}
+    </li>`).join('');
+
+  const bodyHtml = `
+    <div class="fk-suggest-header">
+      <span>${totalItems} suggestion${totalItems === 1 ? '' : 's'}</span>
+      <span class="hint">${escHtml(prov.model || 'AI')} \u00b7 ${changeCount} change${changeCount === 1 ? '' : 's'} vs current</span>
+    </div>
+    <p class="hint" style="margin:0 0 6px">Uncheck anything you don\u2019t want. Applying loads an editable draft &#x2014; review in the mapper, then Save.</p>
+    ${section('Relationships', edgeRows)}
+    ${section('Collections', collRows)}
+    ${section('Property renames', renameRows)}
+    ${embeds.length ? `<p class="hint" style="margin-top:8px">${embeds.length} embed hint(s) are advisory (not auto-applied) \u2014 see notes.</p>` : ''}
+    ${notesHtml}
+  `;
+
+  openFloatingCard({
+    id: 'ontology',
+    title: 'Proposed model (AI)',
+    body: bodyHtml,
+    status: { kind: 'info', label: `${totalItems} suggested` },
+    actions: [
+      { label: 'Apply selected', kind: 'primary', onClick: applyOntology },
+      { label: 'Cancel', onClick: () => closeFloatingCard('ontology') },
+    ],
+  });
+}
+
+async function applyOntology() {
+  if (!currentProject || !_ontologyProposal) return;
+  const card = document.querySelector('.floating-card[data-fc-id="ontology"]');
+  const checks = card ? Array.from(card.querySelectorAll('input[type=checkbox][data-onto-kind]')) : [];
+  const keep = { collections: [], edges: [], renames: [], embeds: _ontologyProposal.embeds || [], notes: [] };
+  checks.forEach(cbEl => {
+    if (!cbEl.checked) return;
+    const kind = cbEl.dataset.ontoKind;
+    const idx = parseInt(cbEl.dataset.ontoIdx, 10);
+    const src = _ontologyProposal[kind] || [];
+    if (src[idx]) keep[kind].push(src[idx]);
+  });
+  const total = keep.collections.length + keep.edges.length + keep.renames.length;
+  if (!total) { toast('Nothing selected to apply', 'info'); return; }
+  try {
+    const result = await apiFetch(`/api/projects/${encodeURIComponent(currentProject)}/apply-ontology`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ proposal: keep }),
+    });
+    if (result.mapping) applyConfigToEditState(result.mapping);
+    closeFloatingCard('ontology');
+    renderMapper();
+    clearSelection();
+    markDirty();
+    toast(`Applied ${total} suggestion${total === 1 ? '' : 's'} \u2014 review and Save`, 'success');
+  } catch (e) {
+    toast('Apply failed: ' + e.message, 'error');
+  }
+}
+
 // ── Settings ──
 
 function showSettings() {
@@ -5466,6 +5688,8 @@ function _menuCanvas() {
       hint: 'Scan the source schema for likely foreign keys (by column name and value overlap) and propose new edges to accept or dismiss.' },
     { label: 'Analyze denormalization\u2026', icon: '\u2728', shortcut: 'n', onClick: () => analyzeDenorm(),
       hint: 'Detect denormalization smells (repeating groups, embedded lookups, multi-valued columns, redundant reference data, 1:1 over-splits) and recommend graph remedies. Advisory only.' },
+    { label: 'Suggest model (AI)\u2026', icon: '\u2726', shortcut: 'm', onClick: () => suggestOntology(),
+      hint: 'Ask an LLM to propose a richer target ontology from the schema (metadata-only, sensitive columns redacted). Every suggestion is validated and reviewed here before it is applied.' },
     { label: 'Entitlement report\u2026', icon: '\u26E8', shortcut: 'g', onClick: () => showEntitlements(),
       hint: 'Show mapped fields at/above the sensitivity threshold with source lineage. Above-threshold fields are excluded at load by default unless allowed or masked.' },
     { label: 'Validate', icon: '\u2713', shortcut: '\u21E7\u2318V', onClick: validateMapping,
@@ -6844,6 +7068,7 @@ registerShortcut('a', 'Auto-map all', 'global', () => autoMap());
 registerShortcut('i', 'Suggest foreign keys', 'global', () => suggestFks());
 registerShortcut('n', 'Analyze denormalization', 'global', () => analyzeDenorm());
 registerShortcut('g', 'Entitlement report', 'global', () => showEntitlements());
+registerShortcut('m', 'Suggest model (AI)', 'global', () => suggestOntology());
 registerShortcut('1', 'View: Topology', 'global', () => setLens('topology'));
 registerShortcut('2', 'View: Coverage', 'global', () => setLens('coverage'));
 registerShortcut('3', 'View: Validation', 'global', () => setLens('validation'));

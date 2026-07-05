@@ -29,9 +29,12 @@ DEFAULT_MAX_TOKENS = 4096
 
 
 class OpenAIProvider:
-    """Propose an ontology via the OpenAI chat-completions API."""
+    """Propose an ontology via the OpenAI chat-completions API.
 
-    provider_type = "openai"
+    Also serves any **OpenAI-compatible** endpoint (Ollama, vLLM, LM Studio,
+    llama.cpp, Together, Groq, …) when constructed with ``require_key=False`` and
+    a ``base_url`` — the wire format is identical.
+    """
 
     def __init__(
         self,
@@ -39,10 +42,22 @@ class OpenAIProvider:
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         params: Optional[dict[str, Any]] = None,
+        provider_type: str = "openai",
+        require_key: bool = True,
+        require_base_url: bool = False,
     ) -> None:
+        self.provider_type = provider_type
+        self.require_key = require_key
         self.params = params or {}
         self.model = model or self.params.get("model") or DEFAULT_MODEL
-        self.base_url = str(self.params.get("base_url", DEFAULT_BASE_URL)).rstrip("/")
+        base_url = self.params.get("base_url") or os.environ.get("OPENAI_BASE_URL")
+        if require_base_url and not base_url:
+            raise ValueError(
+                f"The '{provider_type}' provider needs a base URL. Pass --base-url "
+                "(or set $OPENAI_BASE_URL) to your endpoint, e.g. "
+                "http://localhost:11434/v1 for Ollama."
+            )
+        self.base_url = str(base_url or DEFAULT_BASE_URL).rstrip("/")
         self.timeout = float(self.params.get("timeout", DEFAULT_TIMEOUT))
         self.max_tokens = int(self.params.get("max_tokens", DEFAULT_MAX_TOKENS))
         self.temperature = float(self.params.get("temperature", 0.0))
@@ -51,7 +66,7 @@ class OpenAIProvider:
         self._api_key = api_key or os.environ.get("OPENAI_API_KEY")
 
     def propose_ontology(self, request: OntologyRequest) -> OntologyProposal:
-        if not self._api_key:
+        if self.require_key and not self._api_key:
             raise ValueError(
                 "No OpenAI API key. Set $OPENAI_API_KEY (or pass --api-key) — "
                 "the key is read from the environment and never stored."
@@ -77,10 +92,9 @@ class OpenAIProvider:
                 },
             ],
         }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         resp = httpx.post(
             f"{self.base_url}/chat/completions",
             headers=headers,

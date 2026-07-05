@@ -2941,12 +2941,29 @@ def ontology_suggest(
     domain: str = typer.Option(
         "", "--domain", help="Optional domain hint to ground the proposal"
     ),
-    provider: str = typer.Option("openai", "--provider", help="LLM provider type"),
+    provider: str = typer.Option(
+        "openai",
+        "--provider",
+        help="LLM provider: openai, anthropic, or openai-compatible (local/hosted)",
+    ),
     model: Optional[str] = typer.Option(None, "--model", help="Model name (provider default if omitted)"),
     api_key: Optional[str] = typer.Option(
         None,
         "--api-key",
-        help="API key or $ENV_VAR reference (defaults to $OPENAI_API_KEY in the environment)",
+        help="API key or $ENV_VAR reference (defaults to the provider's env key, e.g. $OPENAI_API_KEY)",
+    ),
+    base_url: Optional[str] = typer.Option(
+        None,
+        "--base-url",
+        help="Endpoint base URL (required for openai-compatible, e.g. http://localhost:11434/v1)",
+    ),
+    sample: bool = typer.Option(
+        False,
+        "--sample",
+        help="Include a few example values per column (non-sensitive columns only) to ground the model",
+    ),
+    samples_per_column: int = typer.Option(
+        5, "--samples-per-column", help="Max example values per column when --sample is set"
     ),
     apply: bool = typer.Option(False, "--apply", help="Write the proposed mapping to the project"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when applying"),
@@ -2988,15 +3005,46 @@ def ontology_suggest(
         console.print(f"[red]Failed to load mapping config:[/red] {e}")
         raise typer.Exit(code=1)
 
+    samples: dict = {}
+    sampled_columns = 0
+    if sample:
+        from r2g.llm.sampling import build_sampler_for_source, collect_samples
+
+        source = mgr.get_source(proj.source_name)
+        sampler = build_sampler_for_source(source) if source is not None else None
+        if sampler is None:
+            if not as_json:
+                console.print(
+                    "[yellow]Value sampling unavailable for this source; "
+                    "proceeding metadata-only.[/yellow]"
+                )
+        else:
+            try:
+                samples = collect_samples(
+                    sampler, schema, per_column=max(1, samples_per_column)
+                )
+                sampled_columns = sum(len(cols) for cols in samples.values())
+            finally:
+                close = getattr(sampler, "close", None)
+                if callable(close):
+                    close()
+
     try:
-        digest = build_schema_digest(schema, domain_hint=domain)
+        digest = build_schema_digest(
+            schema,
+            domain_hint=domain,
+            include_samples=bool(samples),
+            samples=samples,
+            samples_per_column=max(1, samples_per_column),
+        )
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
 
     resolved_key = _resolve_env_ref(api_key) if api_key else None
+    params = {"base_url": base_url} if base_url else None
     try:
-        llm = create_llm_provider(provider, model=model, api_key=resolved_key)
+        llm = create_llm_provider(provider, model=model, api_key=resolved_key, params=params)
     except (ValueError, ImportError) as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
@@ -3022,6 +3070,8 @@ def ontology_suggest(
         "model": model or "(provider default)",
         "domain_hint": domain,
         "table_count": len(schema.tables),
+        "sampled": bool(samples),
+        "sampled_columns": sampled_columns,
         "proposed_collections": len(proposal.collections),
         "proposed_edges": len(proposal.edges),
         "proposed_renames": len(proposal.renames),

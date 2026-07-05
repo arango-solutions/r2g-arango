@@ -116,13 +116,25 @@ class LLMProvider(Protocol):
         ...
 
 
-SUPPORTED_LLM_TYPES: tuple[str, ...] = ("openai",)
+SUPPORTED_LLM_TYPES: tuple[str, ...] = ("openai", "anthropic", "openai-compatible")
 
 _LLM_ALIASES: dict[str, str] = {
     "openai": "openai",
     "open-ai": "openai",
     "gpt": "openai",
     "oai": "openai",
+    "anthropic": "anthropic",
+    "claude": "anthropic",
+    # Any OpenAI-compatible endpoint (local or hosted): Ollama, vLLM, LM Studio,
+    # llama.cpp, Together, Groq, … — reached via the OpenAI provider + a base_url.
+    "openai-compatible": "openai-compatible",
+    "openai_compatible": "openai-compatible",
+    "compatible": "openai-compatible",
+    "local": "openai-compatible",
+    "ollama": "openai-compatible",
+    "vllm": "openai-compatible",
+    "lmstudio": "openai-compatible",
+    "llamacpp": "openai-compatible",
 }
 
 
@@ -150,6 +162,23 @@ def create_llm_provider(
         from r2g.llm.openai_provider import OpenAIProvider
 
         return OpenAIProvider(model=model, api_key=api_key, params=params or {})
+    if key == "openai-compatible":
+        from r2g.llm.openai_provider import OpenAIProvider
+
+        # A local/hosted OpenAI-compatible endpoint: a base_url is required and the
+        # API key is optional (many local servers accept any/no key).
+        return OpenAIProvider(
+            model=model,
+            api_key=api_key,
+            params=params or {},
+            provider_type="openai-compatible",
+            require_key=False,
+            require_base_url=True,
+        )
+    if key == "anthropic":
+        from r2g.llm.anthropic_provider import AnthropicProvider
+
+        return AnthropicProvider(model=model, api_key=api_key, params=params or {})
     raise ValueError(
         f"Unsupported LLM provider type '{provider_type}'. "
         f"Expected one of: {', '.join(SUPPORTED_LLM_TYPES)}."

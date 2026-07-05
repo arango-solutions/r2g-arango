@@ -37,6 +37,17 @@ def _safe_detail(exc: Exception) -> str:
     return scrub_dsn_credentials(str(exc))
 
 
+def _resolve_env_ref(value: str) -> str:
+    """Resolve a ``$ENV_VAR`` reference to its environment value (else unchanged).
+
+    Same convention as source connection strings, so an API key can be passed as
+    ``$OPENAI_API_KEY`` and stay out of request logs / persisted state.
+    """
+    if value and value.startswith("$"):
+        return os.environ.get(value[1:], value)
+    return value
+
+
 def _redact_dlq_entry(entry: dict[str, Any]) -> dict[str, Any]:
     """Mask source-row VALUES in a DLQ entry returned to API clients.
 
@@ -851,6 +862,153 @@ def create_app(
             "summary": report.summary(),
         }
 
+    @app.post("/api/projects/{name}/suggest-ontology")
+    async def suggest_ontology(name: str, body: SuggestOntologyRequest):
+        """Ask an LLM to propose a richer ontology (Phase 10b). Read-only.
+
+        Returns the structured proposal, the resulting *validated* candidate
+        mapping, a ``diff_mappings`` diff against the current mapping, the
+        validation/provenance notes, and provenance. Nothing is written — the
+        client reviews the diff and applies an accepted subset via
+        ``POST /apply-ontology`` (which reuses the same save path as the mapper).
+        """
+        import datetime as _dt
+
+        from r2g.llm import create_llm_provider, proposal_to_mapping
+        from r2g.llm.base import OntologyRequest
+        from r2g.llm.prompt import build_schema_digest
+        from r2g.mapping_diff import diff_mappings
+
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        snap = catalog.get_latest_snapshot(project.source_name)
+        if snap is None:
+            raise HTTPException(status_code=400, detail="No schema snapshot available")
+        try:
+            current = ConfigManager.load_config(project.mapping_config_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to load mapping config: {e}")
+
+        samples: dict = {}
+        if body.sample:
+            from r2g.llm.sampling import build_sampler_for_source, collect_samples
+
+            source = catalog.get_source(project.source_name)
+            sampler = build_sampler_for_source(source) if source is not None else None
+            if sampler is not None:
+                try:
+                    samples = collect_samples(
+                        sampler,
+                        snap.schema_data,
+                        per_column=max(1, body.samples_per_column),
+                    )
+                finally:
+                    close = getattr(sampler, "close", None)
+                    if callable(close):
+                        close()
+
+        try:
+            digest = build_schema_digest(
+                snap.schema_data,
+                domain_hint=body.domain,
+                include_samples=bool(samples),
+                samples=samples,
+                samples_per_column=max(1, body.samples_per_column),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        resolved_key = _resolve_env_ref(body.api_key) if body.api_key else None
+        params = {"base_url": body.base_url} if body.base_url else None
+        try:
+            llm = create_llm_provider(
+                body.provider, model=body.model, api_key=resolved_key, params=params
+            )
+        except (ValueError, ImportError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        request = OntologyRequest(
+            schema_digest=digest, domain_hint=body.domain, table_count=len(snap.schema_data.tables)
+        )
+        try:
+            proposal = llm.propose_ontology(request)
+        except ValueError as e:
+            # Missing key / malformed model output → actionable 400.
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            # Upstream/network failure.
+            raise HTTPException(status_code=502, detail=f"LLM proposal failed: {_safe_detail(e)}")
+
+        new_config, notes = proposal_to_mapping(
+            proposal, snap.schema_data, source_schema=current.source_schema
+        )
+        plan = diff_mappings(current, new_config, snap.schema_data)
+        provenance = {
+            "provider": body.provider,
+            "model": body.model or "(provider default)",
+            "domain_hint": body.domain,
+            "table_count": len(snap.schema_data.tables),
+            "sampled": bool(samples),
+            "sampled_columns": sum(len(cols) for cols in samples.values()),
+            "proposed_collections": len(proposal.collections),
+            "proposed_edges": len(proposal.edges),
+            "proposed_renames": len(proposal.renames),
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        return {
+            "project": name,
+            "proposal": proposal.model_dump(),
+            "mapping": new_config.model_dump(),
+            "diff": plan.model_dump(),
+            "notes": notes,
+            "provenance": provenance,
+        }
+
+    @app.post("/api/projects/{name}/apply-ontology")
+    async def apply_ontology(name: str, body: ApplyOntologyRequest):
+        """Build a mapping from an accepted (possibly subset) proposal (Phase 10b).
+
+        The client sends back the accepted subset of the proposal returned by
+        ``/suggest-ontology``; the server rebuilds it through the same
+        ``proposal_to_mapping`` hallucination gate (so the result is always valid)
+        and returns it as an **editable draft** — like ``apply-naming``, nothing is
+        persisted here. The Studio loads the draft, marks the project dirty, and
+        the user Saves through the normal path (which offers migration if the
+        target is already loaded).
+        """
+        from r2g.llm import proposal_to_mapping
+        from r2g.llm.base import OntologyProposal
+        from r2g.mapping_diff import diff_mappings
+
+        project = catalog.get_project(name)
+        if project is None:
+            raise HTTPException(status_code=404, detail=f"Project '{name}' not found")
+        snap = catalog.get_latest_snapshot(project.source_name)
+        if snap is None:
+            raise HTTPException(status_code=400, detail="No schema snapshot available")
+        try:
+            current = ConfigManager.load_config(project.mapping_config_path)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to load mapping config: {e}")
+
+        try:
+            proposal = OntologyProposal.model_validate(body.proposal)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid proposal payload: {e}")
+
+        new_config, notes = proposal_to_mapping(
+            proposal, snap.schema_data, source_schema=current.source_schema
+        )
+        plan = diff_mappings(current, new_config, snap.schema_data)
+        return {
+            "mapping": new_config.model_dump(),
+            "collections": len(new_config.collections),
+            "edges": len(new_config.edges),
+            "changes": len(plan.changes),
+            "notes": notes,
+        }
+
     @app.post("/api/projects/{name}/load", status_code=202)
     async def start_load(name: str, body: LoadRequest):
         project = catalog.get_project(name)
@@ -1326,6 +1484,32 @@ class LoadRequest(BaseModel):
     # (classification manifest, suggested-RBAC, policy.rego) next to lineage.json.
     emit_governance: bool = False
     tier_layout: bool = False
+
+
+class SuggestOntologyRequest(BaseModel):
+    """Parameters for POST /api/projects/{name}/suggest-ontology (Phase 10b)."""
+
+    domain: str = ""
+    provider: str = "openai"
+    model: str | None = None
+    # API key or $ENV_VAR reference; when omitted the provider reads it from the
+    # environment ($OPENAI_API_KEY). Never persisted.
+    api_key: str | None = None
+    # Endpoint base URL (required for openai-compatible / local providers).
+    base_url: str | None = None
+    # Opt-in bounded value sampling from non-sensitive columns to ground the model.
+    sample: bool = False
+    samples_per_column: int = 5
+
+
+class ApplyOntologyRequest(BaseModel):
+    """Parameters for POST /api/projects/{name}/apply-ontology (Phase 10b).
+
+    ``proposal`` is the accepted (possibly subset) ontology proposal returned by
+    ``/suggest-ontology`` — the client drops rejected items before sending.
+    """
+
+    proposal: dict[str, Any]
 
 
 class TargetCreateRequest(BaseModel):

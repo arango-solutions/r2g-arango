@@ -1,7 +1,7 @@
 # Implementation & Test Plan: LLM-Assisted Ontology Derivation (PRD Phase 10)
 
-> **Status: 10a IMPLEMENTED (June 2026); 10b–10c planned.** Detailed companion
-> to PRD §"Phase 10: LLM-assisted ontology derivation". Promotes the
+> **Status: 10a + 10b + 10c IMPLEMENTED (June–July 2026).** Detailed
+> companion to PRD §"Phase 10: LLM-assisted ontology derivation". Promotes the
 > long-standing exploratory "ontology derivation (LLM integration)" idea into a
 > committed, testable phase.
 >
@@ -13,8 +13,30 @@
 > provenance sidecar), the `r2g-arango[llm]` optional extra, and a network-free
 > fake-provider test suite (`tests/test_llm_base.py`, `test_llm_prompt.py`,
 > `test_ontology_proposal.py`, `test_cli_ontology.py`). Embed hints are advisory
-> notes only in V1. Next: **10b** (Studio diff review/apply) and **10c** (opt-in
-> sampling, additional providers).
+> notes only in V1.
+>
+> **10b shipped:** `POST /api/projects/{name}/suggest-ontology` (read-only:
+> proposal + candidate mapping + `diff_mappings` diff + notes + provenance) and
+> `POST /api/projects/{name}/apply-ontology` (accepted-subset proposal →
+> re-gated **editable draft**, not persisted — mirrors `apply-naming`) on the UI
+> server; a Studio "Suggest model (AI)" action (Actions menu + canvas context menu
+> + `m` shortcut) opening a floating review panel with per-item accept/reject that
+> loads the draft into the mapper for Save. Tested in
+> `tests/test_ui_api.py::TestSuggestOntologyApi`.
+>
+> **10c shipped:** two more providers behind the same factory —
+> `anthropic_provider.py` (Claude Messages API; JSON parsed with code-fence
+> stripping; `$ANTHROPIC_API_KEY`) and an **OpenAI-compatible / local** provider
+> served by `OpenAIProvider(require_key=False, require_base_url=True)` for Ollama /
+> vLLM / LM Studio / llama.cpp (Authorization header omitted without a key) —
+> plus **opt-in, classification-filtered value sampling**: `build_schema_digest`
+> renders a few bounded, injection-neutralized example values per column for
+> below-threshold columns only, sourced via `r2g.llm.sampling.collect_samples`
+> over a new bounded `sample_values` probe on the Postgres/MySQL/SQL-Server/CSV
+> value samplers. Wired through the CLI (`--base-url/--sample/--samples-per-column`),
+> the `suggest-ontology` API, and the Studio dialog; a `R2G_LLM_LIVE`-gated live
+> smoke test (`tests/test_llm_live.py`) plus `tests/test_llm_providers.py` and
+> `tests/test_llm_sampling.py`.
 >
 > **Thesis.** r2g already derives a target graph deterministically
 > (`ConfigManager.generate_default_config`) and lets users refine it in the
@@ -180,16 +202,28 @@ added to `[all]`. No dependency or network call unless a suggestion is invoked.
 5. `src/r2g/main.py` — `ontology` group (`suggest [--apply]`); provenance print.
 6. `pyproject.toml` — `llm` extra (+ `all`), keywords.
 
-**10b — review & apply in the Studio**
+**10b — review & apply in the Studio — DONE**
 7. `src/r2g/ui/server.py` — `POST /api/projects/{name}/suggest-ontology` returning
-   proposal + `diff_mappings` diff + notes + provenance.
-8. `src/r2g/ui/static/index.html` — "Suggest model (AI)" action + floating diff
-   review panel with per-item accept/reject; apply via the existing save path.
+   proposal + candidate mapping + `diff_mappings` diff + notes + provenance, and
+   `POST /api/projects/{name}/apply-ontology` returning a re-gated editable draft
+   from the accepted subset (not persisted — Save via the normal path).
+8. `src/r2g/ui/static/index.html` — "Suggest model (AI)" action (Actions + canvas
+   menu + `m`) + floating review panel with per-item accept/reject; applies by
+   loading the draft into the mapper edit state and marking dirty.
 
-**10c — enrichment**
-9. Opt-in, classification-filtered value sampling in the prompt builder; richer
-   embed-vs-link / denormalization suggestions; additional providers
-   (Anthropic / local OpenAI-compatible) behind the same factory.
+**10c — enrichment — DONE**
+9. Additional providers behind the same factory: `anthropic_provider.py` (Claude
+   Messages API) and an OpenAI-compatible/local provider (`OpenAIProvider` with
+   `require_key=False` + a required `base_url`); factory aliases (`claude`,
+   `local`, `ollama`, `vllm`, …).
+10. Opt-in, classification-filtered value sampling: `build_schema_digest` renders
+    bounded, neutralized example values for below-threshold columns only, via
+    `r2g.llm.sampling.collect_samples` over a new `sample_values` probe on the
+    value samplers. Threaded through CLI (`--base-url/--sample/--samples-per-column`),
+    API, and Studio dialog. `R2G_LLM_LIVE`-gated live smoke test
+    (`tests/test_llm_live.py`) + `tests/test_llm_providers.py` +
+    `tests/test_llm_sampling.py`. (Richer embed-vs-link suggestions remain advisory
+    notes, deferred to a later pass.)
 
 Docs at each step: README (AI section + `llm` extra), CHANGELOG, PRD status.
 

@@ -194,3 +194,27 @@ class TestOntologySuggest:
         result = runner.invoke(app, ["ontology", "suggest", name, "--provider", "bogus"])
         assert result.exit_code == 1
         assert "Unsupported LLM provider" in result.output
+
+    def test_sample_flag_grounds_non_sensitive_columns_only(self, project, monkeypatch):
+        name, _ = project
+        fake = _patch_provider(monkeypatch, _proposal())
+
+        class _FakeSampler:
+            def sample_values(self, table, column, limit=5):
+                return {"customer_id": [10, 11], "id": [1, 2], "email": ["a@x.com"]}.get(
+                    column, []
+                )
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(
+            "r2g.llm.sampling.build_sampler_for_source", lambda source: _FakeSampler()
+        )
+        result = runner.invoke(app, ["ontology", "suggest", name, "--sample"])
+        assert result.exit_code == 0, result.output
+        digest = fake.calls[0].schema_digest
+        # Non-sensitive column is grounded with example values...
+        assert "e.g. 10, 11" in digest
+        # ...but the redacted PII column is never sampled even if the DB returns values.
+        assert "a@x.com" not in digest

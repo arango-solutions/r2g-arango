@@ -784,6 +784,29 @@ class PostgresValueSampler:
         """  # noqa: S608 - identifiers are quoted; schema is from the catalog
         return self._scalar(q, (self.limit, delimiter))
 
+    def sample_values(self, table: str, column: str, limit: int = 5) -> list:
+        """Return up to ``limit`` distinct non-null values from a column (or [])."""
+        n = max(1, int(limit))
+        q = f"""
+            SELECT DISTINCT "{column}" AS v
+            FROM "{self.schema_name}"."{table}"
+            WHERE "{column}" IS NOT NULL
+            LIMIT %s
+        """  # noqa: S608 - identifiers are quoted; schema is from the catalog
+        try:
+            conn = self._conn_lazy()
+            with conn.cursor() as cur:
+                cur.execute(q, (n,))
+                return [r[0] for r in cur.fetchall()]
+        except Exception as err:  # noqa: BLE001
+            logger.warning("sample_values_failed", table=table, column=column, error=str(err))
+            try:
+                if self._conn is not None:
+                    self._conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return []
+
 
 # ── Concrete MySQL value sampler ────────────────────────────────────
 
@@ -959,6 +982,25 @@ class MySQLValueSampler:
         """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
         return self._scalar(q, (delimiter, self.limit))
 
+    def sample_values(self, table: str, column: str, limit: int = 5) -> list:
+        """Return up to ``limit`` distinct non-null values from a column (or [])."""
+        n = max(1, int(limit))
+        db = self._qi(self.schema_name)
+        q = f"""
+            SELECT DISTINCT {self._qi(column)} AS v
+            FROM {db}.{self._qi(table)}
+            WHERE {self._qi(column)} IS NOT NULL
+            LIMIT %s
+        """  # noqa: S608 - identifiers are backtick-quoted; db is from the catalog
+        try:
+            conn = self._conn_lazy()
+            with conn.cursor() as cur:
+                cur.execute(q, (n,))
+                return [r[0] for r in cur.fetchall()]
+        except Exception as err:  # noqa: BLE001
+            logger.warning("sample_values_failed", table=table, column=column, error=str(err))
+            return []
+
 
 # ── Concrete SQL Server value sampler ───────────────────────────────
 
@@ -1127,6 +1169,27 @@ class SQLServerValueSampler:
             ) l
         """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
         return self._scalar(q, (delimiter, self.limit))
+
+    def sample_values(self, table: str, column: str, limit: int = 5) -> list:
+        """Return up to ``limit`` distinct non-null values from a column (or [])."""
+        n = max(1, int(limit))
+        s = self._qi(self.schema_name)
+        q = f"""
+            SELECT DISTINCT TOP (%s) {self._qi(column)} AS v
+            FROM {s}.{self._qi(table)}
+            WHERE {self._qi(column)} IS NOT NULL
+        """  # noqa: S608 - identifiers are bracket-quoted; schema is from the catalog
+        try:
+            conn = self._conn_lazy()
+            cur = conn.cursor()
+            try:
+                cur.execute(q, (n,))
+                return [r[0] for r in cur.fetchall()]
+            finally:
+                cur.close()
+        except Exception as err:  # noqa: BLE001
+            logger.warning("sample_values_failed", table=table, column=column, error=str(err))
+            return []
 
 
 # ── Concrete CSV value sampler ──────────────────────────────────────
@@ -1308,6 +1371,21 @@ class CsvValueSampler:
             return None
         contains = series.str.contains(delimiter, literal=True)
         return float(contains.sum() / total)
+
+    def sample_values(self, table: str, column: str, limit: int = 5) -> list:
+        """Return up to ``limit`` distinct non-null values from a column (or [])."""
+        import polars as pl
+
+        frame = self._read_columns(table, [column])
+        if frame is None or not frame.columns:
+            return []
+        name = frame.columns[0]
+        series = frame.get_column(name).filter(
+            pl.col(name).is_not_null() & (pl.col(name) != "")
+        )
+        if series.len() == 0:
+            return []
+        return series.unique(maintain_order=True).head(max(1, int(limit))).to_list()
 
 
 def create_value_sampler(

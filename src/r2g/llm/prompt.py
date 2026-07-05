@@ -17,6 +17,8 @@ system prompt. Three guardrails are baked in here:
 
 from __future__ import annotations
 
+from typing import Optional
+
 from r2g.classification import exceeds_threshold, tier_of
 from r2g.types import Schema
 
@@ -82,20 +84,50 @@ def _redacted(level: str, threshold: str) -> bool:
     return exceeds_threshold(level, threshold)
 
 
+# Max sample values rendered per column, and max characters per value, when
+# opt-in sampling is enabled. Kept tiny: the goal is a disambiguating hint
+# (e.g. enum-like values), not a data dump.
+DEFAULT_SAMPLES_PER_COLUMN = 5
+_MAX_SAMPLE_CHARS = 40
+
+
+def _render_samples(values: list, *, per_column: int) -> str:
+    """Render a short, neutralized preview of sample values for one column."""
+    out: list[str] = []
+    for v in values:
+        if v is None:
+            continue
+        s = _neutralize(str(v))
+        if len(s) > _MAX_SAMPLE_CHARS:
+            s = s[:_MAX_SAMPLE_CHARS] + "\u2026"
+        out.append(s)
+        if len(out) >= per_column:
+            break
+    if not out:
+        return ""
+    return "e.g. " + ", ".join(out)
+
+
 def build_schema_digest(
     schema: Schema,
     *,
     domain_hint: str = "",
     include_samples: bool = False,
+    samples: Optional[dict[str, dict[str, list]]] = None,
+    samples_per_column: int = DEFAULT_SAMPLES_PER_COLUMN,
     redaction_threshold: str = DEFAULT_REDACTION_THRESHOLD,
     token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> str:
     """Build a compact, redacted, injection-hardened schema digest.
 
-    ``include_samples`` is accepted for forward-compatibility (10c) but ignored
-    in 10a: no row values are ever included. Raises :class:`ValueError` if the
-    rendered digest exceeds ``token_budget``.
+    When ``include_samples`` is set and ``samples`` (``table → column → values``)
+    is provided, a few example values are appended per column — but **only** for
+    columns below ``redaction_threshold``. Restricted/PII columns are never
+    sampled (they are emitted name-only), so opt-in sampling can never leak
+    sensitive values. Raises :class:`ValueError` if the rendered digest exceeds
+    ``token_budget``.
     """
+    do_sample = include_samples and bool(samples)
     lines: list[str] = []
     for tname, table in schema.tables.items():
         header = f"TABLE {_neutralize(tname)}"
@@ -112,10 +144,12 @@ def build_schema_digest(
         if pk:
             lines.append(f"  PK: {', '.join(_neutralize(c) for c in pk)}")
 
+        table_samples = (samples or {}).get(tname, {}) if do_sample else {}
         lines.append("  COLUMNS:")
         for col in table.columns:
             level = tier_of(col.classification)
             if _redacted(level, redaction_threshold):
+                # Redacted columns are name-only and NEVER sampled.
                 lines.append(f"    - {_neutralize(col.name)} : [redacted: {level}]")
                 continue
             parts = [f"{_neutralize(col.name)} : {_neutralize(col.data_type)}"]
@@ -123,6 +157,12 @@ def build_schema_digest(
                 parts.append("nullable")
             if level != "public":
                 parts.append(f"sensitivity={level}")
+            if do_sample:
+                preview = _render_samples(
+                    table_samples.get(col.name, []), per_column=samples_per_column
+                )
+                if preview:
+                    parts.append(preview)
             lines.append(f"    - {', '.join(parts)}")
 
         if table.foreign_keys:

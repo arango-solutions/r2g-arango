@@ -1047,3 +1047,130 @@ class TestGovernanceEmitApi:
         self._setup(client, tmp_path, catalog_dir)
         resp = client.post("/api/projects/gproj/governance/emit?threshold=secret")
         assert resp.status_code == 400
+
+
+class TestSuggestOntologyApi:
+    """Phase 10b: POST /api/projects/{name}/suggest-ontology + apply-ontology."""
+
+    def _setup(self, client, tmp_path, catalog_dir):
+        from r2g.types import Classification
+
+        # orders has NO declared FK; the "LLM" surfaces the implicit edge.
+        schema = Schema(tables={
+            "customer": Table(name="customer", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="email", data_type="text",
+                       classification=Classification(tags=["PII.Sensitive"])),
+            ], primary_key=["id"]),
+            "orders": Table(name="orders", columns=[
+                Column(name="id", data_type="integer", is_primary_key=True),
+                Column(name="customer_id", data_type="integer"),
+            ], primary_key=["id"]),
+        })
+        config = ConfigManager.generate_default_config(schema)
+        mapping_path = str(tmp_path / "onto_mapping.yaml")
+        ConfigManager.save_config(config, mapping_path)
+        mgr = CatalogManager(catalog_dir)
+        mgr.add_source("osrc", "postgresql", "postgresql://localhost/db")
+        mgr.create_snapshot("osrc", schema)
+        client.post("/api/projects", json={
+            "name": "oproj", "source_name": "osrc", "mapping_config_path": mapping_path,
+        })
+        return mapping_path
+
+    def _proposal(self):
+        return {
+            "edges": [{
+                "edge_collection": "orders_to_customer",
+                "from_collection": "orders",
+                "to_collection": "customer",
+                "from_fields": ["customer_id"],
+                "to_fields": ["id"],
+                "rationale": "customer_id references customer.id",
+                "confidence": 0.9,
+            }],
+            "renames": [{
+                "source_table": "customer",
+                "column": "email",
+                "target_property": "email_address",
+                "confidence": 0.7,
+            }],
+        }
+
+    def _patch(self, monkeypatch):
+        from r2g.llm.base import OntologyProposal
+
+        proposal = OntologyProposal.model_validate(self._proposal())
+
+        class _Fake:
+            provider_type = "fake"
+            calls: list = []
+
+            def propose_ontology(self, request):
+                _Fake.calls.append(request)
+                return proposal
+
+        _Fake.calls = []
+        monkeypatch.setattr("r2g.llm.create_llm_provider", lambda *a, **k: _Fake())
+        return _Fake
+
+    def test_suggest_returns_proposal_and_diff_without_writing(
+        self, client, tmp_path, catalog_dir, monkeypatch
+    ):
+        self._setup(client, tmp_path, catalog_dir)
+        fake = self._patch(monkeypatch)
+        before = client.get("/api/projects/oproj/mapping").json()
+
+        resp = client.post("/api/projects/oproj/suggest-ontology", json={"domain": "shop"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["provenance"]["proposed_edges"] == 1
+        assert any(e["edge_collection"] == "orders_to_customer" for e in data["mapping"]["edges"])
+        assert data["diff"]["changes"]
+        # Redacted, metadata-only digest was actually sent.
+        assert fake.calls and "email : [redacted" in fake.calls[0].schema_digest
+        # Read-only: nothing persisted.
+        assert client.get("/api/projects/oproj/mapping").json() == before
+
+    def test_apply_returns_draft_without_persisting(
+        self, client, tmp_path, catalog_dir, monkeypatch
+    ):
+        self._setup(client, tmp_path, catalog_dir)
+        self._patch(monkeypatch)
+        suggest = client.post("/api/projects/oproj/suggest-ontology", json={}).json()
+        before = client.get("/api/projects/oproj/mapping").json()
+
+        resp = client.post(
+            "/api/projects/oproj/apply-ontology", json={"proposal": suggest["proposal"]}
+        )
+        assert resp.status_code == 200, resp.text
+        draft = resp.json()["mapping"]
+        assert any(e["edge_collection"] == "orders_to_customer" for e in draft["edges"])
+        assert draft["collections"]["customer"]["field_mappings"].get("email") == "email_address"
+        # Draft only — not persisted until the client Saves via PUT /mapping.
+        assert client.get("/api/projects/oproj/mapping").json() == before
+
+    def test_apply_subset_only_includes_accepted_items(
+        self, client, tmp_path, catalog_dir, monkeypatch
+    ):
+        self._setup(client, tmp_path, catalog_dir)
+        self._patch(monkeypatch)
+        # Client rejects the rename, keeps only the edge.
+        subset = {"edges": self._proposal()["edges"]}
+        resp = client.post("/api/projects/oproj/apply-ontology", json={"proposal": subset})
+        assert resp.status_code == 200, resp.text
+        draft = resp.json()["mapping"]
+        assert any(e["edge_collection"] == "orders_to_customer" for e in draft["edges"])
+        assert draft["collections"]["customer"]["field_mappings"] == {}
+
+    def test_suggest_unknown_project_404(self, client, monkeypatch):
+        self._patch(monkeypatch)
+        assert client.post("/api/projects/nope/suggest-ontology", json={}).status_code == 404
+
+    def test_suggest_unknown_provider_400(self, client, tmp_path, catalog_dir):
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.post(
+            "/api/projects/oproj/suggest-ontology", json={"provider": "bogus"}
+        )
+        assert resp.status_code == 400
+        assert "Unsupported LLM provider" in resp.text

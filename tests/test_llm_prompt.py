@@ -85,10 +85,34 @@ class TestSchemaDigest:
         with pytest.raises(ValueError, match="over the budget"):
             build_schema_digest(_schema(), token_budget=1)
 
-    def test_no_row_values_with_include_samples(self):
-        # 10a never samples even when asked; the flag is forward-compat only.
+    def test_include_samples_without_data_adds_nothing(self):
+        # The flag alone (no `samples` map) never fabricates values.
         digest = build_schema_digest(_schema(), include_samples=True)
-        assert "sample" not in digest.lower()
+        assert "e.g." not in digest
+
+    def test_samples_rendered_for_non_sensitive_columns(self):
+        samples = {"customer": {"name": ["Ada", "Grace", "Alan"]}}
+        digest = build_schema_digest(_schema(), include_samples=True, samples=samples)
+        assert "e.g. Ada, Grace, Alan" in digest
+
+    def test_samples_never_rendered_for_redacted_columns(self):
+        # Even if a caller wrongly supplies samples for a restricted column, the
+        # digest keeps it name-only — the redaction branch wins.
+        samples = {"customer": {"email": ["ada@x.com", "grace@y.com"]}}
+        digest = build_schema_digest(_schema(), include_samples=True, samples=samples)
+        assert "email : [redacted: restricted]" in digest
+        assert "ada@x.com" not in digest
+
+    def test_samples_are_neutralized_and_bounded(self):
+        samples = {"customer": {"name": ["```break", "keep_b", "keep_c", "drop_d", "drop_e"]}}
+        digest = build_schema_digest(
+            _schema(), include_samples=True, samples=samples, samples_per_column=3
+        )
+        # Markdown fences in values cannot break out of the data block.
+        assert "```" not in digest
+        # Only the first 3 values are rendered; later ones are dropped.
+        assert "keep_b" in digest and "keep_c" in digest
+        assert "drop_d" not in digest and "drop_e" not in digest
 
 
 class TestUserPrompt:

@@ -9,6 +9,51 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **LLM ontology enrichment — providers & sampling (Phase 10c)**: broadens the
+  Phase-10 seam. **Two new providers behind the same factory:** an Anthropic
+  (Claude) provider (`src/r2g/llm/anthropic_provider.py`, Messages API; JSON
+  parsed from the response with Markdown-code-fence stripping; key from
+  `$ANTHROPIC_API_KEY`) and an **OpenAI-compatible / local** provider for Ollama,
+  vLLM, LM Studio, llama.cpp, and hosted compatibles — served by `OpenAIProvider`
+  with `require_key=False` + a required `base_url` (the `Authorization` header is
+  omitted when no key is present). Factory aliases (`claude`, `local`, `ollama`,
+  `vllm`, `lmstudio`, …) resolve to the right provider. **Opt-in,
+  classification-filtered value sampling:** `build_schema_digest` now takes a
+  `table → column → values` sample map and renders a few bounded,
+  injection-neutralized example values per column — **only** for columns below the
+  redaction threshold, so Restricted/PII columns stay name-only and are never
+  sampled. `r2g.llm.sampling.collect_samples` gathers them via a new bounded
+  `sample_values` probe added to the Postgres/MySQL/SQL-Server/CSV value samplers
+  (best-effort; redacted columns are skipped entirely). Wired through the CLI
+  (`r2g ontology suggest --provider/--model/--api-key/--base-url/--sample/--samples-per-column`),
+  the `suggest-ontology` API (`provider`/`base_url`/`sample`/`samples_per_column`),
+  and the Studio dialog (provider select, base-URL field, "sample non-sensitive
+  columns" toggle); provenance records whether and how many columns were sampled.
+  A **`R2G_LLM_LIVE`-gated live smoke test** (`tests/test_llm_live.py`) exercises
+  the real provider round-trip and asserts a valid `MappingConfig`; new
+  network-free unit tests in `tests/test_llm_providers.py`,
+  `tests/test_llm_sampling.py`, and added cases in `tests/test_llm_prompt.py` /
+  `tests/test_cli_ontology.py`.
+
+- **LLM ontology review & apply in the Studio (Phase 10b)**: brings Phase-10a's
+  proposal into the Mapping Studio. Two UI-server endpoints:
+  `POST /api/projects/{name}/suggest-ontology` (read-only — returns the structured
+  proposal, the resulting *validated* candidate mapping, a `diff_mappings` diff vs
+  the current mapping, and validation/provenance notes) and
+  `POST /api/projects/{name}/apply-ontology` (rebuilds an accepted, possibly-subset
+  proposal through the same `proposal_to_mapping` gate and returns an **editable
+  draft** — nothing is persisted server-side, exactly like `apply-naming`). The
+  Studio gains a "Suggest model (AI)" entry in the Actions menu, the canvas
+  context menu, and an `m` keyboard shortcut; it opens a floating review panel
+  listing each proposed relationship / collection change / property rename with its
+  rationale and confidence and a **per-item checkbox**. "Apply selected" sends only
+  the checked items, loads the returned draft into the mapper edit state, and marks
+  the project dirty so the user Saves through the normal path (which offers an
+  in-place migration when the target is already loaded). API key is sourced from
+  the environment (`$OPENAI_API_KEY`, or a `$ENV_VAR` reference in the request) and
+  never persisted or echoed. Context-menu-primary, overlay panel, no new route.
+  Tested with a network-free fake provider (`tests/test_ui_api.py::TestSuggestOntologyApi`).
+
 - **LLM-assisted ontology derivation (Phase 10a)**: an *optional* path where a
   model **proposes** a richer target ontology — the LLM proposes, the
   deterministic pipeline disposes. New `src/r2g/llm/` package mirroring

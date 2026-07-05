@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading; 9a + 9b + 9c implemented), Phase 10 (LLM-assisted ontology derivation; 10a implemented, 10b–10c planned), Phase 11 (denormalization & normal-form analysis; 11a–11c implemented), and Phase 7 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented (end-to-end field validation pending); Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading; 9a + 9b + 9c implemented), Phase 10 (LLM-assisted ontology derivation; 10a + 10b + 10c implemented), Phase 11 (denormalization & normal-form analysis; 11a–11c implemented), and Phase 7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -752,7 +752,7 @@ thread**: column-level classification capture → a carrier through
 
 ---
 
-### Phase 10: LLM-assisted ontology derivation -- 10a implemented; 10b–10c planned
+### Phase 10: LLM-assisted ontology derivation -- 10a + 10b + 10c implemented
 
 > **The LLM proposes; the deterministic pipeline disposes.** Today a target
 > graph is derived mechanically by `ConfigManager.generate_default_config`
@@ -825,11 +825,46 @@ have asked for exactly this "describe my domain, suggest the graph" capability.
   `LLMProvider`** seam (no network): `tests/test_llm_base.py`,
   `tests/test_llm_prompt.py`, `tests/test_ontology_proposal.py`,
   `tests/test_cli_ontology.py`.
-- **10b (review & apply in the Studio):** P10.4, P10.7. The diff review panel and
-  apply path on top of the existing `diff_mappings` + mapper.
-- **10c (enrichment):** opt-in, classification-aware value sampling; richer
-  denormalization/embedding suggestions; additional providers
-  (Anthropic / local) and domain-hint refinement.
+- **10b (review & apply in the Studio) — IMPLEMENTED (July 2026):** P10.4, P10.7.
+  Two endpoints on the UI server: `POST /api/projects/{name}/suggest-ontology`
+  (read-only — returns the structured proposal, the resulting validated candidate
+  mapping, a `diff_mappings` diff vs the current mapping, and validation/provenance
+  notes) and `POST /api/projects/{name}/apply-ontology` (rebuilds an accepted,
+  possibly-subset proposal through the same `proposal_to_mapping` gate and returns
+  an **editable draft** — nothing is persisted server-side, exactly like
+  `apply-naming`). In the Studio, a "Suggest model (AI)" entry (Actions menu +
+  canvas context menu + `m` shortcut) opens a floating review panel that lists each
+  proposed relationship / collection change / property rename with its rationale
+  and confidence and a **per-item checkbox**; "Apply selected" sends only the
+  checked items, loads the returned draft into the mapper edit state, and marks the
+  project dirty so the user Saves through the normal path (which offers migration
+  when the target is already loaded). Context-menu-primary, overlay panel, no new
+  route — consistent with the UI architecture contract. Tested in
+  `tests/test_ui_api.py::TestSuggestOntologyApi` (fake provider, no network).
+- **10c (enrichment) — IMPLEMENTED (July 2026):** P10.1 (breadth), P10.2
+  (sampling). **Additional providers behind the same factory:** an Anthropic
+  (Claude) provider (`anthropic_provider.py`, Messages API, JSON parsed from the
+  response with code-fence stripping) and an **OpenAI-compatible / local**
+  provider (Ollama, vLLM, LM Studio, llama.cpp, …) served by `OpenAIProvider`
+  with `require_key=False` + a required `base_url` (the Authorization header is
+  omitted when no key is set). The factory aliases (`claude`, `local`, `ollama`,
+  `vllm`, …) resolve to these; keys read from the provider's env var
+  (`$ANTHROPIC_API_KEY` / `$OPENAI_API_KEY`), never persisted. **Opt-in,
+  classification-filtered value sampling:** `build_schema_digest` now accepts a
+  `table → column → values` sample map and renders a few bounded, injection-
+  neutralized example values per column — but **only** for columns below the
+  redaction threshold, so Restricted/PII columns are still name-only and are
+  never sampled. `r2g.llm.sampling.collect_samples` gathers samples via a new
+  bounded `sample_values` probe on the Postgres/MySQL/SQL-Server/CSV value
+  samplers (best-effort; skips redacted columns entirely). Threaded through the
+  CLI (`--provider`, `--model`, `--api-key`, `--base-url`, `--sample`,
+  `--samples-per-column`) and the `suggest-ontology` API / Studio dialog
+  (provider select, base URL, sample toggle); provenance records whether/how many
+  columns were sampled. A **gated live smoke test** (`tests/test_llm_live.py`,
+  run only when `R2G_LLM_LIVE=1`) exercises the real round-trip and asserts a
+  valid `MappingConfig`. New unit tests: `tests/test_llm_providers.py`,
+  `tests/test_llm_sampling.py`, plus sampling cases in `tests/test_llm_prompt.py`
+  and `tests/test_cli_ontology.py`.
 
 #### Non-functional notes
 
@@ -995,7 +1030,7 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **External data catalog integration (Phase 8a–8b) — Implemented** | **June 2026** | Shipped 8a (foundation + OpenMetadata) and 8b (Studio UI): `src/r2g/catalogs/` provider abstraction + OpenMetadata REST provider (`httpx`, `openmetadata` extra), an encrypted `CatalogProviderConfig` registry, the `r2g catalog add/list/browse/import-source/remove` CLI, Studio `/api/catalogs*` browse/import endpoints with a left-rail Catalogs panel, and unit + skip-when-unavailable e2e tests. MySQL + SQL Server source connectors landed alongside. 1189 unit tests passing, 82% coverage. |
 | **MCP catalog tools (Phase 8 P8.6) — Implemented** | **June 2026** | Closed the last 8b gap: added `list_catalogs`, `add_catalog`, `remove_catalog`, `catalog_browse`, and `catalog_import_source` MCP tools so an agent can discover and register sources from a connected external catalog, mirroring the CLI/UI (token redaction on read, `$ENV_VAR` token resolution at use time, DSN-scrubbed errors, credentials never taken from the catalog). Hoisted `get_asset` onto the `CatalogProvider` protocol now that all three surfaces (CLI/UI/MCP) depend on it. Unit-tested with a fake provider (browse list/descend/search, import-creates-source, redaction, error paths). |
 | **Classification propagation & entitlement-aware loading (Phase 9) — Planned** | **June 2026** | Added Phase 9 on the Phase 8 catalog backbone: a three-tier governance posture — capture & propagate catalog classifications/owners/tiers onto target collections/fields + column-level lineage (P9.1–P9.4, incl. the mosaic = max-sensitivity rule), advise & gate via a pre-load entitlement report + exclude-above-threshold default + transform-at-load masking reusing the field-expression engine (P9.5–P9.6, P9.9), and enable enforcement by emitting a classification manifest + suggested ArangoDB RBAC / OPA / tier-layout artifacts (r2g never enforces) plus classification re-sync (P9.7–P9.8). Lane discipline: r2g carries governance metadata and refuses to silently launder sensitive data, but is not a runtime authz engine. Implementation + test plan drafted (`docs/internal/PLAN-classification-entitlement.md`); no code yet. |
-| **LLM-assisted ontology derivation (Phase 10) — 10a implemented** | **June 2026** | Promoted the exploratory "ontology derivation" idea to committed Phase 10: an optional `LLMProvider` abstraction proposes a richer target ontology (vertex-vs-edge, implicit relationships, embed-vs-link, naming) from the introspected schema, which flows through the **same** `validate_config` → mapper-review (`diff_mappings`) → loader path as Auto-Map. Design principles: human-in-the-loop (never auto-applied), schema-grounded (metadata not bulk rows), classification-aware (no egress of Phase-9 Restricted/PII columns), validated/hallucination-resistant, reproducible (temperature 0 + stored provenance), and optional/provider-agnostic (deterministic `generate_default_config` stays the default). **10a shipped (June 2026):** `src/r2g/llm/` (provider seam + OpenAI REST provider + metadata-only/redacted/injection-hardened prompt builder + `proposal_to_mapping` hallucination gate), the `r2g ontology suggest` CLI, the `r2g-arango[llm]` extra, and a network-free fake-provider test suite. 10b (Studio diff review/apply) and 10c (opt-in sampling, more providers) remain. Implementation + test plan: `docs/internal/PLAN-llm-ontology-derivation.md`. |
+| **LLM-assisted ontology derivation (Phase 10) — 10a + 10b + 10c implemented** | **June–July 2026** | Promoted the exploratory "ontology derivation" idea to committed Phase 10: an optional `LLMProvider` abstraction proposes a richer target ontology (vertex-vs-edge, implicit relationships, embed-vs-link, naming) from the introspected schema, which flows through the **same** `validate_config` → mapper-review (`diff_mappings`) → loader path as Auto-Map. Design principles: human-in-the-loop (never auto-applied), schema-grounded (metadata not bulk rows), classification-aware (no egress of Phase-9 Restricted/PII columns), validated/hallucination-resistant, reproducible (temperature 0 + stored provenance), and optional/provider-agnostic (deterministic `generate_default_config` stays the default). **10a (June 2026):** `src/r2g/llm/` (provider seam + OpenAI REST provider + metadata-only/redacted/injection-hardened prompt builder + `proposal_to_mapping` hallucination gate), the `r2g ontology suggest` CLI, the `r2g-arango[llm]` extra, and a network-free fake-provider test suite. **10b (July 2026):** `POST /suggest-ontology` (read-only proposal + diff) and `POST /apply-ontology` (accepted-subset → editable draft, not persisted) on the UI server, plus a Studio "Suggest model (AI)" action (Actions + canvas menu + `m`) opening a floating review panel with per-item accept/reject that loads the draft into the mapper for Save. **10c (July 2026):** additional providers behind the same factory — Anthropic (Claude) and OpenAI-compatible/local endpoints (Ollama, vLLM, LM Studio, …) via `OpenAIProvider` + `base_url` with an optional key — plus opt-in, classification-filtered value sampling in the prompt builder (a bounded `sample_values` probe on the value samplers; Restricted/PII columns never sampled), threaded through the CLI (`--provider/--model/--api-key/--base-url/--sample`), API, and Studio dialog, and a `R2G_LLM_LIVE`-gated live smoke test. Implementation + test plan: `docs/internal/PLAN-llm-ontology-derivation.md`. |
 | **Denormalization & normal-form analysis (Phase 11) — Planned** | **June 2026** | Added Phase 11: a deterministic (no-LLM) analyzer (`src/r2g/denorm.py`) that detects source-side denormalization — embedded lookups (functional/transitive dependencies via bounded value sampling), repeating column groups, multi-valued columns, redundant reference data, and over-split 1:1 tables — and emits scored, evidence-backed findings with recommended graph remedies (extract vertex / embed array / split / merge). Reuses the `fk_inference.py` machinery (name heuristics + `create_value_sampler` bounded sampling + Suggest-FKs-style review card). Advisory by default (no silent rewrite), classification-aware (no sampling of Phase-9 Restricted/PII columns), and grounds the Phase 10 LLM proposal. Implementation + test plan drafted (`docs/internal/PLAN-denormalization-analysis.md`); no code yet. |
 | **Enforcement artifacts & re-sync (Phase 9c) — Implemented** | **June 2026** | Shipped the 9c "enable enforcement — emit, don't enforce" layer. `src/r2g/governance.py` emits a canonical `classification-manifest.json`, a `suggested-rbac.json` (per-clearance cumulative ArangoDB collection read-grants), a default-deny `policy.rego` OPA stub (collection level vs. principal clearance; no `opa` dependency), and an optional `tier-layout.json` recommendation — all keyed by target collection names, written under `<project>/governance/`. Surfaced via `r2g entitlements emit` (`--threshold`/`--out`/`--tier-layout`/`--no-rego`), `POST /api/projects/{name}/governance/emit`, and `emit_governance`/`tier_layout` on the load endpoint. `r2g catalog resync-classifications <source>` re-pulls classifications/owners/tier from the catalog the source was imported from (provenance now on `SourceConfig`: `catalog_name`/`catalog_asset_fqn`/`classifications_synced_at`) and re-merges onto the latest snapshot. Lane discipline preserved: r2g emits metadata + recommendations; the serving layer (ArangoDB RBAC / OPA / IdP) enforces. CDC/temporal carry of classification *changes* remains, folded into the temporal-mode work. |
 | **Entitlement report, gate & masking (Phase 9b) — Implemented** | **June 2026** | Shipped the 9b advise-and-gate layer end to end (backend + Studio UI). `src/r2g/governance.py` builds an entitlement report (every target property, its source-column lineage, mosaic-recomputed level, masked flag) and a default-exclude threshold gate that adds above-threshold *unmasked* source columns to `exclude_fields` for the run (overridable with `allow_sensitive`), plus a `governance/lineage.json` manifest recording each field's handling (loaded/excluded/masked). `src/r2g/masking.py` provides `hash`/`tokenize`/`redact`/`nullify` masking via the existing `FieldExpression` engine (AQL-delegated for hashes), sentinel-tagged so the gate treats masked fields as safe. Surfaced through `r2g entitlements report <project> [--threshold] [--json]`, `GET /api/projects/{name}/entitlements`, and the load gate on `POST /api/projects/{name}/load` (reports the excluded set; writes lineage). Lane discipline preserved: advise + emit, never enforce. UI (sensitivity lens + entitlement panel + one-click mask) still pending. 1288 tests passing, ruff + mypy clean. |
