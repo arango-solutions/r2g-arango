@@ -874,9 +874,7 @@ def create_app(
         """
         import datetime as _dt
 
-        from r2g.llm import create_llm_provider, proposal_to_mapping
-        from r2g.llm.base import OntologyRequest
-        from r2g.llm.prompt import build_schema_digest
+        from r2g.llm import proposal_to_mapping
         from r2g.mapping_diff import diff_mappings
 
         project = catalog.get_project(name)
@@ -889,6 +887,62 @@ def create_app(
             current = ConfigManager.load_config(project.mapping_config_path)
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to load mapping config: {e}")
+
+        engine_norm = (body.engine or "llm").strip().lower()
+        if engine_norm not in ("llm", "rsa"):
+            raise HTTPException(status_code=400, detail=f"Unknown engine '{body.engine}'")
+
+        if engine_norm == "rsa":
+            from r2g.rsa_ontology import propose_ontology_from_schema
+
+            resolved_key = _resolve_env_ref(body.api_key) if body.api_key else None
+            rsa_provider = body.provider if body.refine else None
+            try:
+                proposal, rsa_meta = propose_ontology_from_schema(
+                    snap.schema_data,
+                    provider=rsa_provider,
+                    model=body.model,
+                    api_key=resolved_key,
+                )
+            except ImportError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            except Exception as e:
+                raise HTTPException(
+                    status_code=502, detail=f"Ontology analysis failed: {_safe_detail(e)}"
+                )
+            new_config, notes = proposal_to_mapping(
+                proposal, snap.schema_data, source_schema=current.source_schema
+            )
+            plan = diff_mappings(current, new_config, snap.schema_data)
+            provenance = {
+                "engine": "relational-schema-analyzer",
+                "refined": bool(body.refine),
+                "provider": body.provider if body.refine else None,
+                "model": (body.model or "(provider default)") if body.refine else None,
+                "domain_hint": body.domain,
+                "table_count": len(snap.schema_data.tables),
+                "analyzer_confidence": rsa_meta.get("confidence"),
+                "detected_patterns": rsa_meta.get("detectedPatterns"),
+                "review_required": rsa_meta.get("reviewRequired"),
+                "physical_schema_fingerprint": rsa_meta.get("physicalSchemaFingerprint"),
+                "llm_refinement": rsa_meta.get("llm"),
+                "proposed_collections": len(proposal.collections),
+                "proposed_edges": len(proposal.edges),
+                "proposed_renames": len(proposal.renames),
+                "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+            }
+            return {
+                "project": name,
+                "proposal": proposal.model_dump(),
+                "mapping": new_config.model_dump(),
+                "diff": plan.model_dump(),
+                "notes": notes,
+                "provenance": provenance,
+            }
+
+        from r2g.llm import create_llm_provider
+        from r2g.llm.base import OntologyRequest
+        from r2g.llm.prompt import build_schema_digest
 
         samples: dict = {}
         grounding = ""
@@ -957,6 +1011,7 @@ def create_app(
         )
         plan = diff_mappings(current, new_config, snap.schema_data)
         provenance = {
+            "engine": "llm",
             "provider": body.provider,
             "model": body.model or "(provider default)",
             "domain_hint": body.domain,
@@ -1503,6 +1558,9 @@ class SuggestOntologyRequest(BaseModel):
     """Parameters for POST /api/projects/{name}/suggest-ontology (Phase 10b)."""
 
     domain: str = ""
+    # Derivation engine: "llm" (model-proposed) or "rsa" (deterministic conceptual
+    # model via relational-schema-analyzer, offline unless `refine` is set).
+    engine: str = "llm"
     provider: str = "openai"
     model: str | None = None
     # API key or $ENV_VAR reference; when omitted the provider reads it from the
@@ -1515,6 +1573,8 @@ class SuggestOntologyRequest(BaseModel):
     samples_per_column: int = 5
     # Opt-in deterministic denormalization findings (Phase 11) as advisory evidence.
     ground: bool = False
+    # With engine="rsa": additively LLM-refine the deterministic model using `provider`.
+    refine: bool = False
 
 
 class ApplyOntologyRequest(BaseModel):

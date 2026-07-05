@@ -4873,6 +4873,17 @@ function suggestOntology() {
         (<code>$OPENAI_API_KEY</code> / <code>$ANTHROPIC_API_KEY</code>; a local
         endpoint may need none).
       </p>
+      <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Engine</label>
+      <select id="onto-engine" style="width:100%;box-sizing:border-box;margin-bottom:8px">
+        <option value="llm">LLM (model proposes the ontology)</option>
+        <option value="rsa">Schema analyzer (deterministic, offline)</option>
+      </select>
+      <p style="color:var(--text-muted);margin:-2px 0 10px;font-size:11px">
+        The schema-analyzer engine derives a conceptual model deterministically from
+        structure alone (no rows, no network) via <code>relational-schema-analyzer</code>.
+        Tick <b>Refine</b> below to additively LLM-improve its names. Needs the
+        <code>[ontology]</code> extra.
+      </p>
       <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Domain hint (optional)</label>
       <input id="onto-domain" type="text" placeholder="e.g. e-commerce orders and customers"
              style="width:100%;box-sizing:border-box;margin-bottom:8px" />
@@ -4892,9 +4903,13 @@ function suggestOntology() {
         <input id="onto-sample" type="checkbox" style="width:auto;margin:0" />
         Sample a few example values from non-sensitive columns to ground the model
       </label>
-      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim)">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);margin-bottom:6px">
         <input id="onto-ground" type="checkbox" style="width:auto;margin:0" />
         Add deterministic denormalization findings as advisory evidence
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim)">
+        <input id="onto-refine" type="checkbox" style="width:auto;margin:0" />
+        Refine (schema-analyzer engine only): LLM-improve names using the provider above
       </label>
     `,
     status: null,
@@ -4909,11 +4924,13 @@ function suggestOntology() {
 async function runOntologySuggest() {
   if (!currentProject) return;
   const domain = (document.getElementById('onto-domain')?.value || '').trim();
+  const engine = (document.getElementById('onto-engine')?.value || 'llm').trim();
   const model = (document.getElementById('onto-model')?.value || '').trim();
   const provider = (document.getElementById('onto-provider')?.value || 'openai').trim();
   const baseUrl = (document.getElementById('onto-base-url')?.value || '').trim();
   const sample = !!document.getElementById('onto-sample')?.checked;
   const ground = !!document.getElementById('onto-ground')?.checked;
+  const refine = !!document.getElementById('onto-refine')?.checked;
   openFloatingCard({
     id: 'ontology',
     title: 'Suggesting model\u2026',
@@ -4922,11 +4939,12 @@ async function runOntologySuggest() {
     actions: [],
   });
   try {
-    const payload = { domain, provider };
+    const payload = { domain, engine, provider };
     if (model) payload.model = model;
     if (baseUrl) payload.base_url = baseUrl;
     if (sample) payload.sample = true;
     if (ground) payload.ground = true;
+    if (refine) payload.refine = true;
     const result = await apiFetch(`/api/projects/${encodeURIComponent(currentProject)}/suggest-ontology`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5022,10 +5040,14 @@ function renderOntologyProposal(result) {
       ${r.rationale ? `<div class="fk-suggest-evidence">${escHtml(r.rationale)}</div>` : ''}
     </li>`).join('');
 
+  const engineLabel = prov.engine === 'relational-schema-analyzer'
+    ? ('Schema analyzer' + (prov.refined ? ` + ${prov.provider}` : '')
+       + (prov.analyzer_confidence != null ? ` \u00b7 conf ${prov.analyzer_confidence}` : ''))
+    : (prov.model || 'AI');
   const bodyHtml = `
     <div class="fk-suggest-header">
       <span>${totalItems} suggestion${totalItems === 1 ? '' : 's'}</span>
-      <span class="hint">${escHtml(prov.model || 'AI')} \u00b7 ${changeCount} change${changeCount === 1 ? '' : 's'} vs current</span>
+      <span class="hint">${escHtml(engineLabel)} \u00b7 ${changeCount} change${changeCount === 1 ? '' : 's'} vs current</span>
     </div>
     <p class="hint" style="margin:0 0 6px">Uncheck anything you don\u2019t want. Applying loads an editable draft &#x2014; review in the mapper, then Save.</p>
     ${section('Relationships', edgeRows)}

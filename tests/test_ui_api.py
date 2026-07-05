@@ -1177,6 +1177,76 @@ class TestSuggestOntologyApi:
         assert resp.json()["provenance"]["grounded"] is True
         assert fake.calls[0].grounding == "GROUNDING: customer_id -> customer.id"
 
+    def test_suggest_rsa_engine_uses_analyzer(
+        self, client, tmp_path, catalog_dir, monkeypatch
+    ):
+        self._setup(client, tmp_path, catalog_dir)
+        fake = self._patch(monkeypatch)  # must NOT be called for engine=rsa
+        from r2g.llm.base import OntologyProposal
+
+        proposal = OntologyProposal.model_validate(self._proposal())
+        captured: dict = {}
+
+        def _fake_propose(schema, *, provider=None, model=None, api_key=None):
+            captured["provider"] = provider
+            return proposal, {"confidence": 0.9, "detectedPatterns": ["join_table"]}
+
+        monkeypatch.setattr("r2g.rsa_ontology.propose_ontology_from_schema", _fake_propose)
+        resp = client.post("/api/projects/oproj/suggest-ontology", json={"engine": "rsa"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["provenance"]["engine"] == "relational-schema-analyzer"
+        assert data["provenance"]["refined"] is False
+        assert data["provenance"]["analyzer_confidence"] == 0.9
+        assert any(
+            e["edge_collection"] == "orders_to_customer" for e in data["mapping"]["edges"]
+        )
+        assert not fake.calls, "LLM must not be called for engine=rsa"
+        assert captured["provider"] is None
+
+    def test_suggest_rsa_refine_passes_provider(
+        self, client, tmp_path, catalog_dir, monkeypatch
+    ):
+        self._setup(client, tmp_path, catalog_dir)
+        self._patch(monkeypatch)
+        from r2g.llm.base import OntologyProposal
+
+        proposal = OntologyProposal.model_validate(self._proposal())
+        captured: dict = {}
+
+        def _fake_propose(schema, *, provider=None, model=None, api_key=None):
+            captured["provider"] = provider
+            return proposal, {"confidence": 0.8}
+
+        monkeypatch.setattr("r2g.rsa_ontology.propose_ontology_from_schema", _fake_propose)
+        resp = client.post(
+            "/api/projects/oproj/suggest-ontology",
+            json={"engine": "rsa", "refine": True, "provider": "anthropic"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert captured["provider"] == "anthropic"
+        assert resp.json()["provenance"]["refined"] is True
+
+    def test_suggest_unknown_engine_400(self, client, tmp_path, catalog_dir):
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.post(
+            "/api/projects/oproj/suggest-ontology", json={"engine": "bogus"}
+        )
+        assert resp.status_code == 400
+        assert "engine" in resp.text.lower()
+
+    def test_suggest_rsa_real_library_end_to_end(
+        self, client, tmp_path, catalog_dir
+    ):
+        pytest.importorskip("relational_schema_analyzer")
+        self._setup(client, tmp_path, catalog_dir)
+        resp = client.post("/api/projects/oproj/suggest-ontology", json={"engine": "rsa"})
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["provenance"]["engine"] == "relational-schema-analyzer"
+        cols = data["proposal"]["collections"]
+        assert any(c["target_collection"] == "Customer" for c in cols)
+
     def test_suggest_unknown_project_404(self, client, monkeypatch):
         self._patch(monkeypatch)
         assert client.post("/api/projects/nope/suggest-ontology", json={}).status_code == 404

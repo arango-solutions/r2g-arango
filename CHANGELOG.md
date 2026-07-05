@@ -7,6 +7,24 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Deterministic ontology engine via `relational-schema-analyzer` (Phase 10,
+  Stage 1)**: `r2g ontology suggest` gains an `--engine rsa` option (and the UI a
+  matching **Engine** selector) that derives a conceptual model —
+  semantic (PascalCase) collection names, join-table detection, foreign-key
+  relationships, and provenance (confidence, detected patterns, fingerprint,
+  review flags) — **deterministically and offline** (no rows, no network) using
+  the shared [`relational-schema-analyzer`](https://github.com/ArthurKeen/relational-schema-analyzer)
+  library (the introspection core originally extracted from r2g). The analyzer's
+  tool-contract bundle is converted into an `OntologyProposal` and flows through
+  the same validated `proposal_to_mapping` "hallucination gate" as the LLM path,
+  so the resulting `MappingConfig` is always schema-valid and loadable. Pass
+  `--refine` (UI: **Refine**) to additively LLM-improve the deterministic model.
+  Install with the new `r2g-arango[ontology]` extra. Many-to-many join tables are
+  surfaced as advisory review notes (loaded as a vertex + FK edges), consistent
+  with embed hints.
+
 ## [0.2.0] — 2026-07-04
 
 First tagged release. Everything below the 0.1.0 pre-release baseline: temporal

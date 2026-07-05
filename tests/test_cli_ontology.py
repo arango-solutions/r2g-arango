@@ -229,3 +229,86 @@ class TestOntologySuggest:
         assert "e.g. 10, 11" in digest
         # ...but the redacted PII column is never sampled even if the DB returns values.
         assert "a@x.com" not in digest
+
+
+class TestOntologySuggestRsaEngine:
+    """`--engine rsa`: deterministic conceptual model via relational-schema-analyzer."""
+
+    def test_rsa_engine_uses_analyzer_not_llm(self, project, monkeypatch):
+        name, _ = project
+        # If the RSA path accidentally fell through to the LLM path this fake would
+        # be hit; assert it never is.
+        fake = _patch_provider(monkeypatch, _proposal())
+
+        captured: dict = {}
+
+        def _fake_propose(schema, *, provider=None, model=None, api_key=None):
+            captured["provider"] = provider
+            return _proposal(), {"confidence": 0.9, "detectedPatterns": ["join_table"]}
+
+        monkeypatch.setattr(
+            "r2g.rsa_ontology.propose_ontology_from_schema", _fake_propose
+        )
+        result = runner.invoke(app, ["ontology", "suggest", name, "--engine", "rsa"])
+        assert result.exit_code == 0, result.output
+        assert "orders_to_customer" in result.output
+        assert not fake.calls, "LLM provider must not be called for --engine rsa"
+        # Deterministic by default: no provider is passed to the analyzer.
+        assert captured["provider"] is None
+
+    def test_rsa_refine_passes_provider(self, project, monkeypatch):
+        name, _ = project
+        _patch_provider(monkeypatch, _proposal())
+        captured: dict = {}
+
+        def _fake_propose(schema, *, provider=None, model=None, api_key=None):
+            captured["provider"] = provider
+            return _proposal(), {"confidence": 0.8}
+
+        monkeypatch.setattr(
+            "r2g.rsa_ontology.propose_ontology_from_schema", _fake_propose
+        )
+        result = runner.invoke(
+            app,
+            ["ontology", "suggest", name, "--engine", "rsa", "--refine", "--provider", "anthropic"],
+        )
+        assert result.exit_code == 0, result.output
+        assert captured["provider"] == "anthropic"
+
+    def test_rsa_engine_json_provenance(self, project, monkeypatch):
+        name, _ = project
+
+        def _fake_propose(schema, *, provider=None, model=None, api_key=None):
+            return _proposal(), {"confidence": 0.9, "detectedPatterns": ["join_table"]}
+
+        monkeypatch.setattr(
+            "r2g.rsa_ontology.propose_ontology_from_schema", _fake_propose
+        )
+        result = runner.invoke(
+            app, ["ontology", "suggest", name, "--engine", "rsa", "--json"]
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["provenance"]["engine"] == "relational-schema-analyzer"
+        assert payload["provenance"]["refined"] is False
+        assert payload["provenance"]["analyzer_confidence"] == 0.9
+
+    def test_unknown_engine_exits_1(self, project):
+        name, _ = project
+        result = runner.invoke(app, ["ontology", "suggest", name, "--engine", "bogus"])
+        assert result.exit_code == 1
+        assert "engine" in result.output.lower()
+
+    def test_rsa_engine_real_library_end_to_end(self, project):
+        """Exercise the real analyzer (skips cleanly when RSA isn't installed)."""
+        pytest.importorskip("relational_schema_analyzer")
+        name, _ = project
+        result = runner.invoke(
+            app, ["ontology", "suggest", name, "--engine", "rsa", "--json"]
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["provenance"]["engine"] == "relational-schema-analyzer"
+        # customer -> Customer semantic rename is a deterministic collection hint.
+        collections = payload["proposal"]["collections"]
+        assert any(c["target_collection"] == "Customer" for c in collections)

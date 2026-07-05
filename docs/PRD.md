@@ -7,7 +7,7 @@
 | **Product name** | R2G-ETL Pipeline (Relational to Graph -- Extract, Transform, Load) |
 | **Version** | 0.1.0 (experimental) |
 | **Date** | Originally drafted December 2025, consolidated April 2026 |
-| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented and end-to-end validated against live ArangoDB; Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading; 9a + 9b + 9c implemented), Phase 10 (LLM-assisted ontology derivation; 10a + 10b + 10c implemented), Phase 11 (denormalization & normal-form analysis; 11a–11c implemented), and Phase 7 are planned or exploratory |
+| **Status** | Phases 1--4 implemented and hardened; Phase 5 (Temporal graph mode) implemented and end-to-end validated against live ArangoDB; Phase 5b (Visual Mapper), Phase 5c (Expression / Graph-of-Graphs UI), Phase 5e (UI Architecture Upgrade), Phase 5f (Naming conventions & rename change-management), and Phase 5g (Post-demo UX refinements) implemented; Phase 6 (Snowflake) done; MySQL/MariaDB and SQL Server sources added; Phase 5d (ArangoDB-backed catalog), Phase 8 (external data catalog integration; 8a–8b implemented), Phase 9 (classification propagation & entitlement-aware loading; 9a + 9b + 9c implemented), Phase 10 (ontology derivation; 10a + 10b + 10c + the deterministic `relational-schema-analyzer` engine, Stage 1, implemented), Phase 11 (denormalization & normal-form analysis; 11a–11c implemented), and Phase 7 are planned or exploratory |
 | **Target users** | Database architects, data engineers, and developers evaluating relational-to-graph migration with ArangoDB |
 
 ---
@@ -752,7 +752,7 @@ thread**: column-level classification capture → a carrier through
 
 ---
 
-### Phase 10: LLM-assisted ontology derivation -- 10a + 10b + 10c implemented
+### Phase 10: Ontology derivation -- 10a + 10b + 10c + RSA engine (Stage 1) implemented
 
 > **The LLM proposes; the deterministic pipeline disposes.** Today a target
 > graph is derived mechanically by `ConfigManager.generate_default_config`
@@ -765,6 +765,27 @@ thread**: column-level classification capture → a carrier through
 > output is a candidate `MappingConfig` that flows through the **same**
 > `validate_config` → mapper review → loader path as every other mapping. The
 > deterministic Auto-Map remains the default and the safety net.
+
+**Deterministic engine via `relational-schema-analyzer` (Stage 1, implemented).**
+Alongside the LLM engine, `r2g ontology suggest --engine rsa` (UI: **Engine**
+selector) derives a conceptual model **deterministically and offline** using the
+shared [`relational-schema-analyzer`](https://github.com/ArthurKeen/relational-schema-analyzer)
+library — the introspection core that was extracted *from* r2g plus a
+conceptual/OWL layer. RSA's `PhysicalSchema`/`Table`/`Column`/`ForeignKey` are a
+field-compatible superset of r2g's `Schema`, so an r2g snapshot round-trips into
+the analyzer verbatim. Its tool-contract bundle
+(`{conceptualSchema, physicalMapping, metadata}`) is converted (in
+`src/r2g/rsa_ontology.py`) into an `OntologyProposal` — semantic (PascalCase)
+collection names, authoritative join-table detection, foreign-key relationships,
+and provenance (confidence, detected patterns, fingerprint, review flags) — and
+flows through the **same** `proposal_to_mapping` hallucination gate as the LLM
+path, guaranteeing a schema-valid, loadable `MappingConfig`. It needs no rows and
+no network by default; `--refine` additively LLM-improves the deterministic
+model. Many-to-many join tables are surfaced as advisory review notes (loaded as a
+vertex + FK edges), consistent with embed hints. Installed via the
+`r2g-arango[ontology]` extra. **Stage 2** (dependency reversal: r2g importing
+RSA's introspection modules and deleting the duplicated code, per RSA's own
+Phase 5 plan) remains a follow-up.
 
 **Motivation.** `generate_default_config` is correct but naive: it mirrors the
 relational structure 1:1 and cannot recognise that, say, an `order_items` table

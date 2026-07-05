@@ -2941,6 +2941,14 @@ def ontology_suggest(
     domain: str = typer.Option(
         "", "--domain", help="Optional domain hint to ground the proposal"
     ),
+    engine: str = typer.Option(
+        "llm",
+        "--engine",
+        help=(
+            "Derivation engine: 'llm' (model-proposed) or 'rsa' "
+            "(deterministic conceptual model via relational-schema-analyzer, offline by default)"
+        ),
+    ),
     provider: str = typer.Option(
         "openai",
         "--provider",
@@ -2970,23 +2978,33 @@ def ontology_suggest(
         "--ground",
         help="Add deterministic denormalization findings (Phase 11) as advisory evidence for the model",
     ),
+    refine: bool = typer.Option(
+        False,
+        "--refine",
+        help="With --engine rsa: additively LLM-refine the deterministic model using --provider (optional)",
+    ),
     apply: bool = typer.Option(False, "--apply", help="Write the proposed mapping to the project"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when applying"),
     as_json: bool = typer.Option(False, "--json", help="Emit proposal, diff and provenance as JSON"),
 ) -> None:
-    """Propose a richer target ontology for a project using an LLM (Phase 10).
+    """Propose a richer target ontology for a project (Phase 10).
 
-    The model only *proposes*: its structured output is converted into a
-    candidate ``MappingConfig``, validated and repaired against the real schema
+    Two engines are available:
+
+    - ``--engine llm`` (default): a model *proposes* an ontology. Metadata-only —
+      no row data is sent; Phase-9 Restricted columns are redacted.
+    - ``--engine rsa``: the shared ``relational-schema-analyzer`` derives a
+      conceptual model **deterministically and offline** (no network by default);
+      add ``--refine`` to additively LLM-refine it.
+
+    Either way the output is only a *proposal*: it is converted into a candidate
+    ``MappingConfig``, validated and repaired against the real schema
     (hallucinated tables/columns are dropped and reported), and shown as a diff
     against the current mapping. Nothing is saved unless you pass ``--apply``.
-    Metadata-only — no row data is sent; Phase-9 Restricted columns are redacted.
     """
     import datetime as _dt
 
-    from r2g.llm import create_llm_provider, proposal_to_mapping
-    from r2g.llm.base import OntologyRequest
-    from r2g.llm.prompt import build_schema_digest
+    from r2g.llm import proposal_to_mapping
     from r2g.mapping_diff import diff_mappings
 
     mgr = _get_catalog()
@@ -3010,90 +3028,142 @@ def ontology_suggest(
         console.print(f"[red]Failed to load mapping config:[/red] {e}")
         raise typer.Exit(code=1)
 
-    samples: dict = {}
-    sampled_columns = 0
-    grounding = ""
-    if sample or ground:
-        from r2g.llm.grounding import build_grounding
-        from r2g.llm.sampling import build_sampler_for_source, collect_samples
-
-        source = mgr.get_source(proj.source_name)
-        sampler = (
-            build_sampler_for_source(source, pg_schema=snap.pg_schema)
-            if source is not None
-            else None
-        )
-        if sample and sampler is None and not as_json:
-            console.print(
-                "[yellow]Value sampling unavailable for this source; "
-                "proceeding metadata-only.[/yellow]"
-            )
-        try:
-            if sample and sampler is not None:
-                samples = collect_samples(
-                    sampler, schema, per_column=max(1, samples_per_column)
-                )
-                sampled_columns = sum(len(cols) for cols in samples.values())
-            if ground:
-                grounding = build_grounding(schema, sampler=sampler)
-        finally:
-            if sampler is not None:
-                close = getattr(sampler, "close", None)
-                if callable(close):
-                    close()
-
-    try:
-        digest = build_schema_digest(
-            schema,
-            domain_hint=domain,
-            include_samples=bool(samples),
-            samples=samples,
-            samples_per_column=max(1, samples_per_column),
-        )
-    except ValueError as e:
-        console.print(f"[red]{e}[/red]")
+    engine_norm = engine.strip().lower()
+    if engine_norm not in ("llm", "rsa"):
+        console.print(f"[red]Unknown --engine '{engine}'. Expected 'llm' or 'rsa'.[/red]")
         raise typer.Exit(code=1)
 
     resolved_key = _resolve_env_ref(api_key) if api_key else None
-    params = {"base_url": base_url} if base_url else None
-    try:
-        llm = create_llm_provider(provider, model=model, api_key=resolved_key, params=params)
-    except (ValueError, ImportError) as e:
-        console.print(f"[red]{e}[/red]")
-        raise typer.Exit(code=1)
 
-    request = OntologyRequest(
-        schema_digest=digest,
-        domain_hint=domain,
-        grounding=grounding,
-        table_count=len(schema.tables),
-    )
-    if not as_json:
-        console.print(f"[dim]Requesting ontology proposal from {provider}…[/dim]")
-    try:
-        proposal = llm.propose_ontology(request)
-    except Exception as e:
-        console.print(f"[red]LLM proposal failed:[/red] {e}")
-        raise typer.Exit(code=1)
+    if engine_norm == "rsa":
+        from r2g.rsa_ontology import propose_ontology_from_schema
+
+        rsa_provider = provider if refine else None
+        if not as_json:
+            mode = f"refining with {provider}" if refine else "deterministic, offline"
+            console.print(
+                f"[dim]Deriving ontology via relational-schema-analyzer ({mode})…[/dim]"
+            )
+        try:
+            proposal, rsa_meta = propose_ontology_from_schema(
+                schema, provider=rsa_provider, model=model, api_key=resolved_key
+            )
+        except ImportError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+        except Exception as e:  # noqa: BLE001 - surface analyzer failures cleanly
+            console.print(f"[red]Ontology analysis failed:[/red] {e}")
+            raise typer.Exit(code=1)
+
+        llm_info = rsa_meta.get("llm") if isinstance(rsa_meta, dict) else None
+        provenance = {
+            "engine": "relational-schema-analyzer",
+            "refined": bool(refine),
+            "provider": provider if refine else None,
+            "model": (model or "(provider default)") if refine else None,
+            "domain_hint": domain,
+            "table_count": len(schema.tables),
+            "analyzer_confidence": rsa_meta.get("confidence") if isinstance(rsa_meta, dict) else None,
+            "detected_patterns": rsa_meta.get("detectedPatterns") if isinstance(rsa_meta, dict) else None,
+            "review_required": rsa_meta.get("reviewRequired") if isinstance(rsa_meta, dict) else None,
+            "physical_schema_fingerprint": (
+                rsa_meta.get("physicalSchemaFingerprint") if isinstance(rsa_meta, dict) else None
+            ),
+            "llm_refinement": llm_info,
+            "proposed_collections": len(proposal.collections),
+            "proposed_edges": len(proposal.edges),
+            "proposed_renames": len(proposal.renames),
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+    else:
+        from r2g.llm import create_llm_provider
+        from r2g.llm.base import OntologyRequest
+        from r2g.llm.prompt import build_schema_digest
+
+        samples: dict = {}
+        sampled_columns = 0
+        grounding = ""
+        if sample or ground:
+            from r2g.llm.grounding import build_grounding
+            from r2g.llm.sampling import build_sampler_for_source, collect_samples
+
+            source = mgr.get_source(proj.source_name)
+            sampler = (
+                build_sampler_for_source(source, pg_schema=snap.pg_schema)
+                if source is not None
+                else None
+            )
+            if sample and sampler is None and not as_json:
+                console.print(
+                    "[yellow]Value sampling unavailable for this source; "
+                    "proceeding metadata-only.[/yellow]"
+                )
+            try:
+                if sample and sampler is not None:
+                    samples = collect_samples(
+                        sampler, schema, per_column=max(1, samples_per_column)
+                    )
+                    sampled_columns = sum(len(cols) for cols in samples.values())
+                if ground:
+                    grounding = build_grounding(schema, sampler=sampler)
+            finally:
+                if sampler is not None:
+                    close = getattr(sampler, "close", None)
+                    if callable(close):
+                        close()
+
+        try:
+            digest = build_schema_digest(
+                schema,
+                domain_hint=domain,
+                include_samples=bool(samples),
+                samples=samples,
+                samples_per_column=max(1, samples_per_column),
+            )
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+
+        params = {"base_url": base_url} if base_url else None
+        try:
+            llm = create_llm_provider(provider, model=model, api_key=resolved_key, params=params)
+        except (ValueError, ImportError) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+
+        request = OntologyRequest(
+            schema_digest=digest,
+            domain_hint=domain,
+            grounding=grounding,
+            table_count=len(schema.tables),
+        )
+        if not as_json:
+            console.print(f"[dim]Requesting ontology proposal from {provider}…[/dim]")
+        try:
+            proposal = llm.propose_ontology(request)
+        except Exception as e:
+            console.print(f"[red]LLM proposal failed:[/red] {e}")
+            raise typer.Exit(code=1)
+
+        provenance = {
+            "engine": "llm",
+            "provider": provider,
+            "model": model or "(provider default)",
+            "domain_hint": domain,
+            "table_count": len(schema.tables),
+            "sampled": bool(samples),
+            "sampled_columns": sampled_columns,
+            "grounded": bool(grounding),
+            "proposed_collections": len(proposal.collections),
+            "proposed_edges": len(proposal.edges),
+            "proposed_renames": len(proposal.renames),
+            "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
 
     new_config, notes = proposal_to_mapping(
         proposal, schema, source_schema=current.source_schema
     )
     plan = diff_mappings(current, new_config, schema)
-
-    provenance = {
-        "provider": provider,
-        "model": model or "(provider default)",
-        "domain_hint": domain,
-        "table_count": len(schema.tables),
-        "sampled": bool(samples),
-        "sampled_columns": sampled_columns,
-        "grounded": bool(grounding),
-        "proposed_collections": len(proposal.collections),
-        "proposed_edges": len(proposal.edges),
-        "proposed_renames": len(proposal.renames),
-        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
-    }
 
     if as_json:
         console.print_json(
@@ -3142,10 +3212,19 @@ def ontology_suggest(
 
 def _print_ontology_proposal(proposal, notes, plan, provenance) -> None:
     """Render an ontology proposal, validation notes, and the resulting diff."""
-    console.print(
-        f"[bold]Ontology proposal[/bold] [dim]({provenance['provider']} / "
-        f"{provenance['model']})[/dim]"
-    )
+    if provenance.get("engine") == "relational-schema-analyzer":
+        conf = provenance.get("analyzer_confidence")
+        source = "relational-schema-analyzer"
+        if provenance.get("refined"):
+            source += f" + {provenance.get('provider')} refinement"
+        if conf is not None:
+            source += f", confidence {conf}"
+        console.print(f"[bold]Ontology proposal[/bold] [dim]({source})[/dim]")
+    else:
+        console.print(
+            f"[bold]Ontology proposal[/bold] [dim]({provenance['provider']} / "
+            f"{provenance['model']})[/dim]"
+        )
     console.print(
         f"[dim]{provenance['proposed_collections']} collection hint(s), "
         f"{provenance['proposed_edges']} relationship(s), "
