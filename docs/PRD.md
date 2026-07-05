@@ -794,9 +794,12 @@ imported from RSA (r2g keeps thin subclasses for `to_edge_definition` and
 re-exported from RSA. RSA is a **core dependency**. The introspection connectors and
 bulk-read sessions remain local because RSA's have diverged (enum sampling,
 provenance, `ordinal`/`is_unique`) and drive r2g's data-migration path, and the
-connector sets differ (r2g has Arango/Kafka, RSA has DuckDB/Databricks); a live-DB
-introspection parity audit (`tests/integration/test_rsa_introspection_parity.py`)
-is available if that reuse is ever revisited. Full history and rationale are in
+connector sets differ (r2g has Arango/Kafka, RSA has DuckDB/Databricks). A live-DB
+introspection parity audit (`tests/integration/test_rsa_introspection_parity.py`,
+run 2026-07-05) confirms RSA's introspection is byte-identical to r2g's once
+normalized to r2g's `Schema` shape for the tested Postgres/MySQL/SQL-Server schemas,
+so reuse remains a wrapper-plus-parity-corpus effort rather than a semantic
+reconciliation. Full history and rationale are in
 [`docs/internal/PLAN-rsa-dependency-reversal.md`](internal/PLAN-rsa-dependency-reversal.md)
 and [`docs/internal/DESIGN-rsa-compat-layer.md`](internal/DESIGN-rsa-compat-layer.md).
 

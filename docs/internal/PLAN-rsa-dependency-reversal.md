@@ -188,11 +188,14 @@ dependency for ~140 LOC.
     connectors remain deferred:** RSA's `postgres`/`mysql`/`mssql`/`snowflake`/`csv`
     connectors have diverged 100–160 lines each (enum sampling, `SourceProvenance`,
     `ordinal`/`is_unique`, duckdb/databricks vs r2g's kafka) and return RSA-typed
-    objects with enrichment fields that r2g's serializers drop — so a swap is **not
-    byte-stable** and would change introspected output. It needs a dedicated effort:
-    wrap RSA's introspectors, re-type results to r2g's `Schema`/`Table`/`Column`
-    subclasses, re-apply the Phase-9 classification merge, and validate parity
-    against live Postgres/MySQL/SQL-Server (integration-gated).
+    objects with enrichment fields that r2g's serializers drop. A swap therefore
+    can't be a plain drop-in: it needs a dedicated effort to wrap RSA's introspectors,
+    re-type results to r2g's `Schema`/`Table`/`Column` subclasses, re-apply the Phase-9
+    classification merge, and validate parity against live Postgres/MySQL/SQL-Server
+    (integration-gated). Note: the live-DB audit below shows that, once re-typed into
+    r2g's `Schema` shape, RSA's output is currently byte-identical to r2g's for the
+    tested schemas — so the enrichment drop is the *only* observed difference; the
+    remaining work is the wrapper + a broader parity corpus, not a semantic reconciliation.
 
     **Descope decision (Stage 2 close-out):** the introspection connectors + bulk-read
     sessions stay in r2g by design. What *was* provably safe to share has been shared:
@@ -204,6 +207,27 @@ dependency for ~140 LOC.
     (with `kafka`) and `create_source_connector`. An integration-marked parity audit
     (`tests/integration/test_rsa_introspection_parity.py`) can quantify the introspection
     divergence against live DBs if reuse is ever revisited.
+
+    **Live-DB parity audit (2026-07-05).** The audit was run against the docker-compose
+    stack (PostgreSQL `northwind`, MySQL `shop`, SQL Server `shop`). For every dialect,
+    RSA's introspection output — re-validated into r2g's `Schema` shape — is **byte-identical
+    to r2g's** (structural *and* per-column `data_type`/`is_nullable`/`is_primary_key` and
+    declared foreign keys):
+
+    | Dialect | Source DB | Tables | Columns | FKs | `r2g == RSA` (r2g-shape) |
+    |---|---|---|---|---|---|
+    | PostgreSQL | northwind | 14 | 92 | 13 | identical |
+    | MySQL | shop | 4 | 13 | 3 | identical |
+    | SQL Server | shop | 4 | 13 | 3 | identical |
+
+    So the 100–160 line code divergence manifests **only** as RSA enrichment fields
+    (`SourceProvenance`, `ordinal`, `is_unique`, …) that r2g's serializers drop; the
+    r2g-relevant output does not differ for these schemas. This is encouraging evidence
+    that a future introspection reuse *could* be byte-stable — but it is **not** a
+    guarantee across all schemas/edge cases (enum sampling, computed columns, exotic
+    types, and the still-local `kafka`/`csv`/`snowflake` paths remain untested here), so
+    the descope stands: reuse would still need the re-type + classification-merge wrapper
+    plus a broader parity corpus. The audit test is retained to re-run that check on demand.
   - **Step 6** (delete remaining duplicates + flip to a normal dependency): resolved by
     the descope — RSA became a core dependency in step 2, and the safe session/base
     shares above are the only connector-layer de-dup. The introspection connectors are

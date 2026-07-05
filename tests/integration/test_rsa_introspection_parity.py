@@ -37,7 +37,6 @@ from r2g.connectors.base import create_source_connector
 from r2g.types import Schema
 
 from .conftest import (
-    MSSQL_CONN,
     MYSQL_CONN,
     PG_CONN,
     _mssql_available,
@@ -123,7 +122,10 @@ def test_mysql_introspection_parity(record_property):
 
 
 @requires_mssql_only
-def test_mssql_introspection_parity(record_property):
-    r2g_schema = create_source_connector("sqlserver", MSSQL_CONN).get_schema()
-    rsa_schema = rsa_create_source_connector("sqlserver", MSSQL_CONN).get_schema()
+def test_mssql_introspection_parity(sqlserver_conn_string, record_property):
+    # The fixture creates the target DB and loads docker/mssql_demo/schema.sql
+    # (SQL Server has no init-script hook), then yields the DSN.
+    dsn = sqlserver_conn_string
+    r2g_schema = create_source_connector("sqlserver", dsn).get_schema()
+    rsa_schema = rsa_create_source_connector("sqlserver", dsn).get_schema()
     _compare("sqlserver", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
