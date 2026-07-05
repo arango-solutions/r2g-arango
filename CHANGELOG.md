@@ -7,6 +7,8 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-05
+
 ### Added
 
 - **Deterministic ontology engine via `relational-schema-analyzer` (Phase 10,
