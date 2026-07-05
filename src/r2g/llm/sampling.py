@@ -62,13 +62,16 @@ def collect_samples(
     return out
 
 
-def build_sampler_for_source(source: Any) -> Optional[ValueSampleSource]:
+def build_sampler_for_source(
+    source: Any, *, pg_schema: str = "public", limit: int = 10_000
+) -> Optional[ValueSampleSource]:
     """Best-effort value sampler for a registered source, or ``None``.
 
     Wraps :func:`r2g.fk_inference.create_value_sampler`, resolving the source's
-    type / connection string / params. Returns ``None`` (rather than raising) if
-    the source type is unsupported or the optional driver is missing, so callers
-    can degrade to a metadata-only prompt.
+    type / connection string / params. ``pg_schema`` should be the snapshot's
+    namespace so queries target the right schema. Returns ``None`` (rather than
+    raising) if the source type is unsupported or the optional driver is missing,
+    so callers can degrade to a metadata-only prompt.
     """
     from r2g.fk_inference import create_value_sampler
 
@@ -76,7 +79,9 @@ def build_sampler_for_source(source: Any) -> Optional[ValueSampleSource]:
         return create_value_sampler(
             getattr(source, "source_type", None),
             getattr(source, "connection_string", ""),
+            pg_schema=pg_schema,
             source_params=getattr(source, "source_params", None) or {},
+            limit=limit,
         )
     except Exception:  # noqa: BLE001 - missing driver / bad DSN → metadata-only
         return None

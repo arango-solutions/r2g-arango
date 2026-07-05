@@ -125,6 +125,17 @@ class TestUserPrompt:
         prompt = build_user_prompt("DIGEST")
         assert "Domain context" not in prompt
 
+    def test_grounding_included_and_neutralized(self):
+        prompt = build_user_prompt("DIGEST", grounding="finding: ```danger``` zip -> city")
+        assert "Deterministic analysis" in prompt
+        assert "zip -> city" in prompt
+        # Fences inside grounding text cannot break out of the data block.
+        assert "```danger```" not in prompt
+
+    def test_no_grounding_section_when_empty(self):
+        prompt = build_user_prompt("DIGEST")
+        assert "Deterministic analysis" not in prompt
+
     def test_system_prompt_is_fixed_and_json(self):
         assert "JSON" in SYSTEM_PROMPT
         assert "DATA" in SYSTEM_PROMPT

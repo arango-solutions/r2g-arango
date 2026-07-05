@@ -2965,6 +2965,11 @@ def ontology_suggest(
     samples_per_column: int = typer.Option(
         5, "--samples-per-column", help="Max example values per column when --sample is set"
     ),
+    ground: bool = typer.Option(
+        False,
+        "--ground",
+        help="Add deterministic denormalization findings (Phase 11) as advisory evidence for the model",
+    ),
     apply: bool = typer.Option(False, "--apply", help="Write the proposed mapping to the project"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when applying"),
     as_json: bool = typer.Option(False, "--json", help="Emit proposal, diff and provenance as JSON"),
@@ -3007,24 +3012,32 @@ def ontology_suggest(
 
     samples: dict = {}
     sampled_columns = 0
-    if sample:
+    grounding = ""
+    if sample or ground:
+        from r2g.llm.grounding import build_grounding
         from r2g.llm.sampling import build_sampler_for_source, collect_samples
 
         source = mgr.get_source(proj.source_name)
-        sampler = build_sampler_for_source(source) if source is not None else None
-        if sampler is None:
-            if not as_json:
-                console.print(
-                    "[yellow]Value sampling unavailable for this source; "
-                    "proceeding metadata-only.[/yellow]"
-                )
-        else:
-            try:
+        sampler = (
+            build_sampler_for_source(source, pg_schema=snap.pg_schema)
+            if source is not None
+            else None
+        )
+        if sample and sampler is None and not as_json:
+            console.print(
+                "[yellow]Value sampling unavailable for this source; "
+                "proceeding metadata-only.[/yellow]"
+            )
+        try:
+            if sample and sampler is not None:
                 samples = collect_samples(
                     sampler, schema, per_column=max(1, samples_per_column)
                 )
                 sampled_columns = sum(len(cols) for cols in samples.values())
-            finally:
+            if ground:
+                grounding = build_grounding(schema, sampler=sampler)
+        finally:
+            if sampler is not None:
                 close = getattr(sampler, "close", None)
                 if callable(close):
                     close()
@@ -3050,7 +3063,10 @@ def ontology_suggest(
         raise typer.Exit(code=1)
 
     request = OntologyRequest(
-        schema_digest=digest, domain_hint=domain, table_count=len(schema.tables)
+        schema_digest=digest,
+        domain_hint=domain,
+        grounding=grounding,
+        table_count=len(schema.tables),
     )
     if not as_json:
         console.print(f"[dim]Requesting ontology proposal from {provider}…[/dim]")
@@ -3072,6 +3088,7 @@ def ontology_suggest(
         "table_count": len(schema.tables),
         "sampled": bool(samples),
         "sampled_columns": sampled_columns,
+        "grounded": bool(grounding),
         "proposed_collections": len(proposal.collections),
         "proposed_edges": len(proposal.edges),
         "proposed_renames": len(proposal.renames),

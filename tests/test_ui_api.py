@@ -1163,6 +1163,20 @@ class TestSuggestOntologyApi:
         assert any(e["edge_collection"] == "orders_to_customer" for e in draft["edges"])
         assert draft["collections"]["customer"]["field_mappings"] == {}
 
+    def test_suggest_with_grounding_passes_evidence(
+        self, client, tmp_path, catalog_dir, monkeypatch
+    ):
+        self._setup(client, tmp_path, catalog_dir)
+        fake = self._patch(monkeypatch)
+        monkeypatch.setattr(
+            "r2g.llm.grounding.build_grounding",
+            lambda schema, **k: "GROUNDING: customer_id -> customer.id",
+        )
+        resp = client.post("/api/projects/oproj/suggest-ontology", json={"ground": True})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["provenance"]["grounded"] is True
+        assert fake.calls[0].grounding == "GROUNDING: customer_id -> customer.id"
+
     def test_suggest_unknown_project_404(self, client, monkeypatch):
         self._patch(monkeypatch)
         assert client.post("/api/projects/nope/suggest-ontology", json={}).status_code == 404

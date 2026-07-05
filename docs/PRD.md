@@ -865,6 +865,16 @@ have asked for exactly this "describe my domain, suggest the graph" capability.
   valid `MappingConfig`. New unit tests: `tests/test_llm_providers.py`,
   `tests/test_llm_sampling.py`, plus sampling cases in `tests/test_llm_prompt.py`
   and `tests/test_cli_ontology.py`.
+  **Deterministic grounding wired in (P11.10):** an opt-in `--ground` / `ground`
+  path (`r2g.llm.grounding.build_grounding`) runs the Phase 11 analyzer and feeds
+  its findings to the model as advisory evidence in a fence-neutralized prompt
+  block — structural detectors always run, FD detectors reuse the `--sample`
+  sampler when present, and the classification gate carries over (Restricted/PII
+  columns are never value-sampled while grounding). Threaded through CLI, the
+  `suggest-ontology` API, and the Studio dialog; provenance records `grounded`.
+  Tested in `tests/test_llm_grounding.py`. (Mechanical embed-vs-link application
+  remains advisory — the deterministic `MappingConfig` shape has no document-
+  embedding representation yet, so embed hints stay review notes.)
 
 #### Non-functional notes
 

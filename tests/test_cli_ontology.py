@@ -195,6 +195,17 @@ class TestOntologySuggest:
         assert result.exit_code == 1
         assert "Unsupported LLM provider" in result.output
 
+    def test_ground_flag_passes_denorm_evidence_to_provider(self, project, monkeypatch):
+        name, _ = project
+        fake = _patch_provider(monkeypatch, _proposal())
+        monkeypatch.setattr(
+            "r2g.llm.grounding.build_grounding",
+            lambda schema, **k: "GROUNDING: zip -> city, state",
+        )
+        result = runner.invoke(app, ["ontology", "suggest", name, "--ground"])
+        assert result.exit_code == 0, result.output
+        assert fake.calls[0].grounding == "GROUNDING: zip -> city, state"
+
     def test_sample_flag_grounds_non_sensitive_columns_only(self, project, monkeypatch):
         name, _ = project
         fake = _patch_provider(monkeypatch, _proposal())
@@ -209,7 +220,7 @@ class TestOntologySuggest:
                 pass
 
         monkeypatch.setattr(
-            "r2g.llm.sampling.build_sampler_for_source", lambda source: _FakeSampler()
+            "r2g.llm.sampling.build_sampler_for_source", lambda source, **k: _FakeSampler()
         )
         result = runner.invoke(app, ["ontology", "suggest", name, "--sample"])
         assert result.exit_code == 0, result.output

@@ -101,6 +101,9 @@ class OntologyRequest(BaseModel):
 
     schema_digest: str
     domain_hint: str = ""
+    # Optional deterministic grounding (Phase 11 denorm findings digest). Advisory
+    # evidence for the model; carries only column names + counts/ratios, no rows.
+    grounding: str = ""
     table_count: int = 0
     options: dict[str, Any] = Field(default_factory=dict)
 

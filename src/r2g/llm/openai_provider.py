@@ -88,7 +88,9 @@ class OpenAIProvider:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": build_user_prompt(request.schema_digest, request.domain_hint),
+                    "content": build_user_prompt(
+                        request.schema_digest, request.domain_hint, request.grounding
+                    ),
                 },
             ],
         }

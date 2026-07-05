@@ -187,14 +187,29 @@ def build_schema_digest(
     return digest
 
 
-def build_user_prompt(schema_digest: str, domain_hint: str = "") -> str:
-    """Assemble the user message: optional domain hint + fenced schema digest."""
+def build_user_prompt(schema_digest: str, domain_hint: str = "", grounding: str = "") -> str:
+    """Assemble the user message: optional domain hint + fenced schema digest.
+
+    ``grounding`` is an optional block of **deterministic** analysis (Phase 11
+    denormalization findings, via
+    :func:`r2g.denorm.summarize_findings_for_prompt`) that the model should treat
+    as advisory evidence — it carries only column names and counts/ratios, no raw
+    values. It is fence-neutralized like all other schema-derived text.
+    """
     parts: list[str] = []
     if domain_hint.strip():
         parts.append(f"Domain context (from the user): {_neutralize(domain_hint.strip())}")
         parts.append("")
     parts.append(schema_digest)
     parts.append("")
+    if grounding.strip():
+        parts.append(
+            "Deterministic analysis (advisory evidence, computed by r2g — not row "
+            "data). Weigh it, but only ever reference tables/columns from the "
+            "schema above:"
+        )
+        parts.append(f"{_FENCE}\n{_neutralize(grounding.strip())}\n{_FENCE_END}")
+        parts.append("")
     parts.append(
         "Propose the graph ontology as the JSON object described in the system "
         "prompt. Reference only tables and columns present above."

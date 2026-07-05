@@ -891,19 +891,28 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"Failed to load mapping config: {e}")
 
         samples: dict = {}
-        if body.sample:
+        grounding = ""
+        if body.sample or body.ground:
+            from r2g.llm.grounding import build_grounding
             from r2g.llm.sampling import build_sampler_for_source, collect_samples
 
             source = catalog.get_source(project.source_name)
-            sampler = build_sampler_for_source(source) if source is not None else None
-            if sampler is not None:
-                try:
+            sampler = (
+                build_sampler_for_source(source, pg_schema=snap.pg_schema)
+                if source is not None
+                else None
+            )
+            try:
+                if body.sample and sampler is not None:
                     samples = collect_samples(
                         sampler,
                         snap.schema_data,
                         per_column=max(1, body.samples_per_column),
                     )
-                finally:
+                if body.ground:
+                    grounding = build_grounding(snap.schema_data, sampler=sampler)
+            finally:
+                if sampler is not None:
                     close = getattr(sampler, "close", None)
                     if callable(close):
                         close()
@@ -929,7 +938,10 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(e))
 
         request = OntologyRequest(
-            schema_digest=digest, domain_hint=body.domain, table_count=len(snap.schema_data.tables)
+            schema_digest=digest,
+            domain_hint=body.domain,
+            grounding=grounding,
+            table_count=len(snap.schema_data.tables),
         )
         try:
             proposal = llm.propose_ontology(request)
@@ -951,6 +963,7 @@ def create_app(
             "table_count": len(snap.schema_data.tables),
             "sampled": bool(samples),
             "sampled_columns": sum(len(cols) for cols in samples.values()),
+            "grounded": bool(grounding),
             "proposed_collections": len(proposal.collections),
             "proposed_edges": len(proposal.edges),
             "proposed_renames": len(proposal.renames),
@@ -1500,6 +1513,8 @@ class SuggestOntologyRequest(BaseModel):
     # Opt-in bounded value sampling from non-sensitive columns to ground the model.
     sample: bool = False
     samples_per_column: int = 5
+    # Opt-in deterministic denormalization findings (Phase 11) as advisory evidence.
+    ground: bool = False
 
 
 class ApplyOntologyRequest(BaseModel):

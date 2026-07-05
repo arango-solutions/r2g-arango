@@ -73,7 +73,9 @@ class AnthropicProvider:
             "messages": [
                 {
                     "role": "user",
-                    "content": build_user_prompt(request.schema_digest, request.domain_hint),
+                    "content": build_user_prompt(
+                        request.schema_digest, request.domain_hint, request.grounding
+                    ),
                 },
             ],
         }

@@ -9,6 +9,22 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Deterministic grounding for ontology proposals (P11.10 → Phase 10)**: an
+  opt-in `--ground` flag (CLI), `ground` field (`suggest-ontology` API), and
+  "Add deterministic denormalization findings as advisory evidence" toggle
+  (Studio dialog) that runs the Phase 11 analyzer over the schema and hands its
+  findings to the model as advisory evidence, so a proposal is grounded in
+  deterministic analysis (e.g. "zip determines city, state — consider a Location
+  vertex") rather than name heuristics alone. New `r2g.llm.grounding.build_grounding`
+  wraps `analyze_denormalization` + `summarize_findings_for_prompt`; structural
+  detectors always run and functional-dependency detectors use the same value
+  sampler as `--sample` when available. The grounding block is fence-neutralized
+  in the prompt and carries only column names + counts/ratios (never raw values),
+  and the **classification gate carries over** — Restricted/PII columns are added
+  to the analyzer's `no_sample_columns` so they are never value-sampled while
+  grounding. Provenance records whether the proposal was grounded. Tested in
+  `tests/test_llm_grounding.py` plus CLI/API wiring cases.
+
 - **LLM ontology enrichment — providers & sampling (Phase 10c)**: broadens the
   Phase-10 seam. **Two new providers behind the same factory:** an Anthropic
   (Claude) provider (`src/r2g/llm/anthropic_provider.py`, Messages API; JSON

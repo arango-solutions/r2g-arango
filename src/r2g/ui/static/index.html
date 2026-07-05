@@ -4888,9 +4888,13 @@ function suggestOntology() {
       <label style="display:block;margin-bottom:6px;font-size:12px;color:var(--text-dim)">Base URL (openai-compatible / local only)</label>
       <input id="onto-base-url" type="text" placeholder="e.g. http://localhost:11434/v1"
              style="width:100%;box-sizing:border-box;margin-bottom:10px" />
-      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim)">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim);margin-bottom:6px">
         <input id="onto-sample" type="checkbox" style="width:auto;margin:0" />
         Sample a few example values from non-sensitive columns to ground the model
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-dim)">
+        <input id="onto-ground" type="checkbox" style="width:auto;margin:0" />
+        Add deterministic denormalization findings as advisory evidence
       </label>
     `,
     status: null,
@@ -4909,6 +4913,7 @@ async function runOntologySuggest() {
   const provider = (document.getElementById('onto-provider')?.value || 'openai').trim();
   const baseUrl = (document.getElementById('onto-base-url')?.value || '').trim();
   const sample = !!document.getElementById('onto-sample')?.checked;
+  const ground = !!document.getElementById('onto-ground')?.checked;
   openFloatingCard({
     id: 'ontology',
     title: 'Suggesting model\u2026',
@@ -4921,6 +4926,7 @@ async function runOntologySuggest() {
     if (model) payload.model = model;
     if (baseUrl) payload.base_url = baseUrl;
     if (sample) payload.sample = true;
+    if (ground) payload.ground = true;
     const result = await apiFetch(`/api/projects/${encodeURIComponent(currentProject)}/suggest-ontology`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
