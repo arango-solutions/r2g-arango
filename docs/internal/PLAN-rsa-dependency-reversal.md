@@ -173,5 +173,21 @@ dependency for ~140 LOC.
     change). The concrete value samplers (which carry r2g's `sample_values` and are
     coupled to r2g's connectors) stay in r2g and are folded into **step 5** with the
     connector reconciliation, where connector parity can be validated together.
-  - **Steps 5–6** (connector shims incl. sampler de-dup; delete duplicates + flip to
-    a normal dependency): pending — each independently shippable.
+  - **Step 5 (connector strategy — sampler de-dup):** DONE (samplers) — r2g's
+    `PostgresValueSampler`/`MySQLValueSampler`/`SQLServerValueSampler`/
+    `CsvValueSampler` now subclass RSA's samplers (inheriting the FK-overlap query
+    and the Phase-11 denorm probes) and add only r2g's `sample_values` probe,
+    removing ~700 duplicated lines. The shared connector helpers (URL parsers,
+    driver loaders, CSV path resolution) are byte-identical, so behavior is
+    unchanged (full non-integration suite + ruff + mypy green). **Introspection
+    connectors remain deferred:** RSA's `postgres`/`mysql`/`mssql`/`snowflake`/`csv`
+    connectors have diverged 100–160 lines each (enum sampling, `SourceProvenance`,
+    `ordinal`/`is_unique`, duckdb/databricks vs r2g's kafka) and return RSA-typed
+    objects with enrichment fields that r2g's serializers drop — so a swap is **not
+    byte-stable** and would change introspected output. It needs a dedicated effort:
+    wrap RSA's introspectors, re-type results to r2g's `Schema`/`Table`/`Column`
+    subclasses, re-apply the Phase-9 classification merge, and validate parity
+    against live Postgres/MySQL/SQL-Server (integration-gated).
+  - **Step 6** (delete remaining duplicates + flip to a normal dependency, shipping
+    re-export shims): pending — blocked on the introspection-connector reconciliation
+    above.

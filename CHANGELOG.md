@@ -31,6 +31,19 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the public API is unchanged. The concrete value samplers (which carry r2g's
   `sample_values` and are coupled to r2g's connectors) stay in r2g for now and are
   reconciled in step 5. No behavior change (verified by the FK-inference suite).
+- **FK/denorm value samplers share RSA's implementations (Stage 2, step 5 —
+  sampler de-dup).** `PostgresValueSampler`, `MySQLValueSampler`,
+  `SQLServerValueSampler`, and `CsvValueSampler` now subclass RSA's samplers,
+  inheriting the FK-overlap query and the Phase-11 denormalization probes
+  (`distinct_ratio`/`group_single_valued`/`delimiter_rate`) and adding only r2g's
+  `sample_values` probe (used by `r2g.llm.sampling`). This removes ~700 lines of
+  duplicated sampler code; the shared connector helpers (URL parsing, driver
+  loading, CSV path resolution) are byte-identical, so behavior is unchanged (full
+  suite green). The **introspection connectors** themselves remain in r2g: RSA's
+  have diverged (enum sampling, provenance, `ordinal`/`is_unique`, duckdb/databricks
+  vs r2g's kafka) and return RSA-typed objects, so swapping them is not byte-stable
+  without a re-typing + classification-merge + live-DB parity effort — tracked as
+  the remainder of steps 5–6.
 
 ### Added
 

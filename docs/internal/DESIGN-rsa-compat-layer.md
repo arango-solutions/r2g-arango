@@ -295,8 +295,17 @@ Land nothing until all are green (`pytest -m "not integration"`, `ruff`, `mypy`)
    FK-inference suite (52) + downstream denorm/CLI/UI/sampling suites green; `ruff`/
    `mypy` clean. Value samplers stay in r2g (they carry `sample_values` and depend on
    r2g connectors) and are folded into step 5.
-5. Then ADR steps 5–6 (connector shims + sampler de-dup; delete duplicates; flip the
-   dependency) as separate, independently-shippable PRs.
+5. ✅ **DONE (samplers).** Sampler de-dup (ADR step 5): r2g's four value samplers now
+   subclass RSA's (inheriting the FK-overlap query + Phase-11 denorm probes) and add
+   only `sample_values`, removing ~700 duplicated lines. The shared connector helpers
+   (URL parsers, driver loaders, `resolve_csv_table_path`) are byte-identical, so
+   behavior is unchanged (full suite + ruff + mypy green). The **introspection
+   connectors** stay in r2g: RSA's have diverged (enum sampling, `SourceProvenance`,
+   `ordinal`/`is_unique`, duckdb/databricks vs kafka) and emit RSA-typed objects with
+   enrichment fields r2g's serializers drop, so swapping them is not byte-stable
+   without a re-type + classification-merge + live-DB parity effort.
+6. Then ADR step 6 (reconcile the introspection connectors, then delete remaining
+   duplicates and flip the dependency) as separate, independently-shippable PRs.
 
 ## 11. Risks & rollback
 
