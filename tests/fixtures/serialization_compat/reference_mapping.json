@@ -1,0 +1,76 @@
+{
+  "source_schema": "commerce",
+  "collections": {
+    "users": {
+      "source_table": "users",
+      "target_collection": "User",
+      "collection_type": "document",
+      "is_join_table": false,
+      "field_mappings": {
+        "id": "user_id",
+        "email": "emailAddress"
+      },
+      "exclude_fields": [
+        "ssn"
+      ],
+      "include_fields": null,
+      "field_expressions": [
+        {
+          "target": "fullName",
+          "sources": [
+            "first_name",
+            "last_name"
+          ],
+          "expression": "CONCAT(first_name, ' ', last_name)",
+          "engine": "aql",
+          "description": "fan-in of name parts"
+        }
+      ]
+    },
+    "orders": {
+      "source_table": "orders",
+      "target_collection": "Order",
+      "collection_type": "document",
+      "is_join_table": false,
+      "field_mappings": {},
+      "exclude_fields": [],
+      "include_fields": [
+        "id",
+        "user_id",
+        "total"
+      ],
+      "field_expressions": []
+    }
+  },
+  "edges": [
+    {
+      "edge_collection": "placed",
+      "from_collection": "User",
+      "to_collection": "Order",
+      "from_field": "id",
+      "to_field": "user_id"
+    },
+    {
+      "edge_collection": "shipped_item",
+      "from_collection": "Shipment",
+      "to_collection": "OrderItem",
+      "from_fields": [
+        "order_id",
+        "product_id"
+      ],
+      "to_fields": [
+        "order_id",
+        "product_id"
+      ]
+    }
+  ],
+  "type_overrides": {
+    "total": "string"
+  },
+  "key_separator": "-",
+  "naming_convention": {
+    "collections": "pascal",
+    "properties": "camel",
+    "edges": "snake"
+  }
+}

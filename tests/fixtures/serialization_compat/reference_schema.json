@@ -1,0 +1,226 @@
+{
+  "tables": {
+    "users": {
+      "name": "users",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "email",
+          "data_type": "text",
+          "is_nullable": true,
+          "is_primary_key": false,
+          "classification": {
+            "tags": [
+              "PII.Sensitive"
+            ],
+            "tier": "Tier.Tier1",
+            "glossary_terms": [
+              "Customer.EmailAddress"
+            ],
+            "source": "openmetadata"
+          }
+        },
+        {
+          "name": "ssn",
+          "data_type": "text",
+          "is_nullable": true,
+          "is_primary_key": false,
+          "classification": {
+            "tags": [
+              "PII.Sensitive",
+              "PII.Direct"
+            ],
+            "tier": "Tier.Tier0",
+            "glossary_terms": [],
+            "source": "catalog"
+          }
+        },
+        {
+          "name": "created_at",
+          "data_type": "timestamp",
+          "is_nullable": true,
+          "is_primary_key": false,
+          "classification": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "is_partitioned": false,
+      "partition_of": null
+    },
+    "orders": {
+      "name": "orders",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "user_id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": false,
+          "classification": null
+        },
+        {
+          "name": "total",
+          "data_type": "numeric(10,2)",
+          "is_nullable": true,
+          "is_primary_key": false,
+          "classification": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [
+        {
+          "foreign_table": "users",
+          "column": "user_id",
+          "foreign_column": "id"
+        }
+      ],
+      "is_partitioned": false,
+      "partition_of": null
+    },
+    "order_items": {
+      "name": "order_items",
+      "columns": [
+        {
+          "name": "order_id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "product_id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "qty",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": false,
+          "classification": null
+        }
+      ],
+      "primary_key": [
+        "order_id",
+        "product_id"
+      ],
+      "foreign_keys": [],
+      "is_partitioned": false,
+      "partition_of": null
+    },
+    "shipments": {
+      "name": "shipments",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "order_id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": false,
+          "classification": null
+        },
+        {
+          "name": "product_id",
+          "data_type": "integer",
+          "is_nullable": false,
+          "is_primary_key": false,
+          "classification": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [
+        {
+          "foreign_table": "order_items",
+          "columns": [
+            "order_id",
+            "product_id"
+          ],
+          "foreign_columns": [
+            "order_id",
+            "product_id"
+          ],
+          "constraint_name": "fk_shipments_order_items"
+        }
+      ],
+      "is_partitioned": false,
+      "partition_of": null
+    },
+    "events": {
+      "name": "events",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "bigint",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "occurred_at",
+          "data_type": "timestamp",
+          "is_nullable": false,
+          "is_primary_key": false,
+          "classification": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "is_partitioned": true,
+      "partition_of": null
+    },
+    "events_2026": {
+      "name": "events_2026",
+      "columns": [
+        {
+          "name": "id",
+          "data_type": "bigint",
+          "is_nullable": false,
+          "is_primary_key": true,
+          "classification": null
+        },
+        {
+          "name": "occurred_at",
+          "data_type": "timestamp",
+          "is_nullable": false,
+          "is_primary_key": false,
+          "classification": null
+        }
+      ],
+      "primary_key": [
+        "id"
+      ],
+      "foreign_keys": [],
+      "is_partitioned": false,
+      "partition_of": "events"
+    }
+  }
+}
