@@ -286,9 +286,17 @@ Land nothing until all are green (`pytest -m "not integration"`, `ruff`, `mypy`)
    `analyzer.analyze(schema)`; RSA reads the shared physical fields and ignores
    r2g's `classification`. RSA adapter + ontology CLI/UI tests (108, incl. the real
    end-to-end golden bundle) green; `ruff`/`mypy` clean.
-4. Only then schedule ADR steps 4–6 (`fk_inference` adapter for
-   `to_edge_definition` + `sample_values` upstreaming; connector shims; delete
-   duplicates; flip the dependency) as separate, independently-shippable PRs.
+4. ✅ **DONE (engine).** Reconcile `fk_inference` (ADR step 4): `r2g.fk_inference`
+   imports the heuristic engine (`infer_foreign_keys`, `InferenceOptions`,
+   `InferredForeignKey`, sampler protocol) from RSA and keeps only a thin
+   `InferredForeignKey` subclass adding `to_edge_definition` (the ArangoDB analogue
+   of RSA's `to_foreign_key`) plus a wrapper re-wrapping RSA's results. Because r2g's
+   `Schema` is an RSA `PhysicalSchema` subclass it is passed straight through. The
+   FK-inference suite (52) + downstream denorm/CLI/UI/sampling suites green; `ruff`/
+   `mypy` clean. Value samplers stay in r2g (they carry `sample_values` and depend on
+   r2g connectors) and are folded into step 5.
+5. Then ADR steps 5–6 (connector shims + sampler de-dup; delete duplicates; flip the
+   dependency) as separate, independently-shippable PRs.
 
 ## 11. Risks & rollback
 

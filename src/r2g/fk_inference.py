@@ -60,14 +60,22 @@ starts at a pattern-specific base and is modulated by:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Callable, Literal, Optional, cast
+from typing import Optional
 
-from pydantic import BaseModel, Field
+# The heuristic engine, options, and the InferredForeignKey model are shared with
+# ``relational-schema-analyzer`` (RSA extracted them from r2g). r2g keeps only a
+# thin subclass that adds the ArangoDB ``to_edge_definition`` conversion, and a
+# wrapper that re-wraps RSA's results as that subclass. See
+# ``docs/internal/DESIGN-rsa-compat-layer.md`` (Stage 2, step 4).
+from relational_schema_analyzer.fk_inference import InferenceMethod as InferenceMethod  # noqa: F401
+from relational_schema_analyzer.fk_inference import InferenceOptions as InferenceOptions  # noqa: F401
+from relational_schema_analyzer.fk_inference import InferredForeignKey as _RsaInferredForeignKey
+from relational_schema_analyzer.fk_inference import Sampler as Sampler  # noqa: F401
+from relational_schema_analyzer.fk_inference import SamplerResult as SamplerResult
+from relational_schema_analyzer.fk_inference import infer_foreign_keys as _rsa_infer_foreign_keys
 
-from r2g.config import pg_type_to_json_type
 from r2g.log import get_logger
-from r2g.types import Column, EdgeDefinition, Schema, Table
+from r2g.types import EdgeDefinition, Schema
 
 logger = get_logger(__name__)
 
@@ -75,19 +83,15 @@ logger = get_logger(__name__)
 # ── Public models ────────────────────────────────────────────────────
 
 
-InferenceMethod = Literal["name_suffix", "name_no_underscore", "pk_name_match", "composite"]
+class InferredForeignKey(_RsaInferredForeignKey):
+    """An FK candidate — RSA's shared model plus r2g's ArangoDB edge conversion.
 
-
-class InferredForeignKey(BaseModel):
-    """A single FK candidate produced by :func:`infer_foreign_keys`."""
-
-    table: str
-    columns: list[str]
-    foreign_table: str
-    foreign_columns: list[str]
-    confidence: float = Field(ge=0.0, le=1.0)
-    method: InferenceMethod
-    evidence: list[str] = Field(default_factory=list)
+    The inference *engine* (:func:`infer_foreign_keys` and its heuristics) lives in
+    ``relational-schema-analyzer``. r2g subclasses RSA's ``InferredForeignKey`` only
+    to add :meth:`to_edge_definition`, the ArangoDB-specific materialization that
+    stays in r2g (RSA's relational analogue, ``to_foreign_key``, produces a
+    declared :class:`~relational_schema_analyzer.types.ForeignKey` instead).
+    """
 
     def to_edge_definition(self, edge_collection: Optional[str] = None) -> EdgeDefinition:
         """Convert the suggestion to an :class:`EdgeDefinition` for mapping.
@@ -106,36 +110,6 @@ class InferredForeignKey(BaseModel):
         )
 
 
-# ── Options ─────────────────────────────────────────────────────────
-
-
-@dataclass
-class InferenceOptions:
-    """Knobs that shape what the engine considers / returns."""
-
-    min_confidence: float = 0.4
-    generic_pk_names: frozenset[str] = field(
-        default_factory=lambda: frozenset({"id", "uuid", "pk", "key"})
-    )
-    max_candidates_per_column: int = 3
-    allow_composite: bool = True
-    sample_overlap: bool = False
-    overlap_veto_on_zero: bool = True
-
-
-# ── Sampler protocol ────────────────────────────────────────────────
-
-
-SamplerResult = Optional[float]
-"""Sampler callables return an overlap ratio in [0, 1], or ``None`` to
-indicate "no data / couldn't evaluate" (the engine then skips the
-overlap signal rather than treating it as a veto)."""
-
-
-Sampler = Callable[[str, str, str, str], SamplerResult]
-"""``sampler(local_table, local_column, foreign_table, foreign_column)``"""
-
-
 # ── Entry point ─────────────────────────────────────────────────────
 
 
@@ -147,451 +121,18 @@ def infer_foreign_keys(
 ) -> list[InferredForeignKey]:
     """Return ranked FK candidates for ``schema``.
 
-    See module docstring for the heuristic. Results are deduplicated
-    (one entry per ``(table, tuple(columns), foreign_table)`` triple),
-    sorted by confidence descending, and filtered by
-    ``options.min_confidence``.
+    Thin wrapper over the shared
+    ``relational_schema_analyzer.fk_inference.infer_foreign_keys`` engine that
+    re-wraps each result as r2g's :class:`InferredForeignKey` so callers keep the
+    :meth:`to_edge_definition` convenience. r2g's ``Schema`` is an RSA
+    ``PhysicalSchema`` subclass, so it is passed straight through; results are
+    deduplicated, ranked by confidence, and filtered by ``options.min_confidence``
+    exactly as the shared engine specifies.
     """
-    opts = options or InferenceOptions()
-
-    pk_index = _build_pk_index(schema, generic_pk_names=opts.generic_pk_names)
-    declared_index = _build_declared_fk_index(schema)
-
-    single: list[InferredForeignKey] = []
-    for table_name, table in schema.tables.items():
-        pk_set = set(table.primary_key)
-        for col in table.columns:
-            if col.name in pk_set and len(table.primary_key) == 1:
-                # Skip single-column PKs — they are the referenced side,
-                # not a FK origin (a table's lone PK very rarely *also*
-                # points somewhere else).
-                continue
-            if _column_is_covered_by_declared_fk(col.name, table_name, declared_index):
-                continue
-            single.extend(
-                _candidates_for_column(
-                    schema,
-                    table_name,
-                    col,
-                    pk_index,
-                    opts,
-                )
-            )
-
-    # Composite pass: group single-column candidates sharing (table, foreign_table)
-    composite: list[InferredForeignKey] = []
-    if opts.allow_composite:
-        composite = _find_composite_candidates(schema, single, declared_index)
-
-    # Sampler pass: adjust confidence on every candidate we still have.
-    all_candidates = single + composite
-    if sampler is not None and opts.sample_overlap:
-        sampled = [_apply_sampler(c, sampler, opts) for c in all_candidates]
-        all_candidates = [c for c in sampled if c is not None]
-
-    # Dedup + rank + filter.
-    deduped = _dedupe(all_candidates)
-    ranked = sorted(deduped, key=lambda c: c.confidence, reverse=True)
-    return [c for c in ranked if c.confidence >= opts.min_confidence]
-
-
-# ── Internal helpers ────────────────────────────────────────────────
-
-
-def _build_pk_index(
-    schema: Schema, *, generic_pk_names: frozenset[str]
-) -> dict[str, list[tuple[str, list[str]]]]:
-    """Index tables by their PK column name(s).
-
-    Returns ``{pk_col_name_lower: [(table_name, pk_col_names), ...]}``.
-    Tables with no PK, multi-column PKs, or generic PKs still enter the
-    index under their first PK column; generic names are consulted only
-    via the ``{prefix}_id`` pattern (never matched bare).
-    """
-    idx: dict[str, list[tuple[str, list[str]]]] = {}
-    for table_name, table in schema.tables.items():
-        if not table.primary_key:
-            continue
-        first = table.primary_key[0].lower()
-        idx.setdefault(first, []).append((table_name, list(table.primary_key)))
-    return idx
-
-
-def _build_declared_fk_index(schema: Schema) -> dict[str, set[tuple[str, ...]]]:
-    """Index ``{table_name: {tuple(fk_columns), ...}}`` for existing FKs."""
-    idx: dict[str, set[tuple[str, ...]]] = {}
-    for table_name, table in schema.tables.items():
-        idx[table_name] = {tuple(sorted(fk.columns)) for fk in table.foreign_keys}
-    return idx
-
-
-def _column_is_covered_by_declared_fk(
-    col: str, table: str, declared_index: dict[str, set[tuple[str, ...]]]
-) -> bool:
-    fks = declared_index.get(table, set())
-    return any(col in cols for cols in fks)
-
-
-def _candidates_for_column(
-    schema: Schema,
-    table_name: str,
-    col: Column,
-    pk_index: dict[str, list[tuple[str, list[str]]]],
-    opts: InferenceOptions,
-) -> list[InferredForeignKey]:
-    """Produce single-column FK candidates that column ``col`` could be."""
-    candidates: list[InferredForeignKey] = []
-    local_lower = col.name.lower()
-
-    # Pattern 1 / 2: {prefix}_id, {prefix}id, {prefix}_{pkcol}
-    prefix_matches = _split_prefix(local_lower)
-    for prefix, suffix, method, base_conf in prefix_matches:
-        for foreign_table, pk_cols in _candidate_tables_for_prefix(
-            schema, prefix, opts.generic_pk_names
-        ):
-            if foreign_table == table_name:
-                continue
-            if len(pk_cols) != 1:
-                # Composite PKs need the composite pass, not a single-column match.
-                continue
-            foreign_col = pk_cols[0]
-            if suffix and suffix != foreign_col.lower():
-                # e.g. pattern `{prefix}_{pkcol}` wants suffix == pk name.
-                continue
-            cand = _make_candidate(
-                schema,
-                table_name,
-                [col.name],
-                foreign_table,
-                [foreign_col],
-                method=method,
-                base_confidence=base_conf,
-                evidence=[f"name pattern '{col.name}' → {foreign_table}.{foreign_col}"],
-            )
-            if cand is not None:
-                candidates.append(cand)
-
-    # Pattern 4: direct PK-name match (non-generic).
-    if local_lower not in opts.generic_pk_names:
-        for foreign_table, pk_cols in pk_index.get(local_lower, []):
-            if foreign_table == table_name:
-                continue
-            if len(pk_cols) != 1:
-                continue
-            cand = _make_candidate(
-                schema,
-                table_name,
-                [col.name],
-                foreign_table,
-                pk_cols,
-                method="pk_name_match",
-                base_confidence=0.55,
-                evidence=[
-                    f"column '{col.name}' matches PK of '{foreign_table}' "
-                    f"(non-generic name)"
-                ],
-            )
-            if cand is not None:
-                candidates.append(cand)
-
-    # Trim to top-N per column.
-    candidates.sort(key=lambda c: c.confidence, reverse=True)
-    return candidates[: opts.max_candidates_per_column]
-
-
-def _split_prefix(col_lower: str) -> list[tuple[str, str, InferenceMethod, float]]:
-    """Return ``(prefix, required_suffix, method, base_confidence)`` tuples
-    a column name could resolve to.
-
-    The ``required_suffix`` is used by pattern 3 to insist on a specific
-    PK column name; otherwise it is ``""`` which accepts any single-col
-    PK.
-    """
-    out: list[tuple[str, str, InferenceMethod, float]] = []
-    # Pattern 1: ends with _id
-    if col_lower.endswith("_id") and len(col_lower) > 3:
-        out.append((col_lower[:-3], "", "name_suffix", 0.75))
-    # Pattern 3: {prefix}_{suffix} where suffix looks like a PK name
-    if "_" in col_lower:
-        prefix, _, suffix = col_lower.rpartition("_")
-        if prefix and suffix and suffix not in ("", "id") and len(suffix) >= 2:
-            out.append((prefix, suffix, "name_suffix", 0.6))
-    # Pattern 2: ends with 'id' but no underscore (userid, orderid)
-    if (
-        col_lower.endswith("id")
-        and not col_lower.endswith("_id")
-        and len(col_lower) > 3
-        and col_lower != "uuid"
-    ):
-        out.append((col_lower[:-2], "", "name_no_underscore", 0.45))
-    return out
-
-
-def _candidate_tables_for_prefix(
-    schema: Schema, prefix: str, generic_pk_names: frozenset[str]
-) -> list[tuple[str, list[str]]]:
-    """Return ``(table_name, pk_cols)`` for tables whose name matches ``prefix``
-    in singular/plural form.
-    """
-    if not prefix:
-        return []
-    candidates: list[tuple[str, list[str]]] = []
-    target_names = {prefix, _pluralize(prefix), _singularize(prefix)}
-    for table_name, table in schema.tables.items():
-        if table_name.lower() in target_names and table.primary_key:
-            pk_cols = list(table.primary_key)
-            if len(pk_cols) == 1 and pk_cols[0].lower() in generic_pk_names:
-                candidates.append((table_name, pk_cols))
-            elif len(pk_cols) == 1:
-                candidates.append((table_name, pk_cols))
-    return candidates
-
-
-from r2g.naming import pluralize as _pluralize  # noqa: E402
-from r2g.naming import singularize as _singularize  # noqa: E402
-
-
-def _make_candidate(
-    schema: Schema,
-    table: str,
-    columns: list[str],
-    foreign_table: str,
-    foreign_columns: list[str],
-    *,
-    method: InferenceMethod,
-    base_confidence: float,
-    evidence: list[str],
-) -> Optional[InferredForeignKey]:
-    """Validate type compatibility and assemble an :class:`InferredForeignKey`.
-
-    Returns ``None`` if the types are incompatible (we never suggest an
-    FK from a ``boolean`` column to an ``integer`` PK, for example).
-    """
-    local_tbl = schema.tables.get(table)
-    foreign_tbl = schema.tables.get(foreign_table)
-    if local_tbl is None or foreign_tbl is None:
-        return None
-
-    confidence = base_confidence
-    details = list(evidence)
-
-    for lcol_name, fcol_name in zip(columns, foreign_columns):
-        lcol = _find_col(local_tbl, lcol_name)
-        fcol = _find_col(foreign_tbl, fcol_name)
-        if lcol is None or fcol is None:
-            return None
-        if not _types_compatible(lcol, fcol):
-            return None
-        if lcol.data_type.strip().lower() == fcol.data_type.strip().lower():
-            confidence += 0.1
-            details.append(f"identical data_type '{lcol.data_type}'")
-        if (not lcol.is_nullable) and fcol.is_nullable:
-            # Unusual: a non-nullable child pointing at a nullable-PK parent.
-            confidence -= 0.1
-            details.append(
-                f"'{table}.{lcol_name}' is NOT NULL but '{foreign_table}.{fcol_name}' is nullable"
-            )
-
-    confidence = max(0.0, min(1.0, confidence))
-    return InferredForeignKey(
-        table=table,
-        columns=list(columns),
-        foreign_table=foreign_table,
-        foreign_columns=list(foreign_columns),
-        confidence=round(confidence, 3),
-        method=method,
-        evidence=details,
-    )
-
-
-def _find_col(table: Table, name: str) -> Optional[Column]:
-    for c in table.columns:
-        if c.name == name:
-            return c
-    return None
-
-
-_COMPATIBLE_GROUPS: tuple[frozenset[str], ...] = (
-    frozenset({"integer", "float"}),  # numeric join is common across NUMBER/int
-    frozenset({"string"}),
-    frozenset({"boolean"}),
-)
-
-
-def _types_compatible(a: Column, b: Column) -> bool:
-    aj = pg_type_to_json_type(a.data_type)
-    bj = pg_type_to_json_type(b.data_type)
-    if aj == bj:
-        return True
-    for group in _COMPATIBLE_GROUPS:
-        if aj in group and bj in group:
-            return True
-    return False
-
-
-def _find_composite_candidates(
-    schema: Schema,
-    single_candidates: list[InferredForeignKey],  # kept for future use (e.g. evidence merging)
-    declared_index: dict[str, set[tuple[str, ...]]],
-) -> list[InferredForeignKey]:
-    """Directly scan the schema for composite-PK FK candidates.
-
-    For every foreign table ``F`` with a multi-column primary key
-    ``(k1, …, kn)``, find local tables ``L`` that contain every ``ki``
-    as a non-PK column with a type compatible with ``F.ki``. Emit a
-    composite suggestion preserving ``F``'s PK column order.
-
-    This is intentionally independent of the single-column pass: the
-    child column names don't have to match the parent table's name
-    (a common modelling style for junction tables whose name is
-    unrelated to its parents, e.g. ``enrollments`` referencing
-    ``course_offerings``).
-    """
-    del single_candidates  # parameter reserved for future evidence merging
-    out: list[InferredForeignKey] = []
-
-    for foreign_table, foreign in schema.tables.items():
-        if len(foreign.primary_key) < 2:
-            continue
-        maybe_pk_cols = [_find_col(foreign, k) for k in foreign.primary_key]
-        if any(pc is None for pc in maybe_pk_cols):
-            continue
-        pk_cols = cast("list[Column]", maybe_pk_cols)
-
-        for local_table, local in schema.tables.items():
-            if local_table == foreign_table:
-                continue
-            local_pk_set = set(local.primary_key)
-            # Require every PK column name to be present in the local
-            # table as a non-PK-only column (it may still participate
-            # in the local PK — that's fine, e.g. a junction table
-            # whose own PK is the composite FK).
-            matched: list[Column] = []
-            ok = True
-            for pc in pk_cols:
-                lcol = _find_col(local, pc.name)
-                if lcol is None:
-                    ok = False
-                    break
-                if not _types_compatible(lcol, pc):
-                    ok = False
-                    break
-                matched.append(lcol)
-            if not ok:
-                continue
-
-            # Skip if the local table's single-column PK is exactly one
-            # of the pieces (rare but would be a self-inconsistent match).
-            if len(local.primary_key) == 1 and local.primary_key[0] in {pc.name for pc in pk_cols}:
-                # Only treat as composite if *all* pieces are present,
-                # which the loop above already verified.
-                pass
-
-            columns = [pc.name for pc in pk_cols]
-            foreign_columns = list(foreign.primary_key)
-            if tuple(sorted(columns)) in declared_index.get(local_table, set()):
-                continue
-
-            # Base confidence: 0.7, plus +0.05 per component column that
-            # is non-nullable on both sides (strong signal).
-            base = 0.7
-            nn_bonus = 0.05 * sum(
-                1
-                for lc, pc in zip(matched, pk_cols)
-                if (not lc.is_nullable) and (not pc.is_nullable)
-            )
-            same_type_bonus = 0.05 * sum(
-                1
-                for lc, pc in zip(matched, pk_cols)
-                if lc.data_type.strip().lower() == pc.data_type.strip().lower()
-            )
-            # Penalize matches where the local table also has a plain
-            # "id" column that looks like it already points elsewhere —
-            # the composite is still a valid suggestion but less sure.
-            confidence = min(1.0, base + nn_bonus + same_type_bonus)
-            # Exclude local tables that are obviously unrelated (no
-            # shared column names outside the composite pieces) only if
-            # confidence ended up low — we keep clean composite matches
-            # regardless.
-            if local_pk_set == set(columns):
-                confidence = min(1.0, confidence + 0.05)
-
-            out.append(
-                InferredForeignKey(
-                    table=local_table,
-                    columns=columns,
-                    foreign_table=foreign_table,
-                    foreign_columns=foreign_columns,
-                    confidence=round(confidence, 3),
-                    method="composite",
-                    evidence=[
-                        f"composite match on PK of '{foreign_table}': "
-                        f"({', '.join(foreign_columns)})"
-                    ],
-                )
-            )
-    return out
-
-
-def _apply_sampler(
-    c: InferredForeignKey, sampler: Sampler, opts: InferenceOptions
-) -> Optional[InferredForeignKey]:
-    """Invoke the sampler for each (local, foreign) column pair and fold
-    the result into the candidate's confidence score.
-
-    Per-column overlaps are averaged. A single zero result vetoes the
-    whole candidate when ``opts.overlap_veto_on_zero`` is set.
-    """
-    scores: list[float] = []
-    any_zero = False
-    for lcol, fcol in zip(c.columns, c.foreign_columns):
-        try:
-            score = sampler(c.table, lcol, c.foreign_table, fcol)
-        except Exception as err:  # noqa: BLE001
-            logger.warning(
-                "fk_sampler_failed",
-                table=c.table,
-                column=lcol,
-                foreign_table=c.foreign_table,
-                error=str(err),
-            )
-            return c  # keep candidate; sampler noise shouldn't drop it
-        if score is None:
-            continue
-        if score <= 0.0:
-            any_zero = True
-        scores.append(score)
-
-    if not scores:
-        return c
-
-    avg = sum(scores) / len(scores)
-    evidence = list(c.evidence) + [f"value overlap avg={avg:.2f} ({len(scores)} cols sampled)"]
-
-    if any_zero and opts.overlap_veto_on_zero:
-        return None
-
-    bump = 0.0
-    if avg >= 0.9:
-        bump = 0.15
-    elif avg >= 0.5:
-        bump = 0.05
-    elif avg <= 0.0:
-        bump = -0.25
-
-    new_conf = max(0.0, min(1.0, c.confidence + bump))
-    return c.model_copy(update={"confidence": round(new_conf, 3), "evidence": evidence})
-
-
-def _dedupe(candidates: list[InferredForeignKey]) -> list[InferredForeignKey]:
-    """Keep the highest-confidence candidate per ``(table, columns, foreign_table)``."""
-    best: dict[tuple[str, tuple[str, ...], str], InferredForeignKey] = {}
-    for c in candidates:
-        key = (c.table, tuple(c.columns), c.foreign_table)
-        prior = best.get(key)
-        if prior is None or c.confidence > prior.confidence:
-            best[key] = c
-    return list(best.values())
+    return [
+        InferredForeignKey.model_validate(ifk.model_dump())
+        for ifk in _rsa_infer_foreign_keys(schema, options=options, sampler=sampler)
+    ]
 
 
 # ── Concrete PostgreSQL value sampler ───────────────────────────────

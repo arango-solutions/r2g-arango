@@ -22,6 +22,15 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as an empty back-compat alias. See `docs/internal/DESIGN-rsa-compat-layer.md`.
   The `--engine rsa` adapter now passes the r2g `Schema` straight to RSA's analyzer
   (no JSON round-trip), since the types are unified. No behavior change.
+- **FK-inference heuristic engine shared with `relational-schema-analyzer`
+  (Stage 2, step 4).** `r2g.fk_inference` now imports the inference engine
+  (`infer_foreign_keys`, `InferenceOptions`, `InferredForeignKey`, sampler
+  protocol) from RSA instead of duplicating ~500 lines of identical heuristics.
+  r2g keeps a thin `InferredForeignKey` subclass that adds the ArangoDB-specific
+  `to_edge_definition`, and a wrapper that re-wraps RSA's results as that subclass,
+  so the public API is unchanged. The concrete value samplers (which carry r2g's
+  `sample_values` and are coupled to r2g's connectors) stay in r2g for now and are
+  reconciled in step 5. No behavior change (verified by the FK-inference suite).
 
 ### Added
 

@@ -115,15 +115,20 @@ Ordered; each step is independently shippable.
 3. **Snapshot/catalog migration.** If the serialized shape changes, add a
    read-time upgrader (tolerate old + new) and a one-shot migration for stored
    catalog records; never require users to re-snapshot.
-4. **`fk_inference` reconciliation.** Reconcile `to_edge_definition`↔
-   `to_foreign_key` (keep an r2g adapter that builds `EdgeDefinition` from RSA's
-   `ForeignKey`) and land `sample_values` upstream (or keep an r2g sampler
-   subclass). Then import the heuristics from RSA.
-5. **Connector strategy.** Decide per-connector: import shared read-only
-   introspectors (postgres/mysql/mssql/snowflake/csv) from RSA behind r2g shims
-   that layer on the classification merge; **keep** r2g-only connectors
-   (`arango_*`, `kafka_source`) local. RSA-only sources (duckdb, databricks) are
-   opt-in follow-ons for r2g if desired.
+4. **`fk_inference` reconciliation.** ✅ *Engine done.* Import the heuristic engine
+   (`infer_foreign_keys`, `InferenceOptions`, `InferredForeignKey`, sampler
+   protocol) from RSA; keep a thin r2g `InferredForeignKey` subclass adding
+   `to_edge_definition` (the ArangoDB analogue of RSA's `to_foreign_key`) and a
+   wrapper that re-wraps RSA's results. The concrete value samplers (which carry
+   r2g's `sample_values` and are coupled to r2g's connectors) are deferred to step 5
+   so sampler + connector parity is validated together.
+5. **Connector strategy (incl. sampler de-dup).** Decide per-connector: import
+   shared read-only introspectors (postgres/mysql/mssql/snowflake/csv) from RSA
+   behind r2g shims that layer on the classification merge; **keep** r2g-only
+   connectors (`arango_*`, `kafka_source`) local. Fold in the value samplers here —
+   either land `sample_values` upstream in RSA or subclass RSA's samplers — since
+   the MySQL/SQL-Server/CSV samplers depend on connector URL parsers / resolvers.
+   RSA-only sources (duckdb, databricks) are opt-in follow-ons for r2g if desired.
 6. **Delete duplicates + flip the dependency.** Only once 1–5 are green against
    r2g's full suite: delete the now-shimmed modules and make RSA a normal
    dependency (core or a required extra), shipping re-export shims for a
@@ -159,5 +164,14 @@ dependency for ~140 LOC.
   - **Step 3 (`rsa_ontology.py` round-trip removal):** DONE — r2g `Schema` is passed
     straight to RSA's analyzer (no `model_dump_json`/`model_validate_json` bridge);
     RSA adapter + ontology CLI/UI tests green (incl. real end-to-end golden bundle).
-  - **Steps 4–6** (`fk_inference` reconciliation; connector shims; delete duplicates
-    + flip to a normal dependency): pending — each independently shippable.
+  - **Step 4 (`fk_inference` engine reconciliation):** DONE (engine) — r2g
+    `fk_inference` imports the heuristic engine (`infer_foreign_keys`,
+    `InferenceOptions`, `InferredForeignKey`, sampler protocol) from RSA instead of
+    duplicating ~500 identical lines. r2g keeps a thin `InferredForeignKey` subclass
+    adding `to_edge_definition` (ArangoDB) plus a wrapper that re-wraps RSA's
+    results, so the public API is unchanged (FK-inference suite green, no behavior
+    change). The concrete value samplers (which carry r2g's `sample_values` and are
+    coupled to r2g's connectors) stay in r2g and are folded into **step 5** with the
+    connector reconciliation, where connector parity can be validated together.
+  - **Steps 5–6** (connector shims incl. sampler de-dup; delete duplicates + flip to
+    a normal dependency): pending — each independently shippable.
