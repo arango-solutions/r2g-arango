@@ -108,7 +108,10 @@ Ordered; each step is independently shippable.
    types, mapping `Schema = PhysicalSchema` and re-adding `classification` via the
    passthrough. Keep the ArangoDB models (`MappingConfig` et al.) and
    `RESERVED_ATTRIBUTES` in r2g. Gate on **byte-stable `model_dump()`** for
-   existing snapshots (add a serialization compat test corpus first).
+   existing snapshots (add a serialization compat test corpus first). **Design:
+   [`DESIGN-rsa-compat-layer.md`](DESIGN-rsa-compat-layer.md)** (thin r2g subclasses
+   over RSA types with a legacy-preserving serializer; zero-migration first landing;
+   two open decisions pending sign-off).
 3. **Snapshot/catalog migration.** If the serialized shape changes, add a
    read-time upgrader (tolerate old + new) and a one-shot migration for stored
    catalog records; never require users to re-snapshot.
@@ -142,5 +145,12 @@ dependency for ~140 LOC.
 ## 6. Status summary
 
 - **Stage 1:** DONE (r2g-arango 0.3.0) — deterministic `--engine rsa`.
-- **Stage 2:** DEFERRED — blocked on RSA `Column` governance/extra passthrough
-  (step 1) and a persisted-shape migration; not a pure refactor.
+- **Stage 2:** IN PROGRESS.
+  - **Step 1 (RSA `extra` passthrough):** DONE — RSA 0.2.0 shipped
+    (Column/Table `extra`, serialized-when-non-empty); r2g `[ontology]` now
+    requires `>=0.2.0`.
+  - **Step 2 (compat layer):** DESIGNED + signed off — see
+    [`DESIGN-rsa-compat-layer.md`](DESIGN-rsa-compat-layer.md). Decisions: RSA
+    promoted to a core dependency; thin r2g subclasses over RSA types with a
+    legacy-preserving serializer (zero-migration first landing). Ready to build.
+  - **Steps 3–6:** pending step 2.
