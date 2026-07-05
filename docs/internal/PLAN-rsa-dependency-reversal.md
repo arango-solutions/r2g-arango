@@ -150,7 +150,12 @@ dependency for ~140 LOC.
 ## 6. Status summary
 
 - **Stage 1:** DONE (r2g-arango 0.3.0) — deterministic `--engine rsa`.
-- **Stage 2:** IN PROGRESS.
+- **Stage 2:** COMPLETE (descoped) — the drift-prone shared-semantics core (physical
+  types, FK-inference engine, value samplers, source-type helpers, the
+  `SourceSession` protocol) is unified with RSA; the introspection connectors +
+  bulk-read sessions are **intentionally kept local** (see step 5/6 below). RSA is a
+  core dependency. No further reversal work is scheduled unless the introspection
+  reuse is revisited.
   - **Step 1 (RSA `extra` passthrough):** DONE — RSA 0.2.0 shipped
     (Column/Table `extra`, serialized-when-non-empty); r2g `[ontology]` now
     requires `>=0.2.0`.
@@ -188,6 +193,19 @@ dependency for ~140 LOC.
     wrap RSA's introspectors, re-type results to r2g's `Schema`/`Table`/`Column`
     subclasses, re-apply the Phase-9 classification merge, and validate parity
     against live Postgres/MySQL/SQL-Server (integration-gated).
-  - **Step 6** (delete remaining duplicates + flip to a normal dependency, shipping
-    re-export shims): pending — blocked on the introspection-connector reconciliation
-    above.
+
+    **Descope decision (Stage 2 close-out):** the introspection connectors + bulk-read
+    sessions stay in r2g by design. What *was* provably safe to share has been shared:
+    `src/r2g/connectors/session.py` now re-exports RSA's byte-identical `SourceSession`
+    protocol, and `src/r2g/connectors/base.py` re-exports RSA's source-type helpers
+    (`expand_env_vars`, `normalize_source_type`, `is_postgresql`/`is_mysql`/
+    `is_sqlserver`, `serialize_rows`) while keeping the `SourceConnector` protocol local
+    (its `get_schema` is typed to r2g's `Schema` subclass), plus `SUPPORTED_SOURCE_TYPES`
+    (with `kafka`) and `create_source_connector`. An integration-marked parity audit
+    (`tests/integration/test_rsa_introspection_parity.py`) can quantify the introspection
+    divergence against live DBs if reuse is ever revisited.
+  - **Step 6** (delete remaining duplicates + flip to a normal dependency): resolved by
+    the descope — RSA became a core dependency in step 2, and the safe session/base
+    shares above are the only connector-layer de-dup. The introspection connectors are
+    **not** deleted (kept local by design), so no re-export shims are needed. Removing
+    the empty `[ontology]` extra alias remains a separate, optional cleanup.

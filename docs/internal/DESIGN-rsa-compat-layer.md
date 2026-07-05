@@ -304,8 +304,17 @@ Land nothing until all are green (`pytest -m "not integration"`, `ruff`, `mypy`)
    `ordinal`/`is_unique`, duckdb/databricks vs kafka) and emit RSA-typed objects with
    enrichment fields r2g's serializers drop, so swapping them is not byte-stable
    without a re-type + classification-merge + live-DB parity effort.
-6. Then ADR step 6 (reconcile the introspection connectors, then delete remaining
-   duplicates and flip the dependency) as separate, independently-shippable PRs.
+6. ✅ **DONE (descoped).** Stage 2 close-out (ADR steps 5–6): the safe connector-layer
+   shares are landed and the introspection connectors are kept local by design.
+   `src/r2g/connectors/session.py` re-exports RSA's byte-identical `SourceSession`
+   protocol; `src/r2g/connectors/base.py` re-exports RSA's source-type helpers
+   (`expand_env_vars`, `normalize_source_type`, `is_postgresql`/`is_mysql`/
+   `is_sqlserver`, `serialize_rows`) while keeping the `SourceConnector` protocol local
+   (typed to r2g's `Schema` subclass, so `get_schema()` callers — snapshotting,
+   `annotate_schema`, schema diff — keep the narrow type), plus `SUPPORTED_SOURCE_TYPES`
+   (with `kafka`) and `create_source_connector`. RSA is already a core dependency (step
+   2), so no dependency flip or re-export shim is required. A live-DB parity audit lives
+   at `tests/integration/test_rsa_introspection_parity.py` for any future revisit.
 
 ## 11. Risks & rollback
 

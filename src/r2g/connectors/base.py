@@ -6,59 +6,60 @@ Phase 6 (Snowflake) calls out an explicit "source abstraction layer"
 (P6.5) so the schema-reader, dump, and streaming paths can accept other
 relational sources behind a common interface.
 
-This module intentionally stays minimal:
+Shared vs. local
+----------------
 
-- `SourceConnector` is a structural `Protocol` describing the
-  operations we actually perform on a connector today: introspect
-  `connection_string` / `schema_name` attributes, return a populated
-  `Schema` from :meth:`get_schema`, and (Phase 6 slice 3) open a
-  :class:`SourceSession` for bulk reads via :meth:`open_session`.
-  `PostgresConnector` and `SnowflakeConnector` both satisfy the
-  protocol.
-- `SUPPORTED_SOURCE_TYPES` is the registry of source types the catalog,
-  UI, and MCP server are allowed to create. Adding a new type is a
-  single edit here plus a concrete implementation.
-- `create_source_connector` is the thin factory the UI / MCP /
-  `source snapshot` / `stream` / `source dump` commands call. It
-  lazy-imports the concrete class so optional dependencies (e.g.
-  ``snowflake-connector-python``) are only loaded when the user
-  actually has a source of that type.
+The source-agnostic *helpers* were extracted to ``relational-schema-analyzer``
+(RSA) and are byte-identical there, so r2g imports the single shared definitions
+rather than duplicating them:
 
-As of Phase 6 slice 3 the streaming pipeline and dump-tables CLI both
-consume connectors through this protocol; the PG-only fast paths live
-inside ``PostgresSession`` and the Snowflake equivalents inside
-``SnowflakeSession``.
+- `expand_env_vars`, `normalize_source_type`, `is_postgresql` / `is_mysql` /
+  `is_sqlserver`, `serialize_rows` — the source-type/credential helpers used
+  across the CLI, UI, and MCP paths.
+
+What stays **local to r2g** (and why):
+
+- `SourceConnector` — the structural `Protocol` every connector satisfies
+  (introspect via :meth:`~SourceConnector.get_schema`, bulk-read via
+  :meth:`~SourceConnector.open_session`). Kept local because its
+  :meth:`~SourceConnector.get_schema` is typed to r2g's ``Schema`` subclass (RSA's
+  identical protocol returns the ``PhysicalSchema`` base), which r2g's callers
+  (snapshotting, classification annotate, schema diff) rely on.
+- `SUPPORTED_SOURCE_TYPES` — r2g's registry includes ``kafka`` (an r2g-only
+  connector) and omits RSA's analysis-only ``duckdb`` / ``databricks`` sources.
+- `create_source_connector` — the factory dispatches to r2g's concrete
+  connectors (including ``kafka``) and their bulk-read sessions, which drive
+  r2g's data-migration path and are intentionally kept local (see
+  ``docs/internal/DESIGN-rsa-compat-layer.md``, Stage 2 close-out).
 """
 
 from __future__ import annotations
 
-import os
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
+
+# Source-agnostic helpers are shared with RSA (byte-identical; verified by the
+# connector test suite). Re-exported here so the historical
+# ``from r2g.connectors.base import ...`` import path is unchanged.
+from relational_schema_analyzer.connectors.base import expand_env_vars as expand_env_vars
+from relational_schema_analyzer.connectors.base import is_mysql as is_mysql
+from relational_schema_analyzer.connectors.base import is_postgresql as is_postgresql
+from relational_schema_analyzer.connectors.base import is_sqlserver as is_sqlserver
+from relational_schema_analyzer.connectors.base import normalize_source_type as normalize_source_type
+from relational_schema_analyzer.connectors.base import serialize_rows as serialize_rows
 
 from r2g.connectors.session import SourceSession
 from r2g.types import Schema
 
 
-def expand_env_vars(connection_string: str) -> str:
-    """Expand ``$VAR`` / ``${VAR}`` references in a connection string.
-
-    r2g's convention is to keep credentials in environment variables (or
-    ``r2g secrets``) rather than store them in the catalog — both as a whole
-    string (``$PG_CONN``) and inline within a DSN
-    (``postgresql://$DB_USER:$DB_PASSWORD@host/db``, as produced by
-    ``r2g catalog import-source``). Expansion is applied centrally so every
-    path (CLI, UI, MCP) behaves the same. Unknown variables are left intact,
-    and strings without ``$`` are returned unchanged (so literal DSNs — the
-    common case — are untouched).
-    """
-    if connection_string and "$" in connection_string:
-        return os.path.expandvars(connection_string)
-    return connection_string
-
-
 @runtime_checkable
 class SourceConnector(Protocol):
-    """Structural interface every R2G source connector must satisfy."""
+    """Structural interface every R2G source connector must satisfy.
+
+    Identical in shape to ``relational_schema_analyzer.connectors.base.SourceConnector``
+    but kept local so :meth:`get_schema` is typed to r2g's ``Schema`` subclass
+    (whose byte-stable serialization the snapshot/catalog paths depend on) rather
+    than RSA's ``PhysicalSchema`` base.
+    """
 
     connection_string: str
     schema_name: str
@@ -86,72 +87,6 @@ SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
     "csv",
     "kafka",
 )
-
-# Aliases that all mean PostgreSQL. Missing/empty source types default to PG.
-_PG_ALIASES: frozenset[str] = frozenset({"postgresql", "postgres", "pg"})
-
-# Aliases that all mean MySQL (MariaDB is wire- and introspection-compatible).
-_MYSQL_ALIASES: frozenset[str] = frozenset({"mysql", "mariadb"})
-
-# Aliases that all mean Microsoft SQL Server.
-_MSSQL_ALIASES: frozenset[str] = frozenset({"sqlserver", "mssql", "sql_server"})
-
-
-def normalize_source_type(source_type: str | None) -> str:
-    """Canonicalize a source-type string.
-
-    Empty/``None`` defaults to ``"postgresql"`` (R2G's historical default), the
-    ``postgres`` / ``pg`` aliases fold to ``"postgresql"``, ``mariadb`` folds to
-    ``"mysql"``, and ``mssql`` / ``sql_server`` fold to ``"sqlserver"``.
-    """
-    key = (source_type or "postgresql").strip().lower()
-    if key in _PG_ALIASES:
-        return "postgresql"
-    if key in _MYSQL_ALIASES:
-        return "mysql"
-    if key in _MSSQL_ALIASES:
-        return "sqlserver"
-    return key
-
-
-def is_postgresql(source_type: str | None) -> bool:
-    """True when ``source_type`` denotes PostgreSQL (incl. ``postgres`` / ``pg``)."""
-    return normalize_source_type(source_type) == "postgresql"
-
-
-def is_mysql(source_type: str | None) -> bool:
-    """True when ``source_type`` denotes MySQL / MariaDB."""
-    return normalize_source_type(source_type) == "mysql"
-
-
-def is_sqlserver(source_type: str | None) -> bool:
-    """True when ``source_type`` denotes Microsoft SQL Server."""
-    return normalize_source_type(source_type) == "sqlserver"
-
-
-def serialize_rows(rows: list[dict]) -> list[dict]:
-    """Convert non-JSON-serializable DB values to JSON-safe forms.
-
-    ``datetime``/``date`` → ISO string, ``Decimal`` → float, ``bytes`` → hex.
-    Used by the data-preview paths in the UI and MCP servers.
-    """
-    import datetime as dt
-    from decimal import Decimal
-
-    result = []
-    for row in rows:
-        converted: dict[str, Any] = {}
-        for k, v in row.items():
-            if isinstance(v, (dt.datetime, dt.date)):
-                converted[k] = v.isoformat()
-            elif isinstance(v, Decimal):
-                converted[k] = float(v)
-            elif isinstance(v, bytes):
-                converted[k] = v.hex()
-            else:
-                converted[k] = v
-        result.append(converted)
-    return result
 
 
 def create_source_connector(

@@ -44,6 +44,22 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vs r2g's kafka) and return RSA-typed objects, so swapping them is not byte-stable
   without a re-typing + classification-merge + live-DB parity effort — tracked as
   the remainder of steps 5–6.
+- **Connector-layer shared helpers + RSA Stage 2 close-out (steps 5–6, descoped).**
+  `r2g.connectors.session` now re-exports RSA's byte-identical `SourceSession`
+  protocol, and `r2g.connectors.base` re-exports RSA's source-type helpers
+  (`expand_env_vars`, `normalize_source_type`, `is_postgresql`/`is_mysql`/
+  `is_sqlserver`, `serialize_rows`). The `SourceConnector` protocol stays local so
+  its `get_schema()` remains typed to r2g's `Schema` subclass (which the snapshot,
+  classification-annotate, and schema-diff paths depend on), as do
+  `SUPPORTED_SOURCE_TYPES` (incl. `kafka`) and `create_source_connector`. The
+  **introspection connectors and bulk-read sessions are kept in r2g by design** —
+  RSA's have diverged and drive r2g's data-migration path — closing the RSA
+  dependency reversal (Stage 2): the shared-semantics core (physical types,
+  FK-inference engine, value samplers, source-type helpers, session protocol) is
+  unified, with RSA a core dependency. A live-DB introspection parity audit is added
+  at `tests/integration/test_rsa_introspection_parity.py` for any future revisit. No
+  behavior change; import safety for minimal installs preserved (no DB drivers pulled
+  by importing the connector base/session).
 
 ### Added
 

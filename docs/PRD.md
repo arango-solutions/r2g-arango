@@ -783,16 +783,22 @@ path, guaranteeing a schema-valid, loadable `MappingConfig`. It needs no rows an
 no network by default; `--refine` additively LLM-improves the deterministic
 model. Many-to-many join tables are surfaced as advisory review notes (loaded as a
 vertex + FK edges), consistent with embed hints. Installed via the
-`r2g-arango[ontology]` extra. **Stage 2** (dependency reversal: r2g importing
-RSA's introspection modules and deleting the duplicated code, per RSA's own
-Phase 5 plan) is **deferred**: the two codebases have diverged in both directions
-since the extraction — r2g's `Column` carries Phase-9 `classification` (used in
-15 modules) that RSA lacks, RSA's types carry enrichments r2g doesn't persist,
-`fk_inference` diverged (`to_edge_definition`→`to_foreign_key`, r2g-only
-`sample_values`), and the connector sets differ (r2g has Arango/Kafka, RSA has
-DuckDB/Databricks). A clean reversal is therefore a type-model *reconciliation +
-persisted-shape migration*, not a refactor; the plan and unblocking path are in
-[`docs/internal/PLAN-rsa-dependency-reversal.md`](internal/PLAN-rsa-dependency-reversal.md).
+`r2g-arango[ontology]` extra. **Stage 2** (dependency reversal) is now **complete
+(descoped)**: the drift-prone shared-semantics core is unified with RSA while the
+introspection connectors stay in r2g by design. r2g's `Schema`/`Table`/`Column`/
+`ForeignKey` subclass RSA's types with legacy-preserving serializers (byte-stable
+snapshots, no migration — `Column` keeps Phase-9 `classification` as a first-class
+field); the FK-inference heuristic engine and the FK/denorm value samplers are
+imported from RSA (r2g keeps thin subclasses for `to_edge_definition` and
+`sample_values`); and the `SourceSession` protocol plus the source-type helpers are
+re-exported from RSA. RSA is a **core dependency**. The introspection connectors and
+bulk-read sessions remain local because RSA's have diverged (enum sampling,
+provenance, `ordinal`/`is_unique`) and drive r2g's data-migration path, and the
+connector sets differ (r2g has Arango/Kafka, RSA has DuckDB/Databricks); a live-DB
+introspection parity audit (`tests/integration/test_rsa_introspection_parity.py`)
+is available if that reuse is ever revisited. Full history and rationale are in
+[`docs/internal/PLAN-rsa-dependency-reversal.md`](internal/PLAN-rsa-dependency-reversal.md)
+and [`docs/internal/DESIGN-rsa-compat-layer.md`](internal/DESIGN-rsa-compat-layer.md).
 
 **Motivation.** `generate_default_config` is correct but naive: it mirrors the
 relational structure 1:1 and cannot recognise that, say, an `order_items` table
