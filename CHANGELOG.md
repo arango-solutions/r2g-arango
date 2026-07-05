@@ -9,6 +9,18 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **End-to-end validation for temporal graph mode (Phase 5)**: a
+  skip-when-unavailable integration test (`tests/integration/test_temporal_e2e.py`)
+  that closes the long-standing "field validation against a live temporal
+  workload" gap. It drives INSERT → UPDATE → DELETE through `TemporalApplier`
+  against a real ArangoDB and asserts the full immutable-proxy time-travel
+  contract: ProxyIn/ProxyOut creation, entity versions with `[created, expired)`
+  intervals, the two `hasVersion` edges (closed on update), `ttlExpireAt`
+  stamping on expiry, the interval (`mdi`/`zkd`/`persistent`) and sparse TTL
+  indexes, replay-safety (a duplicated INSERT creates no phantom version), and
+  every point-in-time / version-history / interval-overlap / current-version AQL
+  template returning correct results at each instant.
+
 - **Deterministic grounding for ontology proposals (P11.10 → Phase 10)**: an
   opt-in `--ground` flag (CLI), `ground` field (`suggest-ontology` API), and
   "Add deterministic denormalization findings as advisory evidence" toggle
