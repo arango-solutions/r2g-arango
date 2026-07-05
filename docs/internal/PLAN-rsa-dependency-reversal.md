@@ -156,6 +156,8 @@ dependency for ~140 LOC.
     serialization compat corpus); `ForeignKey` is re-exported from RSA; RSA is a
     core dependency. Gates green (corpus + full non-integration suite + ruff +
     mypy). Zero data migration.
-  - **Step 3 (`rsa_ontology.py` round-trip removal):** NEXT — now unblocked (r2g
-    `Schema` *is* an RSA `PhysicalSchema`).
-  - **Steps 4–6:** pending step 3.
+  - **Step 3 (`rsa_ontology.py` round-trip removal):** DONE — r2g `Schema` is passed
+    straight to RSA's analyzer (no `model_dump_json`/`model_validate_json` bridge);
+    RSA adapter + ontology CLI/UI tests green (incl. real end-to-end golden bundle).
+  - **Steps 4–6** (`fk_inference` reconciliation; connector shims; delete duplicates
+    + flip to a normal dependency): pending — each independently shippable.

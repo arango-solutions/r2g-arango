@@ -20,6 +20,8 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extra['classification']` is tolerated on input. `relational-schema-analyzer` is
   now a **core dependency** (`>=0.2.0,<0.3.0`); the `[ontology]` extra is retained
   as an empty back-compat alias. See `docs/internal/DESIGN-rsa-compat-layer.md`.
+  The `--engine rsa` adapter now passes the r2g `Schema` straight to RSA's analyzer
+  (no JSON round-trip), since the types are unified. No behavior change.
 
 ### Added
 

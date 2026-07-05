@@ -8,8 +8,9 @@ the source tables, emitting a tool-contract bundle
 
 This module is the r2g-side adapter for that library. It:
 
-1. Feeds an r2g :class:`~r2g.types.Schema` to RSA's analyzer (the models are
-   field-compatible — RSA's ``PhysicalSchema`` is a superset of r2g's ``Schema``).
+1. Feeds an r2g :class:`~r2g.types.Schema` directly to RSA's analyzer. r2g's
+   ``Schema`` *subclasses* RSA's ``PhysicalSchema`` (see
+   ``docs/internal/DESIGN-rsa-compat-layer.md``), so no conversion is needed.
 2. Converts the resulting bundle into an :class:`~r2g.llm.base.OntologyProposal`.
 
 The proposal is then run through the **same** validated
@@ -53,9 +54,9 @@ from r2g.llm.base import (
 from r2g.types import Schema
 
 RSA_IMPORT_HINT = (
-    "relational-schema-analyzer is not installed. Install it with "
-    "`pip install r2g-arango[ontology]` (or, for local development, "
-    "`pip install -e ../relational-schema-analyzer`)."
+    "relational-schema-analyzer is not installed. It is a core r2g dependency, so "
+    "reinstalling r2g (`pip install r2g-arango`) should restore it; for local "
+    "development use `pip install -e ../relational-schema-analyzer`."
 )
 
 _DEFAULT_CONFIDENCE = 0.9
@@ -85,15 +86,17 @@ def analyze_schema(
     RSA and fall back to the baseline; the returned bundle is always valid.
     """
     rsa = _require_rsa()
-    # RSA's PhysicalSchema is a field-compatible superset of r2g's Schema; a JSON
-    # round-trip is the explicit, version-tolerant bridge between the two models.
-    physical = rsa.PhysicalSchema.model_validate(schema.model_dump(mode="json"))
+    # r2g's Schema now *subclasses* RSA's PhysicalSchema (see
+    # docs/internal/DESIGN-rsa-compat-layer.md), so it is passed straight to the
+    # analyzer — no JSON round-trip. RSA reads the shared physical fields
+    # (tables/columns/foreign_keys/…); r2g's extra Phase-9 `classification` is
+    # simply ignored by the analyzer.
     analyzer = rsa.RelationalSchemaAnalyzer(
         llm_provider=provider,
         model=model,
         api_key=api_key,
     )
-    return analyzer.analyze(physical).to_bundle()
+    return analyzer.analyze(schema).to_bundle()
 
 
 def _confidence(metadata: dict[str, Any]) -> float:

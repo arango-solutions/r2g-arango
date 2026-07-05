@@ -281,11 +281,11 @@ Land nothing until all are green (`pytest -m "not integration"`, `ruff`, `mypy`)
    (§5). Gates §8.2–§8.5 green: compat corpus (7), full non-integration suite
    (1429 passed, 1 skipped), `ruff`, `mypy` (whole package). No dump fallout; two
    pydantic field-narrowing `type: ignore[assignment]` (invariance) added.
-3. **Simplify `rsa_ontology.py`** to drop the JSON round-trip (§8.4) — *next*. Now
-   that r2g `Schema` **is** an RSA `PhysicalSchema`, pass the instance straight into
-   RSA instead of `model_dump_json` → `model_validate_json`. Verify RSA's baseline
-   tolerates r2g's `ForeignKey` (it reads `is_unique` via the shared type, so this
-   is safe) and the golden `--engine rsa` path stays green.
+3. ✅ **DONE.** Simplify `rsa_ontology.py` to drop the JSON round-trip (§8.4). r2g
+   `Schema` (an RSA `PhysicalSchema` subclass) is now passed straight into
+   `analyzer.analyze(schema)`; RSA reads the shared physical fields and ignores
+   r2g's `classification`. RSA adapter + ontology CLI/UI tests (108, incl. the real
+   end-to-end golden bundle) green; `ruff`/`mypy` clean.
 4. Only then schedule ADR steps 4–6 (`fk_inference` adapter for
    `to_edge_definition` + `sample_values` upstreaming; connector shims; delete
    duplicates; flip the dependency) as separate, independently-shippable PRs.
