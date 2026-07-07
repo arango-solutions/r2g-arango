@@ -57,10 +57,15 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency reversal (Stage 2): the shared-semantics core (physical types,
   FK-inference engine, value samplers, source-type helpers, session protocol) is
   unified, with RSA a core dependency. A live-DB introspection parity audit is added
-  at `tests/integration/test_rsa_introspection_parity.py`; run against the
-  docker-compose stack (2026-07-05) it found RSA's introspection **byte-identical** to
-  r2g's once normalized to r2g's `Schema` shape (PostgreSQL northwind 14 tables/92
-  cols/13 FKs, MySQL shop 4/13/3, SQL Server shop 4/13/3) — see the ADR. No
+  at `tests/integration/test_rsa_introspection_parity.py` and expanded to an
+  edge-case corpus (PostgreSQL northwind/chinook/pagila, MySQL shop, SQL Server shop,
+  CSV csv_demo). Run against the docker-compose stack (2026-07-07): on every **shared
+  base table** — including pagila's ENUM/`DOMAIN`/`text[]`/`tsvector`/composite-PK/
+  partitioned-table edge cases — r2g and RSA agree exactly (0 column/PK/FK diffs). The
+  **one divergence** is that RSA's Postgres introspector also returns views + a
+  materialized view (8 objects on pagila) while r2g returns base tables only; a future
+  reuse must filter view membership. The audit asserts parity on shared tables and
+  records membership/column diffs (non-fatal) — see the ADR. No
   behavior change; import safety for minimal installs preserved (no DB drivers pulled
   by importing the connector base/session).
 

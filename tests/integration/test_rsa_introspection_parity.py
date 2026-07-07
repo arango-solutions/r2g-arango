@@ -7,23 +7,41 @@ per-dialect connectors have diverged and emit RSA-typed objects. This test is an
 introspection currently diverge, which is the evidence a future decision to reuse
 RSA's introspectors would need.
 
-For each SQL dialect it introspects the *same* database with both r2g's connector
-and RSA's connector, normalizes both into r2g's serialized ``Schema`` shape (RSA's
-output re-validated into ``r2g.types.Schema``, which drops RSA's enrichment
-fields), and compares:
+For each case it introspects the *same* source with both r2g's connector and RSA's
+connector, normalizes both into r2g's serialized ``Schema`` shape (RSA's output
+re-validated into ``r2g.types.Schema``, which drops RSA's enrichment fields), and
+compares:
 
-- **Structural invariants (asserted):** identical table names, per-table column
-  names, and primary keys. A future reuse is only viable if these match.
+- **Structural invariants (asserted on the shared tables):** for every table both
+  connectors introspect, the per-table column names and primary keys must match. A
+  future reuse is only viable if these agree.
+- **Membership differences (recorded, non-fatal):** objects only one side returns.
+  This is the load-bearing finding of the audit — e.g. on ``pagila`` RSA's Postgres
+  introspector also returns the 7 views + 1 materialized view that r2g omits (r2g
+  introspects base tables only). Reusing RSA's introspector would therefore start
+  surfacing views as loadable collections unless filtered.
 - **Cosmetic/behavioural differences (recorded, non-fatal):** per-column
   ``data_type`` / ``is_nullable`` / ``is_primary_key`` and declared
-  ``foreign_keys``. These are printed and attached via ``record_property`` so a
-  test run captures the divergence report without failing the suite.
+  ``foreign_keys`` on the shared tables.
 
-Skipped automatically when the databases are unreachable.
+All differences are printed and attached via ``record_property`` so a run captures
+the divergence report without failing the suite on membership-only differences.
+
+The corpus intentionally spans edge cases so the audit is meaningful:
+
+- **PostgreSQL** ``northwind`` (classic), ``chinook`` (larger, integer PKs), and
+  ``pagila`` (ENUM ``mpaa_rating``, ``DOMAIN`` types, ``text[]`` arrays,
+  ``tsvector``, composite PKs like ``film_actor``/``film_category``, and a
+  partitioned ``payment`` table).
+- **MySQL** / **SQL Server** ``shop`` (declared FKs across dialects).
+- **CSV** ``docker/csv_demo`` (header-inferred columns, no PK/FK).
+
+Skipped per-case when the source is unreachable.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -41,12 +59,33 @@ from .conftest import (
     PG_CONN,
     _mssql_available,
     _mysql_available,
-    _pg_available,
 )
 
-requires_pg_only = pytest.mark.skipif(not _pg_available(), reason="PostgreSQL not available")
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# PostgreSQL corpus: the docker-compose stack seeds all three into one instance
+# (northwind as POSTGRES_DB, chinook + pagila via docker/load-samples.sh).
+PG_CORPUS = ["northwind", "chinook", "pagila"]
+
 requires_mysql_only = pytest.mark.skipif(not _mysql_available(), reason="MySQL not available")
 requires_mssql_only = pytest.mark.skipif(not _mssql_available(), reason="SQL Server not available")
+
+
+def _pg_dsn(db: str) -> str:
+    """Return PG_CONN with its database (last path segment) swapped for *db*."""
+    base, _, _ = PG_CONN.rpartition("/")
+    return f"{base}/{db}"
+
+
+def _pg_db_available(db: str) -> bool:
+    try:
+        import psycopg
+
+        with psycopg.connect(_pg_dsn(db)) as conn:
+            conn.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
 
 
 def _r2g_shape(schema: Any) -> dict[str, Any]:
@@ -56,7 +95,7 @@ def _r2g_shape(schema: Any) -> dict[str, Any]:
 
 
 def _compare(
-    dialect: str,
+    case: str,
     r2g_dump: dict[str, Any],
     rsa_dump: dict[str, Any],
     record_property,
@@ -64,24 +103,32 @@ def _compare(
     r2g_tables = r2g_dump["tables"]
     rsa_tables = rsa_dump["tables"]
 
-    # --- Structural invariants (asserted) ---
-    assert set(r2g_tables) == set(rsa_tables), (
-        f"[{dialect}] table set differs: "
-        f"r2g-only={sorted(set(r2g_tables) - set(rsa_tables))}, "
-        f"rsa-only={sorted(set(rsa_tables) - set(r2g_tables))}"
-    )
-    for tname in sorted(r2g_tables):
+    ncols = sum(len(t["columns"]) for t in r2g_tables.values())
+    nfks = sum(len(t["foreign_keys"]) for t in r2g_tables.values())
+
+    # --- Membership differences (recorded, non-fatal) ---
+    r2g_only = sorted(set(r2g_tables) - set(rsa_tables))
+    rsa_only = sorted(set(rsa_tables) - set(r2g_tables))
+    shared = sorted(set(r2g_tables) & set(rsa_tables))
+
+    diffs: list[str] = []
+    if r2g_only:
+        diffs.append(f"objects only r2g returns ({len(r2g_only)}): {r2g_only}")
+    if rsa_only:
+        diffs.append(f"objects only RSA returns ({len(rsa_only)}): {rsa_only}")
+
+    # --- Structural invariants (asserted on shared tables) ---
+    for tname in shared:
         r_cols = [c["name"] for c in r2g_tables[tname]["columns"]]
         s_cols = [c["name"] for c in rsa_tables[tname]["columns"]]
-        assert r_cols == s_cols, f"[{dialect}] {tname}: column names/order differ"
+        assert r_cols == s_cols, f"[{case}] {tname}: column names/order differ"
         assert r2g_tables[tname]["primary_key"] == rsa_tables[tname]["primary_key"], (
-            f"[{dialect}] {tname}: primary key differs "
+            f"[{case}] {tname}: primary key differs "
             f"(r2g={r2g_tables[tname]['primary_key']} rsa={rsa_tables[tname]['primary_key']})"
         )
 
-    # --- Cosmetic / behavioural differences (recorded, non-fatal) ---
-    diffs: list[str] = []
-    for tname in sorted(r2g_tables):
+    # --- Cosmetic / behavioural differences on shared tables (recorded, non-fatal) ---
+    for tname in shared:
         r_by = {c["name"]: c for c in r2g_tables[tname]["columns"]}
         s_by = {c["name"]: c for c in rsa_tables[tname]["columns"]}
         for cname, rcol in r_by.items():
@@ -98,7 +145,8 @@ def _compare(
             )
 
     summary = (
-        f"[{dialect}] structural parity OK; {len(diffs)} cosmetic/behavioural diff(s)"
+        f"[{case}] shared tables={len(shared)} (r2g={len(r2g_tables)} rsa={len(rsa_tables)}) "
+        f"columns={ncols} fks={nfks}; {len(diffs)} recorded diff(s)"
     )
     record_property("parity_summary", summary)
     record_property("parity_diffs", "\n".join(diffs))
@@ -107,18 +155,21 @@ def _compare(
         print("  - " + d)
 
 
-@requires_pg_only
-def test_pg_introspection_parity(record_property):
-    r2g_schema = create_source_connector("postgresql", PG_CONN).get_schema()
-    rsa_schema = rsa_create_source_connector("postgresql", PG_CONN).get_schema()
-    _compare("postgresql", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
+@pytest.mark.parametrize("pg_db", PG_CORPUS)
+def test_pg_introspection_parity(pg_db, record_property):
+    if not _pg_db_available(pg_db):
+        pytest.skip(f"PostgreSQL database {pg_db!r} not available")
+    dsn = _pg_dsn(pg_db)
+    r2g_schema = create_source_connector("postgresql", dsn).get_schema()
+    rsa_schema = rsa_create_source_connector("postgresql", dsn).get_schema()
+    _compare(f"postgresql/{pg_db}", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
 
 
 @requires_mysql_only
 def test_mysql_introspection_parity(record_property):
     r2g_schema = create_source_connector("mysql", MYSQL_CONN).get_schema()
     rsa_schema = rsa_create_source_connector("mysql", MYSQL_CONN).get_schema()
-    _compare("mysql", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
+    _compare("mysql/shop", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
 
 
 @requires_mssql_only
@@ -128,4 +179,21 @@ def test_mssql_introspection_parity(sqlserver_conn_string, record_property):
     dsn = sqlserver_conn_string
     r2g_schema = create_source_connector("sqlserver", dsn).get_schema()
     rsa_schema = rsa_create_source_connector("sqlserver", dsn).get_schema()
-    _compare("sqlserver", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
+    _compare("sqlserver/shop", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)
+
+
+def test_csv_introspection_parity(record_property):
+    csv_dir = _REPO_ROOT / "docker" / "csv_demo"
+    if not csv_dir.is_dir() or not list(csv_dir.glob("*.csv")):
+        pytest.skip(f"CSV demo directory not available at {csv_dir}")
+    params = {"delimiter": ",", "has_header": True}
+    try:
+        r2g_schema = create_source_connector(
+            "csv", str(csv_dir), source_params=params
+        ).get_schema()
+        rsa_schema = rsa_create_source_connector(
+            "csv", str(csv_dir), source_params=params
+        ).get_schema()
+    except ImportError as exc:  # optional CSV dependency not installed
+        pytest.skip(f"CSV connector dependency unavailable: {exc}")
+    _compare("csv/csv_demo", _r2g_shape(r2g_schema), _r2g_shape(rsa_schema), record_property)

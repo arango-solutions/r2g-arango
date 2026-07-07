@@ -208,26 +208,43 @@ dependency for ~140 LOC.
     (`tests/integration/test_rsa_introspection_parity.py`) can quantify the introspection
     divergence against live DBs if reuse is ever revisited.
 
-    **Live-DB parity audit (2026-07-05).** The audit was run against the docker-compose
-    stack (PostgreSQL `northwind`, MySQL `shop`, SQL Server `shop`). For every dialect,
-    RSA's introspection output — re-validated into r2g's `Schema` shape — is **byte-identical
-    to r2g's** (structural *and* per-column `data_type`/`is_nullable`/`is_primary_key` and
-    declared foreign keys):
+    **Live-DB parity audit (expanded corpus, 2026-07-07).** The audit
+    (`tests/integration/test_rsa_introspection_parity.py`) was run against the
+    docker-compose stack across a deliberately edge-case-heavy corpus. For every case,
+    RSA's introspection output was re-validated into r2g's `Schema` shape and compared
+    to r2g's. The comparison **asserts** parity on the *shared* tables (column names,
+    primary keys) and **records** membership differences (objects only one side returns)
+    and per-column/FK diffs.
 
-    | Dialect | Source DB | Tables | Columns | FKs | `r2g == RSA` (r2g-shape) |
+    | Case | Source | Shared tables (r2g / rsa) | Columns | FKs | Diffs |
     |---|---|---|---|---|---|
-    | PostgreSQL | northwind | 14 | 92 | 13 | identical |
-    | MySQL | shop | 4 | 13 | 3 | identical |
-    | SQL Server | shop | 4 | 13 | 3 | identical |
+    | PostgreSQL | northwind | 14 / 14 | 92 | 13 | none |
+    | PostgreSQL | chinook | 11 / 11 | 64 | 11 | none |
+    | PostgreSQL | pagila | 22 / **30** | 129 | 39 | **RSA also returns 8 objects** (7 views + 1 materialized view) |
+    | MySQL | shop | 4 / 4 | 13 | 3 | none |
+    | SQL Server | shop | 4 / 4 | 13 | 3 | none |
+    | CSV | csv_demo | 4 / 4 | 18 | 0 | none |
 
-    So the 100–160 line code divergence manifests **only** as RSA enrichment fields
-    (`SourceProvenance`, `ordinal`, `is_unique`, …) that r2g's serializers drop; the
-    r2g-relevant output does not differ for these schemas. This is encouraging evidence
-    that a future introspection reuse *could* be byte-stable — but it is **not** a
-    guarantee across all schemas/edge cases (enum sampling, computed columns, exotic
-    types, and the still-local `kafka`/`csv`/`snowflake` paths remain untested here), so
-    the descope stands: reuse would still need the re-type + classification-merge wrapper
-    plus a broader parity corpus. The audit test is retained to re-run that check on demand.
+    **Findings.**
+    - On every **shared base table** — including pagila's edge cases (ENUM `mpaa_rating`,
+      `DOMAIN` types, `text[]` arrays, `tsvector`, composite PKs `film_actor`/`film_category`,
+      and the partitioned `payment` table) — r2g and RSA agree **exactly** on column names,
+      types, nullability, primary keys, and declared foreign keys. Zero column/PK/FK diffs
+      across the whole corpus. The 100–160 line code divergence manifests only as RSA
+      enrichment fields (`SourceProvenance`, `ordinal`, `is_unique`, …) that r2g's
+      serializers drop.
+    - **The one real divergence is object membership:** RSA's Postgres introspector also
+      returns **views and materialized views** (pagila: `actor_info`, `customer_list`,
+      `film_list`, `nicer_but_slower_film_list`, `rental_by_category` [matview],
+      `sales_by_film_category`, `sales_by_store`, `staff_list`), whereas r2g introspects
+      **base tables only**. A naive reuse of RSA's introspector would therefore start
+      surfacing views as loadable collections. This is the concrete gap any future reuse
+      must close (filter to base tables, or make view inclusion opt-in).
+
+    So the descope stands: reuse remains a wrapper effort — re-type into r2g's `Schema`,
+    re-apply the Phase-9 classification merge, **and filter RSA's view/matview membership
+    to match r2g** — validated by this audit corpus (still to extend to `snowflake` and
+    `kafka`, which are untested here). The audit test is retained to re-run on demand.
   - **Step 6** (delete remaining duplicates + flip to a normal dependency): resolved by
     the descope — RSA became a core dependency in step 2, and the safe session/base
     shares above are the only connector-layer de-dup. The introspection connectors are
