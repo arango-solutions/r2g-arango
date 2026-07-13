@@ -60,9 +60,14 @@ dependencies = [
     # Shared physical-schema type core. r2g's `types.Schema/Table/Column` are
     # re-based on RSA's `PhysicalSchema/Table/Column` (see
     # docs/internal/DESIGN-rsa-compat-layer.md), so RSA is now a core runtime
-    # dependency. Only RSA's lightweight core (pydantic types) is used here;
-    # its heavy connector/owl/mcp features remain its own optional extras.
-    "relational-schema-analyzer>=0.2.0,<0.3.0",
+    # dependency. Primarily RSA's lightweight core (pydantic types, FK-inference
+    # engine, source-type helpers) is used here; its heavy connector/owl/mcp
+    # features remain its own optional extras. Floor is 0.4.0: that release adds
+    # the `extra` consumer-metadata passthrough (0.2.0), physical-model enrichment
+    # (0.3.0), and the dbt/OSI data-catalog connectors (0.4.0) r2g builds on, and
+    # it is what the test suite (incl. the introspection parity audit) validates
+    # against.
+    "relational-schema-analyzer>=0.4.0,<0.5.0",
 ]
 
 # Optional extras let users install only what they need:

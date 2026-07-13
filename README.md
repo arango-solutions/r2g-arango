@@ -1,15 +1,17 @@
-# r2g — (Experimental) Relational-to-Graph for ArangoDB
+# r2g — Relational-to-Graph for ArangoDB
 
 
 [![CI](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml/badge.svg)](https://github.com/ArthurKeen/r2g-arango/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python: 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
-> **Purpose.** This repository is primarily an educational reference for
-> understanding relational-to-graph mapping with ArangoDB. It demonstrates
-> common patterns, trade-offs, and implementation techniques for projecting
-> relational and structured data into a graph model; it is not intended to
-> define or supersede any ArangoDB product roadmap.
+> **Purpose.** This repository is a working reference application for
+> relational-to-graph mapping with ArangoDB: it implements the patterns,
+> trade-offs, and techniques for projecting relational and structured data
+> into a graph model, and serves as the reference consumer of the
+> `relational-schema-analyzer` core. That core (RSA) is actively adopted by
+> other projects in ArangoDB Solutions (e.g. the contextual-data-fabric
+> building blocks) — so it is an active dependency, not a throwaway demo.
 
 > Project relational and structured data sources as a graph in ArangoDB —
 > materialize via batch ETL, sync via CDC/Kafka, or query interactively
@@ -25,9 +27,17 @@ supported as relational sources today (plus CSV directories and Kafka topics);
 the connector layer is designed for additional structured and semi-structured
 sources over time.
 
-> **Status — experimental reference implementation.** Useful for evaluating
-> relational-to-graph migration with ArangoDB and as a starting point for
-> production pipelines, but not itself production-hardened software.
+> **Status — actively used; the production core is RSA.** r2g is the
+> reference *application* for relational-to-graph migration with ArangoDB, and
+> its reusable introspection/analysis core has been extracted into
+> [`relational-schema-analyzer`](https://github.com/ArthurKeen/relational-schema-analyzer)
+> (RSA). **This core is actively adopted by other projects in ArangoDB
+> Solutions** — the contextual-data-fabric building blocks depend on it — so
+> RSA is the production-grade dependency and carries the production bar. **Downstream
+> systems depend on RSA (and named, tested r2g modules), not on r2g as a
+> whole.** r2g itself is well-tested (CI: ruff + mypy + a large unit suite +
+> Dockerized integration); its operational envelope is still single-node with
+> no scale/HA guarantees — tracked in [Known limitations](#known-limitations).
 
 See [`docs/PRD.md`](docs/PRD.md) for the full product requirements document
 and roadmap.
@@ -563,7 +573,7 @@ Use `--offset-reset earliest` or `latest` to control where a new consumer group 
 
 ## Known limitations
 
-This is an experimental reference implementation. The following constraints apply:
+r2g is a reference application (see the Status note near the top): well-tested, but not held to a production operational bar. The following constraints apply:
 
 - **Supported sources: PostgreSQL, MySQL / MariaDB, SQL Server, Snowflake, and CSV directories** (Kafka is supported for streaming sync via `kafka-start` and introspection in the catalog). Schema introspection, FK inference (with value-overlap sampling on PostgreSQL, MySQL, SQL Server, and CSV), dump export (`r2g source dump`), and streaming into ArangoDB (`r2g stream --source …`) work across these backends through a common `SourceConnector` / `SourceSession` abstraction. MySQL is gated on the optional `r2g-arango[mysql]` extra (pure-Python `pymysql`, also covers MariaDB); SQL Server on `r2g-arango[sqlserver]` (pure-Python `pymssql`); Snowflake on `r2g-arango[snowflake]`. PostgreSQL, MySQL, and SQL Server are verified end-to-end against live servers in the integration suite; end-to-end Snowflake verification against a live warehouse remains a field-validation exercise. No SQLite or Oracle support yet.
 - **External data catalog discovery (Phase 8a):** connect to an [OpenMetadata](https://open-metadata.org) catalog (`r2g-arango[openmetadata]`) to browse its database/schema/Kafka assets and import a selection as an r2g source — see `r2g catalog`. Distinct from r2g's internal catalog; read-only; credentials stay with the user (the catalog supplies host/db, not secrets). AWS Glue and Atlan are planned next (see [docs/PRD.md](docs/PRD.md) Phase 8).

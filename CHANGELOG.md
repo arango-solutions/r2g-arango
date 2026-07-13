@@ -391,6 +391,16 @@ security posture.
 
 ### Changed
 
+- **Positioning corrected.** README + PRD now state the reality: r2g's
+  introspection/analysis core — extracted into `relational-schema-analyzer`
+  (RSA) — is actively adopted by other projects in ArangoDB Solutions (the
+  contextual-data-fabric building blocks depend on it), so RSA is the
+  production-grade dependency and carries the production bar. r2g is the
+  *reference application* composing it.
+  Downstream systems depend on RSA (and named, tested r2g modules), not on r2g
+  as a whole. Removes the blanket "experimental / educational / not intended
+  to supersede any ArangoDB roadmap" framing, which was both an undersell of
+  the tested core and, given active adoption, simply inaccurate.
 - Code-quality remediation: consolidated duplicated Python and JS helpers
   (edge-target map, PG connection factory, table preview, shared
   mapper/explorer UI helpers), removed dead code, unified HTML escapers.
