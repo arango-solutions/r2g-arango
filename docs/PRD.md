@@ -1025,6 +1025,40 @@ produces high-quality, deterministic *grounding* for the Phase 10 LLM proposal.
 
 ---
 
+### Phase 12: Federated query & runtime mappings (Contextual Data Fabric) -- Planned
+
+Serves the **Contextual Data Fabric** project (fabric modules M4 Mapping Layer and M5 Federated Query Engine; fabric spec `contextual-data-fabric/docs/architecture/_repo-enhancements/r2g-federated-query.md`). The customer constraint is *do not move the data*: instead of running the mapping once to hydrate ArangoDB, r2g must expose the mapping as a runtime artifact and compile it — plus a predicate — into a **pushdown query** executed at the source, per question. Batch/CDC loading remains available; it stops being the only consumption mode.
+
+**What already exists (why this is a bounded step, not a rewrite):** mappings are produced independently of any load (`ingest-schema → schema.json → generate-config → mapping.yaml`); the field-expression engine (Phase 5c, reused by 9b masking) expresses value transforms source-agnostically; source connectors + consistent-snapshot sessions cover PostgreSQL, MySQL/MariaDB, SQL Server, and Snowflake; RSA supplies the conceptual↔physical bundle. The genuinely new capability is **query generation**: mapping + concept + predicate → parameterized source-dialect SQL.
+
+#### Requirements
+
+| ID | Requirement | Notes |
+| :--- | :--- | :--- |
+| P12.1 | **Runtime mapping export.** Expose the existing mapping (concept→table, property→column, field expressions) as a versioned, load-independent artifact (OSI/YAML) consumable by the fabric's mapping layer. Include a content hash so consumers can cite the mapping version used for a query. | Mostly packaging of `generate-config` output; no loader dependency. |
+| P12.2 | **Pushdown query generation.** Given a mapping + resolved concept/properties + predicate (filters, projections), generate a **parameterized SQL query** in the source dialect (PostgreSQL first) that returns only the requested rows/columns. Filters must push down; no client-side scans. | The new build. Compile field expressions per dialect; reuse the Phase 5c expression engine. |
+| P12.3 | **No-materialization mode.** A documented mode/entry point producing mappings + queries with no ArangoDB writes at all. Batch/CDC load remains an option, not a default. | Read-only; honors Phase 9 classification gates (no generating queries that select Restricted/PII columns above the entitlement threshold unmasked). |
+| P12.4 | **Citation contract.** Every generated query is returned *alongside* its results: query text, bind parameters, source objects (tables/columns) read, and an as-of execution timestamp — so the fabric's grounding layer can cite the actual SQL. | Mirrors the fabric M7 requirement; nothing hidden. |
+| P12.5 | **Query fragmentation (P2).** When a request spans >1 source, emit per-source fragments + the join keys; the fabric's engine reassembles. | Depends on P12.2 shipping for one source first. |
+| P12.6 | **Deterministic + LLM paths (P2).** Query generation is deterministic from the mapping; an optional LLM path (behind the existing `LLMProvider` seam from Phase 10) acts as safety net only, with the generated query always surfaced for inspection. | Consistent with Phase 10 principles: human-reviewable, temperature 0, provider-agnostic. |
+| P12.7 | **Snowflake dialect (P2), Databricks (P3).** Extend P12.2 compilation to the other supported sources. | Snowflake connector + sessions already exist (Phase 6). |
+| P12.8 | **Module boundary.** Ship behind a named, tested module (or extract to an `r2g-query`/RSA-adjacent package) so downstream systems pin it the way they pin RSA — not r2g wholesale. | Decide extraction at kickoff; follows the RSA precedent. |
+
+#### Phasing
+
+- **12a (fabric Phase 1, ~days):** P12.1 + P12.2 + P12.3 + P12.4 for PostgreSQL — enough for the fabric's 1-week federated-query demo (one relational DB + the Arango unstructured graph).
+- **12b (fabric Phase 2):** P12.5 + P12.6 + P12.7 (Snowflake).
+- **12c (fabric Phase 3):** P12.7 (Databricks); join-key optimization feedback into fragmentation.
+
+#### Non-functional notes
+
+- **Read-only by construction:** generated queries are `SELECT`-only; execution goes through read-only roles (fabric CC-7).
+- **Classification-aware:** P12.2/P12.3 respect Phase 9 sensitivity gates — the federated path must not become a bypass around the entitlement report ("advise and gate" applies to reads leaving the source, not just loads).
+- **Inspectable:** the mapping artifact, the generated SQL, and the bind parameters are all first-class outputs; nothing about the pushdown path is a black box.
+- **Acceptance (12a):** given a Postgres schema (Chinook/Pagila samples suffice), r2g emits a versioned mapping artifact and, for a seed-question predicate, a parameterized pushdown query returning the right rows with no ArangoDB writes — query text + source objects + as-of timestamp returned for citation.
+
+---
+
 ## 6. Future considerations (Phase 7+) -- Exploratory
 
 These ideas are exploratory and represent potential directions, not committed work. Each would require significant design effort.
@@ -1089,5 +1123,6 @@ These ideas are exploratory and represent potential directions, not committed wo
 | **Denormalization analysis (Phase 11a) — Implemented** | **June 2026** | Shipped the deterministic core: `src/r2g/denorm.py` (`DenormFinding`, `AnalyzeOptions`, `analyze_denormalization`) with a structural repeating-group detector and a sampler-gated embedded-lookup (functional-dependency) detector. Extended all four value samplers (PG/MySQL/SQL Server/CSV) with bounded `distinct_ratio` + `group_single_valued` probes, surfaced through the existing `create_value_sampler`. New read-only entry points (P11.7 complete): `r2g source analyze-denorm <name> [--sample] [--sample-limit] [--min-confidence] [--no-sample-columns] [--json]` CLI and `POST /api/sources/{name}/analyze-denorm`. Advisory only; classification gate (`no_sample_columns` + `is_sampleable` hook) keeps sensitive columns out of the sampler. Unit-tested with a fake sampler; 1221 tests passing, mypy clean. 11b (remaining detectors + Studio review card) and 11c (remediation scaffolding + Phase-10 grounding) remain. |
 
 | **Positioning / production boundary** | **June 2026** | Corrected r2g's status across README + PRD §1 + subtitle to reflect reality: other projects in ArangoDB Solutions actively adopt r2g's introspection/analysis core (`relational-schema-analyzer`, RSA); the contextual-data-fabric building blocks depend on it, so RSA carries the production bar. r2g is the *reference application* composing it. Downstream systems depend on RSA + named tested r2g modules, not on r2g wholesale. Removed the blanket "experimental/educational/not intended to supersede any ArangoDB roadmap" framing — an undersell of the tested core and, given active adoption, inaccurate. |
+| **Federated query & runtime mappings (Phase 12) — Planned** | **July 2026** | Added Phase 12 for the Contextual Data Fabric (fabric M4/M5; spec `contextual-data-fabric/docs/architecture/_repo-enhancements/r2g-federated-query.md`): expose mappings as a versioned runtime artifact (P12.1), compile mapping + predicate to parameterized pushdown SQL (P12.2 — the new build; Postgres first, Snowflake/Databricks later), a documented no-materialization mode (P12.3), and a citation contract returning query text + bind params + source objects + as-of timestamp alongside results (P12.4). P2+: query fragmentation across sources, deterministic-first with optional LLM safety net via the Phase 10 provider seam, additional dialects. Ships behind a named, pinnable module (RSA precedent). Read-only by construction; classification-aware (Phase 9 gates apply to federated reads). No code yet. |
 
 The source files `PRD-gemini.md` and `PRD-notebooklm.md` remain in the repository for reference and are superseded by this file.
