@@ -580,6 +580,55 @@ def export_csi(
         raise typer.Exit(code=1)
 
 
+@app.command("export-r2rml")
+def export_r2rml(
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+    schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
+    output: str = typer.Option("mapping.r2rml.ttl", "--output", "-o", help="Output R2RML Turtle path"),
+    concept_base: str = typer.Option(
+        "urn:arango-sparql:concept#", "--concept-base", help="IRI namespace for classes/properties"
+    ),
+    resource_base: str = typer.Option(
+        "http://r2g.example/resource/", "--resource-base", help="IRI namespace for row subject IRIs"
+    ),
+    source_type: str = typer.Option(
+        "relational", "--source-type", help="Source system kind (recorded in the header)"
+    ),
+) -> None:
+    """Emit an R2RML mapping (relational -> RDF) for SPARQL->SQL pushdown via Ontop.
+
+    R2RML lets a Virtual Knowledge Graph engine answer SPARQL over the live
+    relational database with no data movement. Concept IRIs default to the same
+    namespace the AQL leg uses, so both federation legs share one vocabulary.
+    """
+    from r2g.r2rml import mapping_to_r2rml
+
+    try:
+        mapping = ConfigManager.load_config(config_path)
+        schema = Schema.load_from_file(schema_file)
+        ttl = mapping_to_r2rml(
+            mapping,
+            schema,
+            concept_base=concept_base,
+            resource_base=resource_base,
+            source_type=source_type,
+        )
+        Path(output).write_text(ttl, encoding="utf-8")
+        n_entities = sum(
+            1
+            for cm in mapping.collections.values()
+            if cm.collection_type != "edge" and not cm.is_join_table
+        )
+        console.print(f"[green]Wrote R2RML mapping:[/green] [bold]{output}[/bold]")
+        console.print(
+            f"  [dim]{n_entities} TriplesMaps, {len(mapping.edges)} FK relationships[/dim]"
+        )
+    except Exception as e:
+        log.exception("export_r2rml_failed", output=output)
+        console.print(f"[red]Failed to export R2RML:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def transform_nodes(
     schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),
