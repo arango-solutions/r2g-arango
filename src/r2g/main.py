@@ -529,6 +529,57 @@ def generate_csv_import(
         raise typer.Exit(code=1)
 
 
+@app.command("export-csi")
+def export_csi(
+    config_path: str = typer.Option(..., "--config", "-c", help="Mapping config YAML"),
+    schema_file: Optional[str] = typer.Option(
+        None, "--schema", "-s", help="Path to schema.json (enriches entity properties)"
+    ),
+    output: str = typer.Option("mapping.csi.json", "--output", "-o", help="Output CSI v1 JSON path"),
+    source_type: str = typer.Option(
+        "relational", "--source-type", help="provenance.source.kind (e.g. postgresql, mysql, mssql)"
+    ),
+    source_ref: str = typer.Option(
+        "", "--source-ref", help="provenance.source.ref (database/schema pointer; defaults to config source_schema)"
+    ),
+    validate: bool = typer.Option(True, "--validate/--no-validate", help="Validate output against the CSI v1 schema"),
+) -> None:
+    """Emit a forward CSI v1 interchange document from an r2g mapping.
+
+    CSI v1 pairs the conceptual model (entities/relationships) with its ArangoDB
+    physical mapping so downstream tools (Ontop R2RML, arango-sparql-py) can
+    partition a conceptual query by source. r2g is the forward producer.
+    """
+    from datetime import datetime, timezone
+
+    from r2g.csi import mapping_to_csi, validate_csi
+
+    try:
+        mapping = ConfigManager.load_config(config_path)
+        schema = Schema.load_from_file(schema_file) if schema_file else None
+        generated_at = datetime.now(timezone.utc).isoformat()
+        doc = mapping_to_csi(
+            mapping,
+            schema,
+            source_type=source_type,
+            source_ref=source_ref,
+            generated_at=generated_at,
+        )
+        if validate:
+            validate_csi(doc)
+        Path(output).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+        console.print(f"[green]Wrote CSI v1 document:[/green] [bold]{output}[/bold]")
+        console.print(
+            f"  [dim]{len(doc['conceptualModel']['entities'])} entities, "
+            f"{len(doc['conceptualModel']['relationships'])} relationships"
+            f"{' (schema-validated)' if validate else ''}[/dim]"
+        )
+    except Exception as e:
+        log.exception("export_csi_failed", output=output)
+        console.print(f"[red]Failed to export CSI:[/red] {e}")
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def transform_nodes(
     schema_file: str = typer.Option(..., "--schema", "-s", help="Path to schema.json"),

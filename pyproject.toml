@@ -57,6 +57,10 @@ dependencies = [
     "structlog>=24.1.0,<26.0",
     "python-dotenv>=1.0.0,<2.0",
     "cryptography>=42.0.0,<49.0",
+    # CSI v1 interchange emitter (src/r2g/csi.py) validates its output against the
+    # vendored JSON Schema. Also a transitive RSA dep; declared here since r2g
+    # imports it directly.
+    "jsonschema>=4.0,<5.0",
     # Shared physical-schema type core. r2g's `types.Schema/Table/Column` are
     # re-based on RSA's `PhysicalSchema/Table/Column` (see
     # docs/internal/DESIGN-rsa-compat-layer.md), so RSA is now a core runtime
@@ -111,7 +115,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-r2g = ["ui/static/*", "ui/static/**/*"]
+r2g = ["ui/static/*", "ui/static/**/*", "schemas/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

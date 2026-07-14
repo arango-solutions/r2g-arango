@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arangodb.com/schema-analyzer/csi/v1/csi.schema.json",
+  "title": "Conceptual Schema Interchange (CSI) v1",
+  "description": "Direction-agnostic interchange document for a conceptual model + its ArangoDB physical mapping. Produced by arango-schema-analyzer (reverse) or a forward relational->graph tool (e.g. R2G). The three core blocks are the stable contract; detection enrichments ride along as optional additive fields (additionalProperties: true) and are never required of a consumer. VENDORED COPY of arango-schema-analyzer/schema_analyzer/csi/v1/csi.schema.json (copy-now-converge-later; see docs/PRD.md Phase 12 / contextual-data-fabric ADR-0001).",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["csiVersion", "conceptualModel", "arangoPhysicalMapping", "provenance"],
+  "properties": {
+    "csiVersion": { "const": "1" },
+
+    "conceptualModel": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["entities", "relationships"],
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "labels": { "type": "array", "items": { "type": "string" } },
+              "properties": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["type", "fromEntity", "toEntity"],
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "fromEntity": { "type": "string", "minLength": 1 },
+              "toEntity": { "type": "string", "minLength": 1 },
+              "properties": { "type": "array", "items": { "type": "object" } }
+            }
+          }
+        },
+        "properties": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+
+    "arangoPhysicalMapping": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["entities", "relationships"],
+      "properties": {
+        "entities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["style"],
+            "properties": {
+              "style": { "type": "string", "enum": ["COLLECTION", "LABEL"] },
+              "collectionName": { "type": "string" },
+              "typeField": { "type": "string" },
+              "typeValue": { "type": "string" }
+            }
+          }
+        },
+        "relationships": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["style"],
+            "not": { "required": ["collectionName"] },
+            "properties": {
+              "style": { "type": "string", "enum": ["DEDICATED_COLLECTION", "GENERIC_WITH_TYPE"] },
+              "edgeCollectionName": { "type": "string" },
+              "typeField": { "type": "string" },
+              "typeValue": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["producer", "direction", "source"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1 },
+        "producerVersion": { "type": "string" },
+        "direction": { "type": "string", "enum": ["reverse", "forward"] },
+        "source": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "minLength": 1 },
+            "ref": { "type": "string" },
+            "fingerprint": { "type": ["string", "null"] }
+          }
+        },
+        "generatedAt": { "type": ["string", "null"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}
