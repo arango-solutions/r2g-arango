@@ -158,7 +158,8 @@ def mapping_to_r2rml(
     for cm in config.collections.values():
         if cm.collection_type == "edge" or cm.is_join_table:
             continue
-        entity = cm.target_collection
+        # CC-12 conceptual class name; physical names stay in the logical table.
+        entity = owl_entity_name(cm.target_collection)
         table = schema.tables.get(cm.source_table)
         if table is None:
             raise R2RMLError(
