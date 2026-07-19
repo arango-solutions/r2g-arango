@@ -43,6 +43,27 @@ _ENTITY_STYLE = "COLLECTION"
 _RELATIONSHIP_STYLE = "DEDICATED_COLLECTION"
 
 
+def owl_entity_name(name: str) -> str:
+    """Conceptual entity name per the fabric's CC-12 OWL convention.
+
+    Singular PascalCase (``usage_metrics`` → ``UsageMetric``); the physical
+    collection/table name is untouched — it lives in the physical mapping.
+    """
+    from .naming import convert_identifier, singularize, split_identifier
+
+    words = split_identifier(name)
+    if words:
+        words[-1] = singularize(words[-1])
+    return convert_identifier("_".join(words), "pascal") or name
+
+
+def owl_property_name(name: str) -> str:
+    """Conceptual property/relationship name per CC-12: lowerCamel."""
+    from .naming import convert_identifier
+
+    return convert_identifier(name, "camel") or name
+
+
 def _entity_property_names(cm: CollectionMapping, table: Optional[Table]) -> List[str]:
     """Ordered, de-duplicated target-property names for one collection.
 
@@ -120,22 +141,29 @@ def mapping_to_csi(
     # --- Conceptual + physical entities: one per document collection. ---
     conceptual_entities: List[Dict[str, Any]] = []
     physical_entities: Dict[str, Dict[str, Any]] = {}
+    entity_name_by_collection: Dict[str, str] = {}
     for cm in config.collections.values():
         if cm.collection_type == "edge" or cm.is_join_table:
             # Join tables / edge collections are relationships, not entities.
             continue
-        name = cm.target_collection
+        # Conceptual name follows CC-12 (singular PascalCase); the physical
+        # collection name is preserved in the physical mapping.
+        name = owl_entity_name(cm.target_collection)
+        entity_name_by_collection[cm.target_collection] = name
         prop_names = _entity_property_names(cm, tables.get(cm.source_table))
         conceptual_entities.append(
             {
                 "name": name,
                 "labels": [name],
-                "properties": [{"name": p} for p in prop_names],
+                "properties": [{"name": owl_property_name(p)} for p in prop_names],
             }
         )
         physical_entities[name] = {
             "style": _ENTITY_STYLE,
             "collectionName": cm.target_collection,
+            # Conceptual property → stored field, so the AQL/SQL legs resolve
+            # OWL-style names back to physical attributes (CC-12).
+            "properties": {owl_property_name(p): {"field": p} for p in prop_names},
         }
 
     # --- Conceptual + physical relationships: one per edge definition. ---
@@ -147,14 +175,14 @@ def mapping_to_csi(
     conceptual_relationships: List[Dict[str, Any]] = []
     physical_relationships: Dict[str, Dict[str, Any]] = {}
     for edge in config.edges:
-        rel_type = edge.edge_collection
-        from_entity = target_by_source.get(edge.from_collection, edge.from_collection)
-        to_entity = target_by_source.get(edge.to_collection, edge.to_collection)
+        rel_type = owl_property_name(edge.edge_collection)
+        from_coll = target_by_source.get(edge.from_collection, edge.from_collection)
+        to_coll = target_by_source.get(edge.to_collection, edge.to_collection)
         conceptual_relationships.append(
             {
                 "type": rel_type,
-                "fromEntity": from_entity,
-                "toEntity": to_entity,
+                "fromEntity": entity_name_by_collection.get(from_coll, owl_entity_name(from_coll)),
+                "toEntity": entity_name_by_collection.get(to_coll, owl_entity_name(to_coll)),
             }
         )
         # NB: relationships must NOT carry ``collectionName`` (CSI schema

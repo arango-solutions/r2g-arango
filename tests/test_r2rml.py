@@ -185,7 +185,7 @@ def test_datatype_mapping():
 def test_fk_referencing_object_map():
     g = _parse(mapping_to_r2rml(_config(), _schema()))
     tms = _triples_maps(g)
-    om = _poms(g, tms["Order"])["placed_by"]
+    om = _poms(g, tms["Order"])["placedBy"]
     # The referencing object map points at the User TriplesMap...
     assert g.value(om, RR.parentTriplesMap) == tms["User"]
     # ...and joins child user_id (orders) to parent id (users).

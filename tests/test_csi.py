@@ -124,7 +124,7 @@ def test_relationship_endpoints_resolve_to_target_collections():
     rels = doc["conceptualModel"]["relationships"]
     assert len(rels) == 1
     rel = rels[0]
-    assert rel["type"] == "placed_by"
+    assert rel["type"] == "placedBy"  # CC-12 lowerCamel
     # from_collection='orders' -> 'Order', to_collection='users' -> 'User'.
     assert rel["fromEntity"] == "Order"
     assert rel["toEntity"] == "User"
@@ -132,7 +132,7 @@ def test_relationship_endpoints_resolve_to_target_collections():
 
 def test_physical_relationships_omit_collection_name():
     doc = mapping_to_csi(_sample_config())
-    phys = doc["arangoPhysicalMapping"]["relationships"]["placed_by"]
+    phys = doc["arangoPhysicalMapping"]["relationships"]["placedBy"]
     assert phys["style"] == "DEDICATED_COLLECTION"
     assert phys["edgeCollectionName"] == "placed_by"
     # CSI schema forbids collectionName on relationships.
@@ -155,7 +155,7 @@ def test_properties_without_schema_use_explicit_mappings_only():
     doc = mapping_to_csi(_sample_config())
     entities = {e["name"]: e for e in doc["conceptualModel"]["entities"]}
     assert [p["name"] for p in entities["User"]["properties"]] == ["name"]
-    assert [p["name"] for p in entities["Order"]["properties"]] == ["total_cents"]
+    assert [p["name"] for p in entities["Order"]["properties"]] == ["totalCents"]  # CC-12 lowerCamel
 
 
 def test_provenance_shape():

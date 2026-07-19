@@ -115,10 +115,14 @@ def mapping_to_r2rml(
         R2RMLError: when a document entity's source table is absent from the
             schema (R2RML cannot be emitted without it).
     """
-    # Conceptual entity name (== target collection) per source table, for
-    # resolving FK edge endpoints to the TriplesMaps that host them.
+    # Conceptual entity name per source table (CC-12: singular PascalCase —
+    # the class IRI the fabric queries with), for resolving FK edge endpoints
+    # to the TriplesMaps that host them. Physical table/column names stay in
+    # rr:tableName / rr:column / rr:template.
+    from .csi import owl_entity_name, owl_property_name
+
     entity_by_source: Dict[str, str] = {
-        cm.source_table: cm.target_collection
+        cm.source_table: owl_entity_name(cm.target_collection)
         for cm in config.collections.values()
         if cm.collection_type != "edge" and not cm.is_join_table
     }
@@ -137,7 +141,7 @@ def mapping_to_r2rml(
             continue
         rels_by_entity.setdefault(from_entity, []).append(
             {
-                "type": edge.edge_collection,
+                "type": owl_property_name(edge.edge_collection),
                 "to_entity": to_entity,
                 "joins": list(zip(edge.from_fields, edge.to_fields)),
             }
@@ -197,7 +201,10 @@ def mapping_to_r2rml(
                 obj += f" ; rr:datatype {dtype}"
             preds.append(
                 "    rr:predicateObjectMap [\n"
-                f"        rr:predicate <{concept_base}{prop}> ;\n"
+                # Predicate IRI is the CC-12 conceptual name; rr:column above
+                # keeps the physical column — Ontop reads the column, queries
+                # use the concept.
+                f"        rr:predicate <{concept_base}{owl_property_name(prop)}> ;\n"
                 f"        rr:objectMap [ {obj} ] ;\n"
                 "    ]"
             )
