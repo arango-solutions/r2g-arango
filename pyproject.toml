@@ -83,6 +83,7 @@ postgres = ["psycopg[binary]>=3.1.0,<4.0"]
 mysql = ["pymysql>=1.1.0,<2.0"]
 sqlserver = ["pymssql>=2.2.0,<3.0"]
 snowflake = ["snowflake-connector-python>=3.0.0,<4.0"]
+clickhouse = ["clickhouse-connect>=0.7,<1.0"]
 kafka = ["confluent-kafka>=2.3.0,<3.0"]
 ui = ["fastapi>=0.110.0,<1.0", "uvicorn[standard]>=0.27.0,<1.0", "httpx>=0.27.0,<1.0"]
 mcp = ["mcp[cli]>=1.20.0,<2.0"]
@@ -93,7 +94,7 @@ llm = ["httpx>=0.27.0,<1.0"]
 # now a core dependency (see [project].dependencies), so `r2g-arango[ontology]`
 # resolves to the same install. Remove after one release.
 ontology = []
-all = ["r2g-arango[postgres,mysql,sqlserver,snowflake,kafka,ui,mcp,openmetadata,llm,ontology]"]
+all = ["r2g-arango[postgres,mysql,sqlserver,snowflake,clickhouse,kafka,ui,mcp,openmetadata,llm,ontology]"]
 test = ["pytest>=8.0", "pytest-cov>=5.0", "rdflib>=7.0,<8.0"]
 dev = ["ruff>=0.4", "mypy>=1.10"]
 

@@ -84,6 +84,7 @@ SUPPORTED_SOURCE_TYPES: tuple[str, ...] = (
     "mysql",
     "sqlserver",
     "snowflake",
+    "clickhouse",
     "csv",
     "kafka",
 )
@@ -129,6 +130,10 @@ def create_source_connector(
         from r2g.connectors.snowflake import SnowflakeConnector
 
         return SnowflakeConnector(connection_string, schema_name=schema_name)
+    if key == "clickhouse":
+        from r2g.connectors.clickhouse import ClickHouseConnector
+
+        return ClickHouseConnector(connection_string, schema_name=schema_name)
     if key == "csv":
         from r2g.connectors.csv_source import CsvConnector
 

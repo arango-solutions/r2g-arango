@@ -55,8 +55,10 @@ def _xsd_datatype(sql_type: str) -> Optional[str]:
     """Map a SQL type name to an XSD datatype IRI, or None for string-like
     types (R2RML's natural default is fine there)."""
     t = sql_type.strip().lower()
-    if t in {"int", "int2", "int4", "int8"} or any(
-        k in t for k in ("bigint", "smallint", "integer", "serial")
+    if (
+        t in {"int", "int2", "int4", "int8"}
+        or any(k in t for k in ("bigint", "smallint", "integer", "serial"))
+        or t.startswith(("int", "uint"))  # ClickHouse Int8/…/256, UInt8/…
     ):
         return "xsd:integer"
     if any(k in t for k in ("numeric", "decimal", "money")):
