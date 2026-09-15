@@ -172,7 +172,7 @@ class TestGenerate:
 
     def test_rejects_unsupported_dialect(self):
         with pytest.raises(ForgeError, match="dialect"):
-            generate(sample_ontology(), dialect="clickhouse", seed=1)
+            generate(sample_ontology(), dialect="duckdb", seed=1)
 
     def test_rejects_bad_rows_per_entity(self):
         with pytest.raises(ForgeError, match="rows_per_entity"):

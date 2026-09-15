@@ -63,17 +63,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Start PostgreSQL + MySQL + SQL Server + ArangoDB
+      - name: Start PostgreSQL + MySQL + SQL Server + ArangoDB + ClickHouse
         run: docker compose up -d --wait
       - name: Install dependencies
+        # [dev] adds arangodb-schema-analyzer, the real analyzer the Forge
+        # arango roundtrip runs (tests/integration/test_forge_roundtrip_arango.py).
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install -e ".[all,test]"
+          pip install -e ".[all,test,dev]"
       - name: Run integration tests
         env:
           PG_CONN: postgresql://r2g:r2g_test_2026@localhost:5432/northwind
           MYSQL_CONN: mysql://r2g:r2g_test_2026@localhost:3306/shop
           MSSQL_CONN: mssql://sa:r2g_Test_2026!@localhost:1433/shop
+          CLICKHOUSE_DSN: clickhouse://r2g:r2g_test_2026@localhost:8124/forge
           ARANGO_ENDPOINT: http://localhost:8540
           ARANGO_PASSWORD: r2g_test_2026
         run: pytest tests/integration/ -v -m integration

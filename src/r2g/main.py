@@ -3789,7 +3789,10 @@ def forge_generate(
         help="Conceptual ontology JSON: a bare conceptualModel or a full CSI v1 document",
     ),
     dialect: str = typer.Option(
-        "postgres", "--dialect", help="Target dialect (walking skeleton: postgres only)"
+        "postgres",
+        "--dialect",
+        help="Target dialect: postgres | snowflake | clickhouse (SQL DDL + INSERT loader) "
+        "| arango (collection manifest + python-arango loader script)",
     ),
     seed: int = typer.Option(
         0, "--seed", help="RNG seed; the same seed reproduces byte-identical artifacts"
@@ -3801,14 +3804,17 @@ def forge_generate(
         "forge-out",
         "--out-dir",
         "-o",
-        help="Directory for forge.sql / forge.load.sql / forge.rows.json",
+        help="Output directory: forge.sql + forge.load.sql (SQL dialects) or "
+        "forge.collections.json + forge.load.py (arango), plus forge.rows.json",
     ),
 ) -> None:
     """Generate a physical schema + seeded synthetic data from an ontology.
 
     The reverse of r2g's forward pipeline (ADR-0006, the Federation Forge):
     the generated schema, loaded and re-introspected through ``ingest-schema``
-    -> Auto-Map -> ``export-csi``, must reproduce the input ontology. Refused
+    -> Auto-Map -> ``export-csi`` (or ASA for ``arango``), must reproduce the
+    input ontology. Rows are synthesized once and only projected per dialect,
+    so ``forge.rows.json`` is identical across dialects for one seed. Refused
     ontologies (naming that cannot roundtrip, colliding labels) fail here at
     generate time with an explanation — never later at compare time. See
     ``docs/internal/PLAN-federation-forge.md``.

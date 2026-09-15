@@ -126,7 +126,7 @@ def test_refused_ontology_exits_2_with_reason(tmp_path):
 def test_unsupported_dialect_exits_2(ontology_file):
     result = runner.invoke(
         app,
-        ["forge", "generate", "--ontology", str(ontology_file), "--dialect", "clickhouse"],
+        ["forge", "generate", "--ontology", str(ontology_file), "--dialect", "duckdb"],
     )
     assert result.exit_code == 2
     assert "dialect" in result.output
@@ -149,3 +149,49 @@ def test_missing_ontology_file_is_a_refusal(tmp_path):
     assert result.exit_code == 2
     assert "Forge refused" in result.output
     assert "cannot read ontology file" in result.output
+
+
+@pytest.mark.parametrize("dialect", ["snowflake", "clickhouse"])
+def test_generate_sql_dialects_write_sql_files(ontology_file, tmp_path, dialect):
+    out_dir = tmp_path / dialect
+    result = runner.invoke(
+        app,
+        ["forge", "generate", "--ontology", str(ontology_file), "--dialect", dialect, "--out-dir", str(out_dir)],
+    )
+    assert result.exit_code == 0, result.output
+    assert f"dialect {dialect}" in result.output
+    assert sorted(p.name for p in out_dir.iterdir()) == ["forge.load.sql", "forge.rows.json", "forge.sql"]
+    assert f"-- dialect: {dialect}" in (out_dir / "forge.sql").read_text()
+
+
+def test_generate_arango_writes_manifest_and_loader_script(ontology_file, tmp_path):
+    out_dir = tmp_path / "arango"
+    result = runner.invoke(
+        app,
+        ["forge", "generate", "--ontology", str(ontology_file), "--dialect", "arango", "--out-dir", str(out_dir)],
+    )
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in out_dir.iterdir()) == ["forge.collections.json", "forge.load.py", "forge.rows.json"]
+    manifest = json.loads((out_dir / "forge.collections.json").read_text())
+    assert [e["name"] for e in manifest["edgeCollections"]] == ["contacts_to_accounts"]
+    compile((out_dir / "forge.load.py").read_text(), "forge.load.py", "exec")
+
+
+def test_rows_file_is_identical_across_dialects(ontology_file, tmp_path):
+    rows = {}
+    for dialect in ("postgres", "snowflake", "clickhouse", "arango"):
+        out_dir = tmp_path / dialect
+        result = runner.invoke(
+            app,
+            ["forge", "generate", "-O", str(ontology_file), "--dialect", dialect, "--seed", "9", "-o", str(out_dir)],
+        )
+        assert result.exit_code == 0, result.output
+        rows[dialect] = (out_dir / "forge.rows.json").read_text()
+    assert len(set(rows.values())) == 1
+
+
+def test_help_lists_the_dialects(ontology_file):
+    result = runner.invoke(app, ["forge", "generate", "--help"])
+    assert result.exit_code == 0
+    for dialect in ("postgres", "snowflake", "clickhouse", "arango"):
+        assert dialect in result.output

@@ -1,4 +1,5 @@
-"""Federation Forge — the reverse generator (walking skeleton).
+"""Federation Forge core — the ontology contract, the dialect-independent
+schema plan, and seeded data synthesis.
 
 Commissioned by contextual-data-fabric ADR-0006 (D-4) and specified in
 ``docs/internal/PLAN-federation-forge.md``: from a conceptual ontology,
@@ -7,14 +8,16 @@ REAL forward pipeline over the loaded result reproduces the ontology::
 
     introspect(generate(O)) == O      (up to CC-12 normalization and plumbing)
 
-The seam this module ships (and the only thing the fabric's orchestration may
-depend on)::
+Everything in this module is dialect-independent. :func:`plan_schema` turns an
+ontology into a :class:`SchemaPlan` — canonical snake_case tables and columns
+with their roles (surrogate PK, FK spine, conceptual property) — and
+:func:`synthesize_rows` fills that plan with seeded data **once** (ADR-0006
+D-2). The per-system projections live in :mod:`r2g.forge.dialects`; the seam
+that composes the two is :func:`r2g.forge.generate.generate`.
 
-    generate(ontology, dialect, seed) -> ForgeArtifacts(ddl, load_sql, rows)
-
-Skeleton scope: the ``postgres`` dialect only; declared PK/FK constraints
-always emitted (the constraint-stripped variant is the S3 denormalizer's job);
-input ontologies are collision-free by construction (F-6) and are *refused*
+Declared PK/FK constraints are always emitted where the target records them
+(the constraint-stripped variant is the S3 denormalizer's job); input
+ontologies are collision-free by construction (F-6) and are *refused*
 otherwise — the forge fails loudly at generate time, never at compare time.
 """
 
@@ -22,27 +25,31 @@ from __future__ import annotations
 
 import json
 import random
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from .csi import owl_entity_name, owl_property_name
-from .naming import convert_identifier, pluralize
+from ..csi import owl_entity_name, owl_property_name
+from ..naming import convert_identifier, pluralize
 
-#: Conceptual JSON types the skeleton synthesizes, and the one canonical
-#: roundtrip-stable Postgres spelling for each (PLAN F-3): the generated DDL
-#: type must introspect back through ``config.pg_type_to_json_type`` to the
-#: same JSON type.
-PG_TYPE_FOR_JSON_TYPE: Dict[str, str] = {
-    "integer": "bigint",
-    "float": "double precision",
-    "boolean": "boolean",
-    "string": "text",
-}
+#: Conceptual JSON types the forge synthesizes (PLAN F-1/F-3). Every dialect
+#: must declare one roundtrip-stable physical type per entry; the forward
+#: pipeline's ``config.pg_type_to_json_type`` must map that physical type back
+#: to the same JSON type. Temporal/decimal/uuid are deliberately absent: the
+#: forward map collapses them to ``string``, so no honest roundtrip exists yet.
+JSON_TYPES: Tuple[str, ...] = ("integer", "float", "boolean", "string")
 
-#: Dialects the seam accepts today. S2 adds snowflake-sql / clickhouse-sql /
-#: arango behind the same signature.
-SUPPORTED_DIALECTS = ("postgres",)
+#: Name of the surrogate primary key every generated table carries (F-4).
+SURROGATE_KEY = "id"
+
+#: Roles a planned column can play; the plumbing roles are the only extras the
+#: roundtrip tolerates over the conceptual properties.
+ROLE_PRIMARY_KEY = "pk"
+ROLE_FOREIGN_KEY = "fk"
+ROLE_PROPERTY = "property"
+
+Rows = Dict[str, List[Dict[str, Any]]]
 
 
 class ForgeError(ValueError):
@@ -137,10 +144,10 @@ class ForgeOntology(BaseModel):
 
             seen_props: set[str] = set()
             for p in e.properties:
-                if p.type not in PG_TYPE_FOR_JSON_TYPE:
+                if p.type not in JSON_TYPES:
                     raise ForgeError(
                         f"{e.name}.{p.name}: unsupported type {p.type!r} "
-                        f"(skeleton supports {sorted(PG_TYPE_FOR_JSON_TYPE)})"
+                        f"(the forge supports {sorted(JSON_TYPES)})"
                     )
                 if p.name in seen_props:
                     raise ForgeError(f"duplicate property {e.name}.{p.name}")
@@ -152,7 +159,7 @@ class ForgeOntology(BaseModel):
                         f"CC-12 naming roundtrip: column {column!r} normalizes "
                         f"back to {owl_property_name(column)!r} (PLAN F-2)."
                     )
-                if p.name == "id":
+                if p.name == SURROGATE_KEY:
                     raise ForgeError(
                         f"{e.name}.id collides with the generated surrogate "
                         "primary key; declare a domain identifier instead"
@@ -200,25 +207,39 @@ class ForgeOntology(BaseModel):
 
 
 class ForgeArtifacts(BaseModel):
-    """What ``generate`` returns: DDL, a loader script, and the synthesized
-    rows (the pre-partition dataset expected answers are computed on)."""
+    """What ``generate`` returns: a schema definition, a loader, and the
+    synthesized rows (the pre-partition dataset expected answers are computed
+    on).
+
+    ``ddl`` / ``load_sql`` keep their skeleton names for backward compatibility
+    but are *dialect-shaped*: SQL dialects put DDL and INSERT statements there;
+    the ``arango`` dialect puts a JSON collection manifest in ``ddl`` and a
+    standalone Python loader script in ``load_sql``. ``rows`` is always the
+    same canonical dataset regardless of dialect (ADR-0006 D-2) — keyed by
+    canonical snake_case table and column names, never by the dialect's
+    physical spelling.
+    """
 
     dialect: str
     seed: int
     ddl: str
     load_sql: str
-    rows: Dict[str, List[Dict[str, Any]]]
+    rows: Rows
 
     def write_to(self, out_dir: str) -> List[str]:
-        """Write ``forge.sql`` / ``forge.load.sql`` / ``forge.rows.json``
-        under ``out_dir`` and return the paths written."""
+        """Write the schema definition, loader, and ``forge.rows.json`` under
+        ``out_dir`` using the dialect's file names (``forge.sql`` /
+        ``forge.load.sql`` for SQL dialects) and return the paths written."""
         import os
 
+        from .dialects import get_dialect
+
+        dialect = get_dialect(self.dialect)
         os.makedirs(out_dir, exist_ok=True)
         paths = []
         for filename, content in (
-            ("forge.sql", self.ddl),
-            ("forge.load.sql", self.load_sql),
+            (dialect.ddl_filename, self.ddl),
+            (dialect.loader_filename, self.load_sql),
             ("forge.rows.json", json.dumps(self.rows, indent=2, sort_keys=True) + "\n"),
         ):
             path = os.path.join(out_dir, filename)
@@ -243,17 +264,102 @@ def foreign_key_column(to_entity: str) -> str:
     return f"{convert_identifier(to_entity, 'snake')}_id"
 
 
+def edge_collection_name(from_entity: str, to_entity: str) -> str:
+    """The edge collection r2g's forward Auto-Map derives for an FK
+    (``config.ConfigManager.generate_default_config``): ``<from>_to_<to>``.
+    The ``arango`` dialect emits exactly this name so ASA reads it back."""
+    return f"{table_name(from_entity)}_to_{table_name(to_entity)}"
+
+
 def expected_relationship_type(from_entity: str, to_entity: str) -> str:
     """The relationship name the forward pipeline re-derives for an FK:
     Auto-Map names the edge ``<from_table>_to_<to_table>`` and the CSI emitter
     lowerCamels it."""
-    edge = f"{table_name(from_entity)}_to_{table_name(to_entity)}"
-    return owl_property_name(edge)
+    return owl_property_name(edge_collection_name(from_entity, to_entity))
+
+
+# ── The dialect-independent schema plan ──────────────────────────────
+
+
+@dataclass(frozen=True)
+class ColumnPlan:
+    """One planned column in canonical snake_case spelling.
+
+    ``role`` is one of :data:`ROLE_PRIMARY_KEY`, :data:`ROLE_FOREIGN_KEY`,
+    :data:`ROLE_PROPERTY`; ``references`` names the parent *table* for an FK;
+    ``prop`` is the conceptual lowerCamel property for a property column.
+    Key columns are NOT NULL, property columns nullable — the same across
+    every dialect so the introspected nullability agrees.
+    """
+
+    name: str
+    json_type: str
+    role: str
+    references: Optional[str] = None
+    prop: Optional[str] = None
+
+    @property
+    def nullable(self) -> bool:
+        return self.role == ROLE_PROPERTY
+
+
+@dataclass(frozen=True)
+class TablePlan:
+    """One entity's table: surrogate PK first, then FK spine columns (sorted),
+    then the conceptual properties in declared order."""
+
+    entity: str
+    table: str
+    columns: Tuple[ColumnPlan, ...]
+
+    @property
+    def primary_key(self) -> ColumnPlan:
+        return self.columns[0]
+
+    @property
+    def foreign_keys(self) -> Tuple[ColumnPlan, ...]:
+        return tuple(c for c in self.columns if c.role == ROLE_FOREIGN_KEY)
+
+    @property
+    def properties(self) -> Tuple[ColumnPlan, ...]:
+        return tuple(c for c in self.columns if c.role == ROLE_PROPERTY)
+
+
+@dataclass(frozen=True)
+class EdgePlan:
+    """One relationship as the forward pipeline sees it: an FK column on the
+    from-table pointing at the to-table's surrogate key, re-derived as the
+    edge collection ``<from_table>_to_<to_table>``."""
+
+    relationship: str
+    from_entity: str
+    to_entity: str
+    from_table: str
+    to_table: str
+    fk_column: str
+    edge_collection: str
+
+
+@dataclass(frozen=True)
+class SchemaPlan:
+    """The whole generated schema, tables in parent-before-child order.
+
+    A pure function of the ontology (never of the seed), so every dialect
+    projects the same plan and the same rows."""
+
+    tables: Tuple[TablePlan, ...]
+    edges: Tuple[EdgePlan, ...]
+
+    def table(self, name: str) -> TablePlan:
+        for t in self.tables:
+            if t.table == name:
+                return t
+        raise ForgeError(f"unknown planned table {name!r}")
 
 
 def _topological_entity_order(ontology: ForgeOntology) -> List[str]:
     """Parents before children (FK targets first), deterministic tie-break by
-    name. Cycles are refused — the skeleton generates trees/DAGs only."""
+    name. Cycles are refused — the forge generates trees/DAGs only."""
     names = sorted(e.name for e in ontology.entities)
     depends_on: Dict[str, set[str]] = {n: set() for n in names}
     for r in ontology.relationships:
@@ -271,19 +377,64 @@ def _topological_entity_order(ontology: ForgeOntology) -> List[str]:
             progress = True
         if not progress:
             cyclic = sorted(set(names) - placed)
-            raise ForgeError(f"relationship cycle among {cyclic}; the skeleton generates DAGs only")
+            raise ForgeError(f"relationship cycle among {cyclic}; the forge generates DAGs only")
     return ordered
 
 
-def _sql_literal(value: Any) -> str:
-    if value is None:
-        return "NULL"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, (int, float)):
-        return repr(value)
-    escaped = str(value).replace("'", "''")
-    return f"'{escaped}'"
+def plan_schema(ontology: ForgeOntology) -> SchemaPlan:
+    """Lay out the canonical physical schema for ``ontology`` (F-2/F-4).
+
+    Refuses cyclic relationship graphs (via :func:`_topological_entity_order`)
+    and re-runs :meth:`ForgeOntology.validate_for_forge` so a hand-built
+    ontology object gets the same guarantees as one from
+    :meth:`ForgeOntology.from_conceptual`.
+    """
+    ontology.validate_for_forge()
+    order = _topological_entity_order(ontology)
+
+    fk_by_entity: Dict[str, List[ColumnPlan]] = {e.name: [] for e in ontology.entities}
+    edges: List[EdgePlan] = []
+    for r in ontology.relationships:
+        fk_by_entity[r.from_entity].append(
+            ColumnPlan(
+                name=foreign_key_column(r.to_entity),
+                json_type="integer",
+                role=ROLE_FOREIGN_KEY,
+                references=table_name(r.to_entity),
+            )
+        )
+        edges.append(
+            EdgePlan(
+                relationship=r.type,
+                from_entity=r.from_entity,
+                to_entity=r.to_entity,
+                from_table=table_name(r.from_entity),
+                to_table=table_name(r.to_entity),
+                fk_column=foreign_key_column(r.to_entity),
+                edge_collection=edge_collection_name(r.from_entity, r.to_entity),
+            )
+        )
+
+    tables: List[TablePlan] = []
+    for name in order:
+        entity = ontology.entity(name)
+        columns: List[ColumnPlan] = [
+            ColumnPlan(name=SURROGATE_KEY, json_type="integer", role=ROLE_PRIMARY_KEY)
+        ]
+        columns.extend(sorted(fk_by_entity[name], key=lambda c: c.name))
+        columns.extend(
+            ColumnPlan(name=column_name(p.name), json_type=p.type, role=ROLE_PROPERTY, prop=p.name)
+            for p in entity.properties
+        )
+        tables.append(TablePlan(entity=name, table=table_name(name), columns=tuple(columns)))
+
+    # Edges in the same deterministic order as the tables they hang off.
+    table_rank = {t.table: i for i, t in enumerate(tables)}
+    edges.sort(key=lambda e: (table_rank[e.from_table], e.fk_column))
+    return SchemaPlan(tables=tuple(tables), edges=tuple(edges))
+
+
+# ── Seeded synthesis: once, dialect-independent (F-5, ADR-0006 D-2/D-5) ──
 
 
 def _synthesize_value(rng: random.Random, json_type: str, prop: str) -> Any:
@@ -296,92 +447,33 @@ def _synthesize_value(rng: random.Random, json_type: str, prop: str) -> Any:
     return f"{prop}-{rng.randrange(0, 100_000):05d}"
 
 
-def generate(
-    ontology: ForgeOntology,
-    dialect: str = "postgres",
-    seed: int = 0,
-    *,
-    rows_per_entity: int = 10,
-) -> ForgeArtifacts:
-    """The ADR-0006 D-4 seam: ontology -> ``{ddl, loader, rows}``.
+def synthesize_rows(plan: SchemaPlan, seed: int, rows_per_entity: int) -> Rows:
+    """Fill ``plan`` with ``random.Random(seed)`` end to end.
 
-    Deterministic end to end (PLAN F-5): the same ``(ontology, dialect, seed,
-    rows_per_entity)`` reproduces byte-identical artifacts. Every FK value is
-    drawn from the already-synthesized parent ids, so the join spine agrees
-    across tables by construction.
+    Rows are produced per table in plan (topological) order, every FK value
+    drawn from the already-synthesized parent ids — join-spine agreement by
+    construction. Keys are the canonical snake_case names from the plan, so
+    the result is byte-identical across dialects for the same
+    ``(ontology, seed, rows_per_entity)``; dialects only *project* it.
     """
-    if dialect not in SUPPORTED_DIALECTS:
-        raise ForgeError(
-            f"dialect {dialect!r} is not supported yet (skeleton supports "
-            f"{list(SUPPORTED_DIALECTS)}; S2 adds the rest)"
-        )
     if rows_per_entity < 1:
         raise ForgeError("rows_per_entity must be >= 1")
-    ontology.validate_for_forge()
-
-    order = _topological_entity_order(ontology)
-    fk_columns: Dict[str, List[tuple[str, str]]] = {e.name: [] for e in ontology.entities}
-    for r in ontology.relationships:
-        fk_columns[r.from_entity].append((foreign_key_column(r.to_entity), table_name(r.to_entity)))
-    for cols in fk_columns.values():
-        cols.sort()
-
-    # The schema is a pure function of the ontology — the seed shapes data
-    # only, so it is stamped on the loader, never on the DDL.
-    ddl_parts: List[str] = [
-        "-- Federation Forge — generated schema (walking skeleton)",
-        f"-- dialect: {dialect}",
-        "-- Regenerate with: r2g forge generate (see PLAN-federation-forge.md)",
-        "",
-    ]
-    for name in order:
-        entity = ontology.entity(name)
-        table = table_name(name)
-        lines = ["    id bigint NOT NULL"]
-        for fk_col, _parent in fk_columns[name]:
-            lines.append(f"    {fk_col} bigint NOT NULL")
-        for p in entity.properties:
-            lines.append(f"    {column_name(p.name)} {PG_TYPE_FOR_JSON_TYPE[p.type]}")
-        lines.append("    PRIMARY KEY (id)")
-        for fk_col, parent_table in fk_columns[name]:
-            lines.append(
-                f"    FOREIGN KEY ({fk_col}) REFERENCES {parent_table} (id)"
-            )
-        body = ",\n".join(lines)
-        ddl_parts.append(f"CREATE TABLE {table} (\n{body}\n);\n")
-    ddl = "\n".join(ddl_parts)
-
     rng = random.Random(seed)
-    rows: Dict[str, List[Dict[str, Any]]] = {}
-    for name in order:
-        entity = ontology.entity(name)
-        table = table_name(name)
+    rows: Rows = {}
+    for table in plan.tables:
         table_rows: List[Dict[str, Any]] = []
         for i in range(1, rows_per_entity + 1):
-            row: Dict[str, Any] = {"id": i}
-            for fk_col, parent_table in fk_columns[name]:
-                parent_ids = [r["id"] for r in rows[parent_table]]
-                row[fk_col] = rng.choice(parent_ids)
-            for p in entity.properties:
-                row[column_name(p.name)] = _synthesize_value(rng, p.type, p.name)
+            row: Dict[str, Any] = {SURROGATE_KEY: i}
+            for fk in table.foreign_keys:
+                assert fk.references is not None  # planned FKs always reference
+                parent_ids = [r[SURROGATE_KEY] for r in rows[fk.references]]
+                row[fk.name] = rng.choice(parent_ids)
+            for col in table.properties:
+                assert col.prop is not None
+                row[col.name] = _synthesize_value(rng, col.json_type, col.prop)
             table_rows.append(row)
-        rows[table] = table_rows
-
-    load_parts: List[str] = [
-        "-- Federation Forge — generated data (walking skeleton)",
-        f"-- dialect: {dialect}; seed: {seed}",
-        "",
-    ]
-    for name in order:
-        table = table_name(name)
-        for row in rows[table]:
-            columns = ", ".join(row.keys())
-            values = ", ".join(_sql_literal(v) for v in row.values())
-            load_parts.append(f"INSERT INTO {table} ({columns}) VALUES ({values});")
-        load_parts.append("")
-    load_sql = "\n".join(load_parts)
-
-    return ForgeArtifacts(dialect=dialect, seed=seed, ddl=ddl, load_sql=load_sql, rows=rows)
+        rows[table.table] = table_rows
+    return rows
 
 
 def load_ontology_file(path: str) -> ForgeOntology:
@@ -405,18 +497,28 @@ def load_ontology_file(path: str) -> ForgeOntology:
 
 
 __all__ = [
+    "JSON_TYPES",
+    "ROLE_FOREIGN_KEY",
+    "ROLE_PRIMARY_KEY",
+    "ROLE_PROPERTY",
+    "SURROGATE_KEY",
+    "ColumnPlan",
+    "EdgePlan",
     "ForgeArtifacts",
     "ForgeEntity",
     "ForgeError",
     "ForgeOntology",
     "ForgeProperty",
     "ForgeRelationship",
-    "PG_TYPE_FOR_JSON_TYPE",
-    "SUPPORTED_DIALECTS",
+    "Rows",
+    "SchemaPlan",
+    "TablePlan",
     "column_name",
+    "edge_collection_name",
     "expected_relationship_type",
     "foreign_key_column",
-    "generate",
     "load_ontology_file",
+    "plan_schema",
+    "synthesize_rows",
     "table_name",
 ]

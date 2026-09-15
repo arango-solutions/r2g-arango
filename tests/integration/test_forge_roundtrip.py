@@ -24,53 +24,21 @@ import pytest
 
 from r2g.config import ConfigManager, pg_type_to_json_type
 from r2g.csi import mapping_to_csi, validate_csi
-from r2g.forge import (
-    ForgeOntology,
-    column_name,
-    foreign_key_column,
-    generate,
-    table_name,
-)
+from r2g.forge import column_name, generate, table_name
 from r2g.rsa_ontology import propose_ontology_from_schema
 
 from .conftest import PG_CONN, requires_pg
+from .forge_support import (
+    ROWS_PER_ENTITY,
+    SEED,
+    assert_business_collisions_are_plumbing_only,
+    assert_conceptual_model_matches,
+    expected_fk_pairs,
+    expected_tables,
+    forge_ontology,
+)
 
 pytestmark = requires_pg
-
-SEED = 421
-ROWS_PER_ENTITY = 20
-
-CONCEPTUAL = {
-    "entities": [
-        {
-            "name": "Account",
-            "properties": [
-                {"name": "accountName", "type": "string"},
-                {"name": "healthScore", "type": "float"},
-                {"name": "seatsSold", "type": "integer"},
-            ],
-        },
-        {
-            "name": "Contact",
-            "properties": [
-                {"name": "fullName", "type": "string"},
-                {"name": "isPrimary", "type": "boolean"},
-            ],
-        },
-        {
-            "name": "SupportTicket",
-            "properties": [
-                {"name": "severity", "type": "integer"},
-                {"name": "resolved", "type": "boolean"},
-            ],
-        },
-    ],
-    "relationships": [
-        {"type": "contactsToAccounts", "fromEntity": "Contact", "toEntity": "Account"},
-        {"type": "supportTicketsToContacts", "fromEntity": "SupportTicket", "toEntity": "Contact"},
-    ],
-}
-
 
 def _pg_dsn(db: str) -> str:
     base, _, _ = PG_CONN.rpartition("/")
@@ -98,26 +66,13 @@ def loaded_federation(forge_db):
     artifacts, dsn)."""
     import psycopg
 
-    ontology = ForgeOntology.from_conceptual(CONCEPTUAL)
+    ontology = forge_ontology()
     artifacts = generate(ontology, dialect="postgres", seed=SEED, rows_per_entity=ROWS_PER_ENTITY)
     with psycopg.connect(forge_db) as conn:
         conn.execute(artifacts.ddl)
         conn.execute(artifacts.load_sql)
         conn.commit()
     return ontology, artifacts, forge_db
-
-
-def _plumbing_labels(ontology: ForgeOntology, entity_name: str) -> set[str]:
-    """The generated surrogate columns the forward CSI will report as extra
-    conceptual properties: the ``id`` PK plus one FK label per outgoing
-    relationship (``account_id`` -> ``accountId``)."""
-    from r2g.csi import owl_property_name
-
-    labels = {"id"}
-    for r in ontology.relationships:
-        if r.from_entity == entity_name:
-            labels.add(owl_property_name(foreign_key_column(r.to_entity)))
-    return labels
 
 
 def test_roundtrip_reproduces_the_ontology(loaded_federation, record_property):
@@ -128,7 +83,7 @@ def test_roundtrip_reproduces_the_ontology(loaded_federation, record_property):
 
     # (1) REAL introspection.
     schema = create_source_connector("postgresql", dsn).get_schema()
-    assert set(schema.tables) == {table_name(e.name) for e in ontology.entities}
+    assert set(schema.tables) == expected_tables(ontology)
 
     # (2) Declared constraints came back declared (F-4): every table has the
     # surrogate PK; every relationship an FK.
@@ -140,10 +95,7 @@ def test_roundtrip_reproduces_the_ontology(loaded_federation, record_property):
         for t_name, t in schema.tables.items()
         for fk in t.foreign_keys
     }
-    expected_fk_pairs = {
-        (table_name(r.from_entity), table_name(r.to_entity)) for r in ontology.relationships
-    }
-    assert fk_pairs == expected_fk_pairs
+    assert fk_pairs == expected_fk_pairs(ontology)
 
     # (3) Types roundtrip through the real map (F-3): every conceptual
     # property's column introspects back to the declared JSON type.
@@ -161,34 +113,13 @@ def test_roundtrip_reproduces_the_ontology(loaded_federation, record_property):
     csi = mapping_to_csi(mapping, schema, source_type="postgresql", source_ref="forge", label_policy="warn")
     validate_csi(csi)
     conceptual = csi["conceptualModel"]
-
-    got_entities = {e["name"]: {p["name"] for p in e["properties"]} for e in conceptual["entities"]}
-    assert set(got_entities) == {e.name for e in ontology.entities}
-
-    for entity in ontology.entities:
-        declared = {p.name for p in entity.properties}
-        got = got_entities[entity.name]
-        missing = declared - got
-        assert not missing, f"{entity.name}: properties lost in roundtrip: {missing}"
-        extras = got - declared - _plumbing_labels(ontology, entity.name)
-        assert not extras, f"{entity.name}: unexpected extra properties: {extras}"
-
-    got_relationships = {
-        (r["type"], r["fromEntity"], r["toEntity"]) for r in conceptual["relationships"]
-    }
-    expected_relationships = {
-        (r.type, r.from_entity, r.to_entity) for r in ontology.relationships
-    }
-    assert got_relationships == expected_relationships
+    assert_conceptual_model_matches(ontology, conceptual["entities"], conceptual["relationships"])
 
     # (5) Collisions recorded are plumbing only — business labels stayed
     # collision-free by construction (F-6).
-    plumbing = set().union(*(_plumbing_labels(ontology, e.name) for e in ontology.entities))
-    collision_labels = {c["label"] for c in csi["provenance"].get("labelCollisions", [])}
-    assert collision_labels <= plumbing, f"business-label collisions: {collision_labels - plumbing}"
+    assert_business_collisions_are_plumbing_only(ontology, csi)
 
-    record_property("forge_roundtrip_entities", sorted(got_entities))
-    record_property("forge_roundtrip_collisions", sorted(collision_labels))
+    record_property("forge_roundtrip_entities", sorted(e["name"] for e in conceptual["entities"]))
 
 
 def test_rsa_leg_agrees_on_the_conceptual_shape(loaded_federation):
@@ -201,13 +132,10 @@ def test_rsa_leg_agrees_on_the_conceptual_shape(loaded_federation):
 
     proposal, _meta = propose_ontology_from_schema(schema)
     proposed_tables = {c.source_table for c in proposal.collections}
-    assert proposed_tables == {table_name(e.name) for e in ontology.entities}
+    assert proposed_tables == expected_tables(ontology)
 
     proposed_edges = {(e.from_collection, e.to_collection) for e in proposal.edges}
-    expected_edges = {
-        (table_name(r.from_entity), table_name(r.to_entity)) for r in ontology.relationships
-    }
-    assert proposed_edges == expected_edges
+    assert proposed_edges == expected_fk_pairs(ontology)
 
 
 def test_loaded_data_matches_artifacts_and_spine_joins(loaded_federation):

@@ -8,6 +8,23 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Federation Forge S2 dialects: `snowflake`, `clickhouse`, `arango`** behind the
+  unchanged `generate(ontology, dialect, seed)` seam (contextual-data-fabric
+  ADR-0006 D-2..D-5). `r2g.forge` is now a package: `core` (ontology contract,
+  dialect-independent `SchemaPlan`, seeded `synthesize_rows`) + `dialects/` (one
+  module per target behind the `DIALECTS` registry; add a dialect by following
+  `dialects/base.py` and adding one registry line). Rows are synthesized once and
+  byte-identical across all four dialects for the same `(ontology, seed,
+  rows_per_entity)`. Snowflake emits unquoted UPPERCASE identifiers with declared
+  (recorded, unenforced) PK/FK; ClickHouse emits `MergeTree ORDER BY (id)` with the
+  FK intent as column comments (no FK syntax exists); Arango emits a JSON collection
+  manifest (`forge.collections.json`) plus a standalone python-arango loader
+  (`forge.load.py`), edge collections named as the forward Auto-Map derives them.
+  Live roundtrips through the real analyzers for each: RSA `SnowflakeConnector`
+  (throwaway schema; the `NUMBER`→`float` type gap is pinned by name), r2g's
+  `ClickHouseConnector` + FK inference (RSA has no ClickHouse connector; D-3's
+  two-branch contract asserted both ways; new compose `clickhouse` service on
+  8124), and ASA's deterministic baseline for Arango. Plan §"S2 dialects".
 - **Federation Forge walking skeleton** (`src/r2g/forge.py`, `r2g forge` CLI;
   contextual-data-fabric ADR-0006, D-4). `generate(ontology, dialect, seed)` returns
   `ForgeArtifacts(ddl, load_sql, rows)` for **Postgres only**, with naive seeded
