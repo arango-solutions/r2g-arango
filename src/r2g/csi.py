@@ -730,8 +730,101 @@ def csi_schema() -> Dict[str, Any]:
     return json.loads(text)
 
 
+def _unique_constraint_errors(document: Dict[str, Any]) -> List[str]:
+    """Shape and reference faults in every entity's ``uniqueConstraints``.
+
+    The CSI schema cannot catch these. An entity object is declared
+    ``additionalProperties: true`` (detection enrichments ride along as optional
+    additive fields), so ``uniqueConstraints`` arrives as an unrecognised field
+    and passes untouched however it is shaped. That schema is the analyzer's and
+    r2g only vendors it — ``tests/test_csi.py`` asserts the copy does not drift —
+    so r2g cannot add the field to it unilaterally. The check lives here instead,
+    and runs against any CSI document r2g validates no matter who wrote it.
+
+    Silence is the whole problem: a flat list or a misspelled property name is
+    not a document that fails, it is a document whose declared uniqueness is
+    wrong, and the first symptom is a downstream join that groups incorrectly —
+    arbitrarily far from the typo.
+
+    ``uniqueConstraints`` is a list of key *sets*, each set itself a list, because
+    one key can span several properties and an entity can have several
+    independent keys. Order carries no meaning anywhere. Names are conceptual
+    property names (the entity's own ``properties``), never physical columns.
+
+    An **absent** field means nobody declared uniqueness; an **empty** list means
+    the entity was checked and genuinely has none. Both are legal, and they are
+    not the same claim — neither is reported here.
+
+    Returns:
+        Human-readable faults, empty when every declaration is well-formed.
+    """
+    faults: List[str] = []
+    conceptual = document.get("conceptualModel")
+    if not isinstance(conceptual, dict):
+        return faults
+    entities = conceptual.get("entities")
+    if not isinstance(entities, list):
+        return faults
+
+    for position, entity in enumerate(entities):
+        if not isinstance(entity, dict) or "uniqueConstraints" not in entity:
+            continue
+        name = entity.get("name")
+        where = name if isinstance(name, str) and name else f"entities[{position}]"
+        declared = entity["uniqueConstraints"]
+
+        if not isinstance(declared, list):
+            faults.append(f"{where}: uniqueConstraints must be a list of key sets, got {type(declared).__name__}")
+            continue
+
+        # Only resolvable when the entity lists its properties; an entity that
+        # omits them is under-specified, not wrong, and reporting every name as
+        # unknown would bury the real faults.
+        properties = entity.get("properties")
+        known: Optional[set] = None
+        if isinstance(properties, list):
+            known = {
+                prop["name"] for prop in properties if isinstance(prop, dict) and isinstance(prop.get("name"), str)
+            }
+
+        for index, key_set in enumerate(declared):
+            at = f"{where}.uniqueConstraints[{index}]"
+            if isinstance(key_set, str):
+                # The single most likely mistake, so it names its own fix.
+                faults.append(
+                    f"{at} is the bare name {key_set!r}; every key set is itself "
+                    f'a list, so a one-property key is [["{key_set}"]]'
+                )
+                continue
+            if not isinstance(key_set, list):
+                faults.append(f"{at} must be a list of property names, got {type(key_set).__name__}")
+                continue
+            if not key_set:
+                faults.append(f"{at} is an empty key set; drop it or name its properties")
+                continue
+
+            seen: set = set()
+            for member in key_set:
+                if not isinstance(member, str) or not member:
+                    faults.append(f"{at} contains {member!r}, which is not a property name")
+                    continue
+                if member in seen:
+                    faults.append(f"{at} names {member!r} twice")
+                seen.add(member)
+                if known is not None and member not in known:
+                    faults.append(
+                        f"{at} names {member!r}, which is not a property of {where}; "
+                        f"use conceptual property names, not source column names"
+                    )
+
+    return faults
+
+
 def validate_csi(document: Dict[str, Any]) -> None:
     """Validate ``document`` against the ``CSI v1`` schema (see :func:`csi_schema`).
+
+    Also enforces the ``uniqueConstraints`` rules the schema itself cannot express
+    (see :func:`_unique_constraint_errors`).
 
     Raises:
         jsonschema.ValidationError: if the document is not CSI-valid.
@@ -739,3 +832,7 @@ def validate_csi(document: Dict[str, Any]) -> None:
     import jsonschema  # lazy: keep the pure emitter import-light
 
     jsonschema.validate(instance=document, schema=csi_schema())
+
+    faults = _unique_constraint_errors(document)
+    if faults:
+        raise jsonschema.ValidationError("uniqueConstraints is malformed:\n  - " + "\n  - ".join(faults))

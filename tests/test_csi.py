@@ -1029,3 +1029,114 @@ class TestJoinKeyExemption:
         config.shared_keys = []
         doc = mapping_to_csi(config, schema)  # default qualify
         assert "accountAccountId" in _all_labels(doc)
+
+
+_ABSENT = object()  # distinguishes "field omitted" from any value it could hold
+
+
+# ── Declared uniqueness ──────────────────────────────────────────────
+#
+# `uniqueConstraints` states which property sets identify an entity uniquely, so
+# a federated consumer can join and group on them without being told by hand.
+#
+# Nothing in the CSI schema guards it. An entity object is `additionalProperties:
+# true`, so the field arrives unrecognised and passes however it is shaped — and
+# the schema belongs to arango-schema-analyzer, which r2g only vendors (see
+# test_vendored_csi_schema_matches_installed_analyzer), so r2g cannot add it
+# there unilaterally. A malformed declaration is therefore not a document that
+# fails; it is a document whose declared uniqueness is wrong, surfacing as a
+# downstream join that groups incorrectly, arbitrarily far from the cause.
+
+
+class TestDeclaredUniqueness:
+    """`validate_csi` rejects what the JSON Schema structurally cannot."""
+
+    @staticmethod
+    def _doc(unique_constraints, *, properties=("accountId", "region", "externalRef")):
+        doc = mapping_to_csi(_sample_config(), source_type="postgresql")
+        entity = doc["conceptualModel"]["entities"][0]
+        entity["properties"] = [{"name": name} for name in properties]
+        if unique_constraints is not _ABSENT:
+            entity["uniqueConstraints"] = unique_constraints
+        return doc, entity["name"]
+
+    def test_a_well_formed_declaration_validates(self):
+        doc, _ = self._doc([["accountId"], ["region", "externalRef"]])
+        validate_csi(doc)
+
+    def test_absent_and_empty_are_both_legal_and_mean_different_things(self):
+        # Absent: nobody declared uniqueness. Empty: checked, and there is none.
+        # Neither is an error, and collapsing them would destroy the distinction.
+        absent, _ = self._doc(_ABSENT)
+        validate_csi(absent)
+        assert "uniqueConstraints" not in absent["conceptualModel"]["entities"][0]
+        empty, _ = self._doc([])
+        validate_csi(empty)
+
+    def test_the_schema_alone_lets_every_one_of_these_through(self):
+        # The guard rail is validate_csi, not the schema — if this ever fails,
+        # the field became structural upstream and these checks should move there.
+        import jsonschema
+
+        for malformed in ("accountId", [["accountId"], "region"], [[]], {"a": 1}):
+            doc, _ = self._doc(malformed)
+            jsonschema.validate(instance=doc, schema=csi_schema())
+
+    def test_a_flat_list_is_rejected_and_the_message_shows_the_fix(self):
+        # The most likely mistake: a single-property key written without its
+        # inner brackets. Being told the correct spelling is the whole value.
+        doc, _ = self._doc(["accountId"])
+        with pytest.raises(Exception) as caught:
+            validate_csi(doc)
+        assert '[["accountId"]]' in str(caught.value)
+
+    def test_a_name_that_is_not_a_property_of_the_entity_is_rejected(self):
+        doc, name = self._doc([["ACCT_ID"]])
+        with pytest.raises(Exception) as caught:
+            validate_csi(doc)
+        message = str(caught.value)
+        assert "ACCT_ID" in message and name in message
+        assert "not source column names" in message
+
+    def test_every_fault_is_reported_not_just_the_first(self):
+        # A hand-written bundle is corrected in passes; one fault per run turns
+        # that into one round trip per typo.
+        doc, _ = self._doc([["nope"], ["region", "alsoNope"]])
+        with pytest.raises(Exception) as caught:
+            validate_csi(doc)
+        message = str(caught.value)
+        assert "nope" in message and "alsoNope" in message
+
+    def test_an_empty_key_set_is_rejected(self):
+        doc, _ = self._doc([[]])
+        with pytest.raises(Exception, match="empty key set"):
+            validate_csi(doc)
+
+    def test_a_property_named_twice_in_one_key_set_is_rejected(self):
+        doc, _ = self._doc([["region", "region"]])
+        with pytest.raises(Exception, match="twice"):
+            validate_csi(doc)
+
+    def test_non_string_members_are_rejected(self):
+        doc, _ = self._doc([["accountId", 7]])
+        with pytest.raises(Exception, match="not a property name"):
+            validate_csi(doc)
+
+    def test_a_non_list_declaration_is_rejected(self):
+        doc, _ = self._doc({"primary": ["accountId"]})
+        with pytest.raises(Exception, match="must be a list of key sets"):
+            validate_csi(doc)
+
+    def test_an_entity_that_lists_no_properties_skips_the_reference_check(self):
+        # Under-specified, not wrong: with nothing to resolve against, reporting
+        # every name as unknown would bury real faults under noise.
+        doc = mapping_to_csi(_sample_config(), source_type="postgresql")
+        entity = doc["conceptualModel"]["entities"][0]
+        entity.pop("properties", None)
+        entity["uniqueConstraints"] = [["anythingAtAll"]]
+        validate_csi(doc)
+
+    def test_order_carries_no_meaning(self):
+        for key_set in (["region", "externalRef"], ["externalRef", "region"]):
+            doc, _ = self._doc([key_set])
+            validate_csi(doc)
