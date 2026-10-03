@@ -110,6 +110,9 @@ dev = [
   # runs in CI: the vendored CSI schema must not drift from the analyzer's
   # authoritative copy (contextual-data-fabric unified-architecture paper, step 2).
   "arangodb-schema-analyzer>=0.13.0",
+  # In-process Snowflake emulator, so tests/test_cli_suggest_keys.py runs the
+  # suggest -> review -> snapshot loop end to end in CI without an account.
+  "fakesnow>=0.11",
 ]
 
 [project.urls]

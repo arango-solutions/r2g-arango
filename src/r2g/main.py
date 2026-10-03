@@ -2340,6 +2340,214 @@ def source_dump(
         session.close()
 
 
+@source_app.command("suggest-keys")
+def source_suggest_keys(
+    name: str = typer.Argument(..., help="Source name"),
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="Where to write the draft (default: <name>.keys.draft.json)"
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite an existing draft file"),
+    schema_name: Optional[str] = typer.Option(
+        None, "--schema", help="Schema to profile (default: the one in the connection string)"
+    ),
+    max_queries: int = typer.Option(200, "--max-queries", min=1, help="Hard cap on warehouse queries for this run"),
+    timeout_s: int = typer.Option(
+        60, "--timeout", min=1, help="Per-query timeout in seconds, enforced by the warehouse"
+    ),
+    sample_limit: int = typer.Option(
+        10_000, "--sample-limit", min=100, help="Rows/values read per column when screening"
+    ),
+    min_pk_score: float = typer.Option(0.3, "--min-pk-score", help="Withhold weaker key proposals"),
+    min_fk_confidence: float = typer.Option(0.6, "--min-fk-confidence", help="Withhold weaker reference proposals"),
+) -> None:
+    """Propose primary and foreign keys from data, as a DRAFT overlay for review.
+
+    Profiles the source as it is (no existing overlay applied), proposes a key
+    per table and the references between them, and writes a draft key overlay.
+    Nothing is applied: review the file, then attach it with
+    `r2g source set-key-overlay NAME FILE --reviewed` and re-run `source snapshot`.
+    Snowflake only for now; every query is counted against --max-queries.
+    """
+    from r2g.connectors.base import create_source_connector, expand_env_vars, normalize_source_type
+
+    mgr = _get_catalog()
+    source = mgr.get_source(name)
+    if source is None:
+        console.print(f"[red]Source '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+    if normalize_source_type(source.source_type) != "snowflake":
+        console.print(
+            f"[red]suggest-keys supports Snowflake sources; '{name}' is {source.source_type}.[/red] "
+            "Sources that declare keys need no suggestion; use `source infer-fks` for references."
+        )
+        raise typer.Exit(code=2)
+    out_path = Path(output or f"{name}.keys.draft.json").expanduser()
+    if out_path.exists() and not force:
+        console.print(f"[red]{out_path} exists.[/red] Pass --force to overwrite it.")
+        raise typer.Exit(code=1)
+
+    try:
+        # unused-ignore: these exist from relational-schema-analyzer 0.8.1; drop the
+        # ignore once pyproject requires it.
+        from relational_schema_analyzer.fk_inference import (  # type: ignore[attr-defined, unused-ignore]
+            SnowflakeValueSampler,
+        )
+        from relational_schema_analyzer.key_profiling import draft_key_overlay
+    except ImportError:
+        console.print("[red]This needs relational-schema-analyzer with key profiling (0.8.1 or later).[/red]")
+        raise typer.Exit(code=1)
+
+    try:
+        connector = create_source_connector(
+            source.source_type,
+            source.connection_string,
+            schema_name=schema_name or "PUBLIC",
+            source_params=source.source_params,
+        )
+        schema = connector.get_schema()
+        with SnowflakeValueSampler(
+            expand_env_vars(source.connection_string),
+            schema_name=schema_name or "PUBLIC",
+            limit=sample_limit,
+            max_queries=max_queries,
+            statement_timeout_s=timeout_s,
+            query_tag=f"r2g-suggest-keys:{name}",
+        ) as probe:
+            draft = draft_key_overlay(
+                schema,
+                probe,
+                sampler=probe,
+                min_pk_score=min_pk_score,
+                min_fk_confidence=min_fk_confidence,
+            )
+            stats = probe.stats
+    except Exception as e:  # noqa: BLE001
+        log.exception("source_suggest_keys_failed")
+        console.print(f"[red]Key suggestion failed:[/red] {e}")
+        raise typer.Exit(code=1)
+
+    out_path.write_text(json.dumps(draft.overlay, indent=2) + "\n")
+
+    console.print(f"[bold]Proposed keys for '{name}'[/bold] (draft, nothing applied)")
+    for table, cand in sorted(draft.primary_keys.items()):
+        console.print(f"  [green]key[/green]  {table}: {', '.join(cand.columns)}  (score {cand.score:.2f})")
+    for fk in draft.foreign_keys:
+        console.print(
+            f"  [cyan]ref[/cyan]  {fk.table}.{', '.join(fk.columns)} -> "
+            f"{fk.foreign_table}.{', '.join(fk.foreign_columns)}  (confidence {fk.confidence:.2f})"
+        )
+    for table, why in sorted(draft.no_key_proposed.items()):
+        console.print(f"  [yellow]none[/yellow] {table}: {why}")
+    spent = f"{stats['queries_run']} of {stats['max_queries']} queries"
+    if stats["budget_exhausted"]:
+        console.print(f"[yellow]Query budget used up ({spent}); some tables were not evaluated.[/yellow]")
+    else:
+        console.print(f"Cost: {spent}.")
+    console.print(
+        f"\nDraft written to [bold]{out_path}[/bold]. Review it -- delete what is wrong, add what "
+        "is missing -- then:\n"
+        f"  r2g source set-key-overlay {name} {out_path} --reviewed\n"
+        f"  r2g source snapshot {name}"
+    )
+
+
+def _check_overlay_structure(overlay: dict) -> None:
+    """Run RSA's strict overlay validation now, not at the next snapshot.
+
+    `load_key_overlay` only parses; unknown keys and malformed entries are
+    rejected when the overlay is applied. Applying it to a stand-in schema made
+    of exactly the names it mentions surfaces those mistakes -- a hand-edited
+    `primarykey` -- immediately, without querying the source. Whether those
+    tables and columns exist is still checked, loudly, at snapshot time.
+    """
+    from relational_schema_analyzer import apply_key_overlay
+    from relational_schema_analyzer.types import PhysicalSchema
+
+    columns: dict[str, set[str]] = {}
+
+    def note(table: object, cols: object) -> None:
+        if isinstance(table, str):
+            names = columns.setdefault(table, set())
+            if isinstance(cols, list):
+                names.update(c for c in cols if isinstance(c, str))
+
+    for table, spec in (overlay.get("tables") or {}).items():
+        note(table, None)
+        if not isinstance(spec, dict):
+            continue
+        note(table, spec.get("primaryKey"))
+        for cols in spec.get("uniqueConstraints") or []:
+            note(table, cols)
+        for fk in spec.get("foreignKeys") or []:
+            if isinstance(fk, dict):
+                note(table, fk.get("columns"))
+                ref = fk.get("references")
+                if isinstance(ref, dict):
+                    note(ref.get("table"), ref.get("columns"))
+    stand_in = PhysicalSchema.model_validate(
+        {
+            "tables": {
+                t: {"name": t, "columns": [{"name": c, "data_type": "text"} for c in sorted(cols)]}
+                for t, cols in columns.items()
+            }
+        }
+    )
+    apply_key_overlay(stand_in, overlay)
+
+
+@source_app.command("set-key-overlay")
+def source_set_key_overlay(
+    name: str = typer.Argument(..., help="Source name"),
+    path: Optional[str] = typer.Argument(None, help="Reviewed key overlay (JSON or YAML)"),
+    reviewed: bool = typer.Option(False, "--reviewed", help="Confirm a file still marked DRAFT has been reviewed"),
+    clear: bool = typer.Option(False, "--clear", help="Remove the source's key overlay"),
+) -> None:
+    """Attach a reviewed key overlay to an existing source (applied at the next snapshot).
+
+    A file whose description still starts with DRAFT -- as `suggest-keys` writes
+    it -- is refused unless --reviewed is given: proposals become keys only by
+    someone's decision.
+    """
+    mgr = _get_catalog()
+    if mgr.get_source(name) is None:
+        console.print(f"[red]Source '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+    if clear:
+        if path:
+            console.print("[red]Give a file or --clear, not both.[/red]")
+            raise typer.Exit(code=2)
+        mgr.update_source(name, key_overlay=None, key_overlay_source=None)
+        console.print(f"Key overlay removed from '{name}'. Re-run `r2g source snapshot {name}`.")
+        return
+    if not path:
+        console.print("[red]Give an overlay file, or --clear.[/red]")
+        raise typer.Exit(code=2)
+
+    from relational_schema_analyzer import load_key_overlay
+
+    try:
+        overlay = load_key_overlay(path)
+        _check_overlay_structure(overlay)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Not a valid key overlay:[/red] {e}")
+        raise typer.Exit(code=1)
+    description = str(overlay.get("description") or "")
+    if description.lstrip().upper().startswith("DRAFT") and not reviewed:
+        console.print(
+            "[red]This overlay is still marked DRAFT.[/red] Review it, then either edit its "
+            "description or pass --reviewed."
+        )
+        raise typer.Exit(code=1)
+    mgr.update_source(name, key_overlay=overlay, key_overlay_source=str(Path(path).expanduser().resolve()))
+    tables = overlay.get("tables") or {}
+    pks = sum(1 for t in tables.values() if t.get("primaryKey"))
+    fks = sum(len(t.get("foreignKeys") or []) for t in tables.values())
+    console.print(
+        f"Key overlay attached to '{name}': {pks} key(s), {fks} reference(s). "
+        f"Run `r2g source snapshot {name}` to apply it."
+    )
+
+
 @source_app.command("infer-fks")
 def source_infer_fks(
     name: str = typer.Argument(..., help="Source name"),

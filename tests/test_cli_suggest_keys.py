@@ -1,0 +1,154 @@
+"""`r2g source suggest-keys` / `set-key-overlay` -- the propose -> review -> apply loop.
+
+End to end against fakesnow (an in-process Snowflake emulator): r2g's connector,
+relational-schema-analyzer's governed sampler and key profiler, the draft file,
+the review gate, and the snapshot that applies the reviewed overlay.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from typer.testing import CliRunner
+
+fakesnow = pytest.importorskip("fakesnow")
+pytest.importorskip("snowflake.connector")
+pytest.importorskip("relational_schema_analyzer.key_profiling")
+
+from r2g.catalog import CatalogManager  # noqa: E402
+from r2g.main import app  # noqa: E402
+
+_GEN = "FROM TABLE(GENERATOR(ROWCOUNT => {n}))"
+_DDL = [
+    "CREATE TABLE CUSTOMERS (CUSTOMER_ID INT, EMAIL VARCHAR)",
+    "INSERT INTO CUSTOMERS SELECT seq4() + 1, 'u' || seq4() || '@x.io' " + _GEN.format(n=40),
+    "CREATE TABLE ORDERS (ORDER_ID INT, CUSTOMER_ID INT)",
+    "INSERT INTO ORDERS SELECT seq4() + 1, MOD(seq4(), 40) + 1 " + _GEN.format(n=60),
+]
+URL = "snowflake://u:p@acct/DB1/PUBLIC"
+runner = CliRunner()
+
+
+def _log_to_stderr(*_args, **_kwargs) -> None:
+    import sys
+
+    import structlog
+
+    structlog.reset_defaults()
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(0),
+        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+        cache_logger_on_first_use=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog(monkeypatch):
+    """CliRunner swaps stdout for a stream it closes after each invoke, and the
+    CLI's start-up hook binds every logger to stdout and caches it -- so a second
+    invoke in one test logs to a closed stream. Here the hook logs to stderr,
+    uncached, which keeps several invokes per test safe."""
+    monkeypatch.setattr("r2g.main.setup_logging", _log_to_stderr)
+    _log_to_stderr()
+    yield
+    _log_to_stderr()
+
+
+@pytest.fixture
+def warehouse(tmp_path, monkeypatch):
+    import snowflake.connector as sc
+
+    monkeypatch.setattr("r2g.main._get_catalog", lambda: CatalogManager(str(tmp_path / "catalog")))
+    monkeypatch.chdir(tmp_path)
+    with fakesnow.patch():
+        conn = sc.connect(database="DB1", schema="PUBLIC")
+        cur = conn.cursor()
+        for stmt in _DDL:
+            cur.execute(stmt)
+        cur.close()
+        CatalogManager(str(tmp_path / "catalog")).add_source("wh", "snowflake", URL)
+        yield tmp_path
+        conn.close()
+
+
+def test_suggest_keys_writes_a_draft_and_applies_nothing(warehouse):
+    result = runner.invoke(app, ["source", "suggest-keys", "wh"])
+    assert result.exit_code == 0, result.output
+
+    draft = json.loads((warehouse / "wh.keys.draft.json").read_text())
+    assert draft["description"].startswith("DRAFT")
+    assert draft["tables"]["CUSTOMERS"]["primaryKey"] == ["CUSTOMER_ID"]
+    (fk,) = draft["tables"]["ORDERS"]["foreignKeys"]
+    assert fk["references"] == {"table": "CUSTOMERS", "columns": ["CUSTOMER_ID"]}
+    # Proposing is not applying.
+    assert CatalogManager(str(warehouse / "catalog")).get_source("wh").key_overlay is None
+    assert "set-key-overlay wh" in result.output and "Cost:" in result.output
+
+
+def test_an_existing_draft_is_not_overwritten_without_force(warehouse):
+    (warehouse / "wh.keys.draft.json").write_text("{}")
+    result = runner.invoke(app, ["source", "suggest-keys", "wh"])
+    assert result.exit_code == 1 and "--force" in result.output
+    assert (warehouse / "wh.keys.draft.json").read_text() == "{}"
+
+
+def test_the_query_budget_is_reported_when_it_runs_out(warehouse):
+    result = runner.invoke(app, ["source", "suggest-keys", "wh", "--max-queries", "1"])
+    assert result.exit_code == 0, result.output
+    assert "Query budget used up" in result.output
+
+
+def test_non_snowflake_sources_are_refused(warehouse):
+    CatalogManager(str(warehouse / "catalog")).add_source("pg", "postgresql", "postgresql://h/db")
+    result = runner.invoke(app, ["source", "suggest-keys", "pg"])
+    assert result.exit_code == 2
+    assert "Snowflake" in result.output
+
+
+def test_an_unreviewed_draft_is_refused_then_accepted_with_reviewed(warehouse):
+    runner.invoke(app, ["source", "suggest-keys", "wh"])
+    refused = runner.invoke(app, ["source", "set-key-overlay", "wh", "wh.keys.draft.json"])
+    assert refused.exit_code == 1 and "still marked DRAFT" in refused.output
+    assert CatalogManager(str(warehouse / "catalog")).get_source("wh").key_overlay is None
+
+    accepted = runner.invoke(app, ["source", "set-key-overlay", "wh", "wh.keys.draft.json", "--reviewed"])
+    assert accepted.exit_code == 0, accepted.output
+    assert "2 key(s), 1 reference(s)" in accepted.output
+
+
+def test_an_edited_draft_needs_no_flag(warehouse):
+    runner.invoke(app, ["source", "suggest-keys", "wh"])
+    path = warehouse / "wh.keys.draft.json"
+    draft = json.loads(path.read_text())
+    draft["description"] = "Reviewed by data owner, 2026-10-02"
+    path.write_text(json.dumps(draft))
+    result = runner.invoke(app, ["source", "set-key-overlay", "wh", str(path)])
+    assert result.exit_code == 0, result.output
+
+
+def test_the_full_loop_ends_in_a_snapshot_with_the_reviewed_keys(warehouse):
+    runner.invoke(app, ["source", "suggest-keys", "wh"])
+    runner.invoke(app, ["source", "set-key-overlay", "wh", "wh.keys.draft.json", "--reviewed"])
+    result = runner.invoke(app, ["source", "snapshot", "wh"])
+    assert result.exit_code == 0, result.output
+
+    snap = CatalogManager(str(warehouse / "catalog")).get_latest_snapshot("wh")
+    tables = snap.schema_data.tables
+    assert tables["CUSTOMERS"].primary_key == ["CUSTOMER_ID"]
+    (fk,) = tables["ORDERS"].foreign_keys
+    assert fk.foreign_table == "CUSTOMERS" and fk.enforced is False
+
+
+def test_clear_removes_the_overlay(warehouse):
+    runner.invoke(app, ["source", "suggest-keys", "wh"])
+    runner.invoke(app, ["source", "set-key-overlay", "wh", "wh.keys.draft.json", "--reviewed"])
+    result = runner.invoke(app, ["source", "set-key-overlay", "wh", "--clear"])
+    assert result.exit_code == 0
+    assert CatalogManager(str(warehouse / "catalog")).get_source("wh").key_overlay is None
+
+
+def test_an_invalid_overlay_file_is_rejected(warehouse):
+    (warehouse / "bad.json").write_text(json.dumps({"version": 1, "tables": {"X": {"oops": 1}}}))
+    result = runner.invoke(app, ["source", "set-key-overlay", "wh", "bad.json"])
+    assert result.exit_code == 1 and "Not a valid key overlay" in result.output

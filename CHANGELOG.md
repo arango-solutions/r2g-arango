@@ -7,6 +7,18 @@ and this project aspires to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Key suggestion from data (`r2g source suggest-keys`).** For sources that declare no keys
+  (Snowflake), proposes primary keys and the references between them from the data and writes
+  a **draft** key overlay with the evidence for every entry. Nothing is applied. Every query is
+  counted against `--max-queries` (default 200), each is cancelled by the warehouse after
+  `--timeout` seconds, and the run's cost is reported. Needs relational-schema-analyzer 0.8.1+.
+- **`r2g source set-key-overlay NAME FILE`** attaches a reviewed overlay to an existing source,
+  applied at the next `source snapshot`; `--clear` removes it. A file still marked DRAFT is
+  refused unless `--reviewed` is passed, and structural mistakes are rejected immediately
+  rather than at the next snapshot.
+
 ### Fixed
 
 - **UNIQUE keys were lost when a snapshot was saved.** r2g's table serializer kept primary and
